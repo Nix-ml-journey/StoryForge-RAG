@@ -13,9 +13,9 @@ I recently shipped a **two-pass generation feature** to improve long-form output
 - **Pass 1:** generate a compact outline from retrieved story context.
 - **Pass 2:** generate the full story from that outline, freeing more generation budget for complete narrative arcs.
 
-I also moved generation behavior into clearer prompt contracts in `prompts.yaml` (outline + story-from-outline templates) and added post-generation cleanup guards in `Generative_AI/generative_ai.py` to reduce malformed endings and degeneration artifacts.
+I also moved generation behavior into clearer prompt contracts in `prompts.yaml` (single-pass + outline + story-from-outline templates), added explicit generation profiles (`FAST`, `THINKING`) with separate sampling/token settings, and added post-generation cleanup guards in `Generative_AI/generative_ai.py` to reduce malformed endings and degeneration artifacts. The direction is promising, but results are still not as consistent as I expected.
 
-This update made outputs longer, more complete, and more stable during repeated runs.
+This update made outputs longer and more complete, and improved stability during repeated runs, but there is still room to tune consistency further.
 
 ## Why I Shared This Publicly
 
@@ -112,12 +112,12 @@ I stabilized local inference by enabling 4-bit loading with bitsandbytes.
 
 ### Generation token budget strategy
 
-With the model capped at 8192 prompt tokens, only 768–1536 tokens remained for generation after the system prompt, reference context, and query consumed most of the budget. Generated stories often felt truncated or rushed because of this.
+With the model capped at 8192 prompt tokens, only 768–1536 tokens remained for generation in single-pass mode after the system prompt, reference context, and query consumed most of the budget. Generated stories often felt truncated or rushed because of this.
 
 I solved this with a **two-pass generation** approach:
 
-- **Pass 1 (Outline):** The model receives the full reference context (3 story chunks from the vector store) and produces a short structural outline (~300 tokens) containing setting, characters, and plot beats.
-- **Pass 2 (Full Story):** The bulky reference material is replaced by the compact outline, freeing up the prompt window. The model now generates the full story with 3072–4096 tokens of budget instead of 768–1536.
+- **Pass 1 (Outline):** The model receives the full reference context (default: 3 story chunks from the vector store) and produces a short structural outline (default: 300 tokens) containing setting, characters, and plot beats.
+- **Pass 2 (Full Story):** The bulky reference material is replaced by the compact outline, freeing up the prompt window. The model now generates the full story with a much larger pass-2 budget (default: up to 2048 in `FAST`, up to 3072 in `THINKING`) instead of 768–1536.
 
 This effectively compresses the reference knowledge into the model's own creative plan, then gives it room to write. The feature is toggled via `Two_pass_generation` in `setup.yaml`, with automatic fallback to single-pass if the outline step produces empty output.
 
@@ -130,8 +130,9 @@ I switched to batched summarization (3 files/request) and remapped summaries bac
 
 - Introduced explicit orchestrator steps for clearer pipeline control.
 - Standardized merged output format for predictable ingestion.
-- Added generation profiles (`fast`, `thinking`) for controlled behavior.
+- Added generation profiles (`FAST`, `THINKING`) for controlled behavior.
 - Added two-pass generation (outline → expand) to maximize token budget for story output.
+- Added prompt-aware context truncation against model prompt limits (to reduce hard truncation side-effects).
 - Added output cleanup/truncation safeguards to reduce malformed text.
 - Added retry logic for transient evaluation API failures.
 - Added duplicate-download guards to skip already-downloaded Archive results.

@@ -26,6 +26,8 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - Model selection based on quality/speed constraints (`Qwen2.5-7B` as practical local trade-off)
 - Two-pass generation (outline → expand) to maximize token budget for longer, structured stories
 - Prompt-split generation design in `prompts.yaml` (full story, outline, and story-from-outline prompts)
+- Mode-based generation controls (`FAST` / `THINKING`) with separate token/sampling settings
+- Prompt-budget-aware context truncation before generation
 - Post-generation cleanup safeguards to trim malformed tails and repeated noise
 - Reliability work for real failures (API rate limits, GPU OOM, malformed outputs)
 - Format-aware Archive download handling (`pdf` / `epub`) with cleaner file selection
@@ -44,12 +46,17 @@ This reduces truncation risk and improves story structure consistency.
 Enable/configure in `setup.yaml`:
 
 - `Two_pass_generation: true`
+- `Story_generation_n_results` (retrieved context chunks; default 3)
+- `Generation_mode_fast` / `Generation_mode_thinking`
+- `Generation_fast_temperature` / `Generation_thinking_temperature`
 - `Outline_max_tokens`
 - `Generation_pass2_fast_max_tokens`
 - `Generation_pass2_thinking_max_tokens`
+- `Model_max_prompt_tokens` (prompt budget ceiling)
 
 Related prompt templates live in `prompts.yaml` under `generation`:
 
+- `full_story_system` / `full_story_user`
 - `outline_system` / `outline_user`
 - `story_from_outline_system` / `story_from_outline_user`
 

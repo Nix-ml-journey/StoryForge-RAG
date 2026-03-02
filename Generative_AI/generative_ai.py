@@ -34,17 +34,18 @@ STORY_GENERATION_N_RESULTS = config.get("Story_generation_n_results", 2)
 GENERATION_MODE_FAST = config.get("Generation_mode_fast")
 GENERATION_MODE_THINKING = config.get("Generation_mode_thinking")
 
-GENERATION_FAST_MAX_TOKENS = config.get("Generation_fast_max_tokens", 1024)
 GENERATION_FAST_TEMPERATURE = config.get("Generation_fast_temperature", 0.5)
 GENERATION_FAST_TOP_P = config.get("Generation_fast_top_p", 0.9)
-GENERATION_THINKING_MAX_TOKENS = config.get("Generation_thinking_max_tokens", 1536)
-GENERATION_THINKING_TEMPERATURE = config.get("Generation_thinking_temperature", 0.8)
+GENERATION_THINKING_TEMPERATURE = config.get("Generation_thinking_temperature", 0.7)
 GENERATION_THINKING_TOP_P = config.get("Generation_thinking_top_p", 0.9)
+
+GENERATION_FAST_MAX_TOKENS = config.get("Generation_fast_max_tokens", 768)
+GENERATION_THINKING_MAX_TOKENS = config.get("Generation_thinking_max_tokens", 1536)
 
 TWO_PASS_GENERATION = config.get("Two_pass_generation", False)
 OUTLINE_MAX_TOKENS = config.get("Outline_max_tokens", 300)
-GENERATION_PASS2_FAST_MAX_TOKENS = config.get("Generation_pass2_fast_max_tokens", 3072)
-GENERATION_PASS2_THINKING_MAX_TOKENS = config.get("Generation_pass2_thinking_max_tokens", 4096)
+GENERATION_PASS2_FAST_MAX_TOKENS = config.get("Generation_pass2_fast_max_tokens", 2048)
+GENERATION_PASS2_THINKING_MAX_TOKENS = config.get("Generation_pass2_thinking_max_tokens", 3072)
 
 class Gen_mode(str, Enum):
     FAST = GENERATION_MODE_FAST
@@ -69,7 +70,12 @@ STORY_FROM_OUTLINE_USER_PROMPT = GEN_PROMPTS.get("story_from_outline_user", "")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.info(f"Using device: {device}")
-logging.info(f"Generation config: model={GENERATIVE_MODEL}, max_prompt_tokens={MODEL_MAX_PROMPT_TOKENS}, story_n_results={STORY_GENERATION_N_RESULTS}, fast_max_tokens={GENERATION_FAST_MAX_TOKENS}")
+logging.info(
+    f"Generation config: model={GENERATIVE_MODEL}, max_prompt_tokens={MODEL_MAX_PROMPT_TOKENS}, "
+    f"n_results={STORY_GENERATION_N_RESULTS}, two_pass={TWO_PASS_GENERATION}, "
+    f"fast_tokens={GENERATION_PASS2_FAST_MAX_TOKENS if TWO_PASS_GENERATION else GENERATION_FAST_MAX_TOKENS}, "
+    f"thinking_tokens={GENERATION_PASS2_THINKING_MAX_TOKENS if TWO_PASS_GENERATION else GENERATION_THINKING_MAX_TOKENS}"
+)
 
 def get_chroma_client():
     try:
@@ -361,31 +367,44 @@ def generate_response(
 
     output_ids = generated_ids[:, model_inputs.input_ids.shape[1]:]
     response = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    response = _clean_generated_output(response)
+    response = clean_generated_output(response)
 
     logging.info("Generation complete")
     return response
 
 
-def _clean_generated_output(text: str) -> str:
+def clean_generated_output(text: str) -> str:
     if '\n---\n' in text:
         text = text.split('\n---\n')[0]
     text = re.sub(r'\n\[.{1,80} by .{1,80}\]\s*$', '', text)
 
-    # Cut at first non-ASCII script (Chinese/CJK chars = degeneration signal)
     cjk = re.search(r'[\u4e00-\u9fff\u3000-\u303f]', text)
     if cjk:
         text = text[:cjk.start()]
 
-    # Cut at first 40+ char non-whitespace run (CamelCase blobs)
     blob = re.search(r'\S{40,}', text)
     if blob:
         text = text[:blob.start()]
 
-    # Cut at first paragraph with 30+ words and no sentence punctuation at all
+    # Paragraph-level degeneration detection.
     for para in text.split('\n\n'):
-        words_no_punct = re.split(r'\s+', para.strip())
-        if len(words_no_punct) > 30 and not re.search(r'[.!?,;:\-"\']', para):
+        words = re.split(r'\s+', para.strip())
+        word_count = len(words)
+        if word_count < 20:
+            continue
+        sentence_enders = len(re.findall(r'[.!?]', para))
+        if word_count > 40 and sentence_enders == 0:
+            cut_pos = text.find(para)
+            if cut_pos > 0:
+                text = text[:cut_pos]
+            break
+        if word_count > 60 and sentence_enders < word_count // 40:
+            cut_pos = text.find(para)
+            if cut_pos > 0:
+                text = text[:cut_pos]
+            break
+        avg_words_per_sentence = word_count / max(sentence_enders, 1)
+        if word_count > 30 and avg_words_per_sentence > 45:
             cut_pos = text.find(para)
             if cut_pos > 0:
                 text = text[:cut_pos]
