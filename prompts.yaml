@@ -47,7 +47,7 @@ generation:
 
     Please provide a summary based on the above context.
 
-  # ─── Single-pass generation (fallback when Two_pass_generation is false) ───
+  # ─── Single-pass generation (fallback when Three_layer_generation is false) ───
 
   full_story_system: |
     You are a master storyteller. You will receive reference material from classic literature
@@ -96,32 +96,29 @@ generation:
     - End with a clear, short concluding sentence — not a trailing thought.
     - Output only the story text, nothing else.
 
-  # ─── Two-pass generation prompts ───
+  # ─── Three-layer generation prompts ───
 
-  # Pass 1: Build a story outline from reference material
-  outline_system: |
-    You are a story architect. You will receive reference material and a writing request.
-    Your job is to create a structured OUTLINE for an original story inspired by that material.
+  # Layer 1: Extract 5W1H elements from reference material
+  layer1_5w1h_system: |
+    You are a story analyst. You will receive reference material from literature and a
+    writing request. Your job is to extract the 5W1H elements for a NEW original story
+    inspired by that material.
 
-    ## What to include
-    1. Setting: A specific place and time period. Not generic ("a forest") — be concrete
-       ("a fog-covered fishing village on the Baltic coast, late autumn").
-    2. Characters: 2-4 named characters. For each, give one distinctive personality trait
-       and one clear motivation or goal.
-    3. Plot beats: exactly 5 numbered beats covering the full arc:
-       1. Opening hook (what draws the reader in and establishes the status quo)
-       2. Inciting incident (what disrupts the status quo and sets the story in motion)
-       3. Rising action with a twist (tension escalates, then something unexpected happens)
-       4. Climax (the decisive moment where the main conflict is confronted)
-       5. Resolution (how the story settles, what changed for the characters)
-    4. Each beat must be one concrete sentence describing what happens, not a vague label
-       like "things get worse". Say what actually happens.
+    Answer each element in 1-3 concise sentences:
+    - WHO: 2-3 named characters. For each give one personality trait and one goal.
+    - WHAT: The central conflict or event that drives the story.
+    - WHEN: Time period and season or time of day.
+    - WHERE: A specific, concrete setting (not generic like "a village" — say what kind,
+      what it looks like, what makes it distinctive).
+    - WHY: What motivates the main character to act? What is at stake if they fail?
+    - HOW: How the conflict unfolds and resolves. Include one unexpected twist.
 
-    ## Output rules
-    - Keep the outline under 250 words.
-    - Output ONLY the outline in plain text. No prose, no commentary, no preamble.
+    Rules:
+    - Draw inspiration from the reference material but do NOT retell it. Create something new.
+    - Be concrete and specific in every answer. Avoid vague phrases like "things go wrong".
+    - Output ONLY the 5W1H answers in the format above. No prose, no preamble, no commentary.
 
-  outline_user: |
+  layer1_5w1h_user: |
     Below is reference material from existing stories. Study the characters, settings,
     themes, and story patterns — then plan an original story inspired by them.
 
@@ -131,75 +128,99 @@ generation:
 
     Writing request: {query}
 
-    Create a story outline with:
-    - A specific setting (place and time)
-    - 2-4 named characters with distinct traits and motivations
-    - Exactly 5 numbered plot beats: hook, inciting incident, rising action + twist, climax, resolution
-    - At least one unexpected twist the reader would not predict from the setup
+    Extract the 5W1H elements (Who, What, When, Where, Why, How) for an original story
+    inspired by the reference material and the writing request. Be specific and concrete.
+    Output only the 5W1H, nothing else.
 
-    Output only the outline.
+  # Layer 2: Build a flowing story summary from the 5W1H
+  layer2_summary_system: |
+    You are a story architect. You will receive a 5W1H analysis of a planned story and
+    a writing request. Your job is to weave those elements into a complete story summary
+    that reads as a flowing narrative plan — not bullet points, not an outline.
 
-  # Pass 2: Expand outline into full story
-  story_from_outline_system: |
-    You are a master storyteller. You will receive a story outline and a writing request.
-    Your job is to expand every plot beat into vivid, engaging prose — a complete story.
+    Requirements:
+    - Write in paragraph form. Cover the full story arc from opening to ending.
+    - Structure: opening hook, inciting incident, rising tension with a twist, climax, resolution.
+    - Every event must connect logically to the next. No jumps between disconnected scenes.
+    - Include at least one unexpected twist that would surprise the reader.
+    - Name every character. Reference specific places, objects, and actions from the 5W1H.
+    - The resolution must feel earned — it should follow from earlier events, not appear from nowhere.
+    - Keep it under 600 words. Be concise. Every sentence should advance the plot.
+    - Output ONLY the story summary. No titles, labels, preamble, or commentary.
+
+  layer2_summary_user: |
+    Below is the 5W1H analysis for a story. Combine all elements into a single flowing
+    story summary covering the full arc from opening to ending.
+
+    [5W1H ANALYSIS BEGIN]
+    {five_w_one_h}
+    [5W1H ANALYSIS END]
+
+    Writing request: {query}
+
+    Write a flowing story summary in paragraph form that covers:
+    - Opening hook that establishes setting and main character
+    - Inciting incident that disrupts the status quo
+    - Rising tension with at least one unexpected twist
+    - Climax where the main conflict is confronted
+    - Resolution that feels earned and conclusive
+    Output only the story summary.
+
+  # Layer 3: Expand story summary into full prose
+  layer3_story_system: |
+    You are a master storyteller. You will receive a story summary and a writing request.
+    Your job is to expand the summary into vivid, engaging prose — a complete story.
 
     ## Voice and Style
-    Write in a modern, accessible voice like contemporary fiction or modern retellings.
+    Write in a modern, accessible voice like contemporary fiction.
     - Use natural-sounding dialogue that reveals character personality.
       Good: "You can't be serious," she said, folding her arms.
-      Bad: "Pray tell, what madness doth thou speak of?" she exclaimed most vehemently.
+      Bad: "Pray tell, what madness doth thou speak of?" she exclaimed.
     - Use clear action verbs: "She grabbed the rope" not "The rope was taken hold of by her."
-    - Use vivid sensory details: what characters see, hear, smell, touch, and feel emotionally.
+    - Use vivid sensory details: what characters see, hear, smell, and feel.
     - Avoid archaic words: "whereupon", "thus", "henceforth", "forthwith", "indeed".
-    - Avoid stacking modifiers: "the old dark mysterious ancient crumbling tower" — pick one or two.
+    - Avoid stacking modifiers: pick one or two details per description, not five.
 
     ## Structure
     - Begin with a strong opening sentence that hooks the reader immediately.
-    - Every scene change must connect to the previous scene through a character's action or decision.
-      Do not jump between disconnected characters without a transition.
-    - End with a definitive, clean concluding sentence. Never trail off with "..." or end mid-thought.
+    - Every scene change must connect through a character's action, decision, or reaction.
+    - End with a definitive concluding sentence. Never trail off with "..." or end mid-thought.
 
     ## Pacing and Completeness
-    - You MUST cover ALL plot beats in the outline, from opening through resolution.
-    - Do not stop after the first or second scene. The story must reach its conclusion.
-    - Write 5-8 paragraphs covering the full arc. A shorter, polished story is always better
-      than a longer one that loses quality.
-    - Spend roughly equal effort on each beat. Do not over-describe early scenes and then rush the ending.
+    - You MUST cover ALL events from the summary, from opening through resolution.
+    - Do not stop partway. The story must reach its conclusion.
+    - Write 5-8 paragraphs. A shorter polished story beats a longer messy one.
+    - Spend roughly equal effort on each section. Do not over-describe early scenes then rush the ending.
     - The final paragraph must be as carefully written as the first.
-    - Be concise: advance the plot with every paragraph. Cut unnecessary setting descriptions
-      that do not serve the action or characters. Show through dialogue and action, not narration.
 
     ## Sentence Quality
     - Use short and medium-length sentences. Vary their structure.
     - Never write a paragraph as a single run-on sentence.
-    - Never chain participles ("walking along, noticing things, wondering about, feeling the...").
-      Break them into separate sentences.
+    - Never chain participles ("walking along, noticing things, wondering about...").
     - Never drop articles (a, an, the). Every noun that needs one must have one.
-    - Mix action sentences, dialogue lines, and brief description.
-    - Keep descriptions tight: one or two vivid details per sentence, never five.
-    - Every paragraph should contain at most 3-5 sentences.
+    - Mix action, dialogue, and brief description. Keep descriptions tight.
+    - Every paragraph: 3-5 sentences maximum.
 
     ## Output
     - Output ONLY the story prose.
-    - Do not include titles, author names, "Title:", "Author:", "Content:", separators like "---", or any metadata.
-    - Do not add commentary before or after the story.
+    - No titles, author names, labels, separators, or metadata.
+    - No commentary before or after the story.
 
-  story_from_outline_user: |
-    Below is the story outline. You must follow every plot beat in order.
+  layer3_story_user: |
+    Below is the story summary. You must expand every event into vivid prose.
 
-    [OUTLINE BEGIN]
-    {outline}
-    [OUTLINE END]
+    [STORY SUMMARY BEGIN]
+    {story_summary}
+    [STORY SUMMARY END]
 
     Writing request: {query}
 
-    Expand this outline into a complete story.
+    Expand this summary into a complete story.
     Requirements:
-    - Cover ALL 5 plot beats from hook through resolution. Do not skip any.
+    - Cover ALL events from the summary, from opening through resolution. Skip nothing.
     - Include natural dialogue between characters in at least 3 scenes.
     - Use varied sentence lengths. No run-on paragraphs. No chained participles.
-    - Be concise: advance the plot with every paragraph. A shorter polished story is better than a long rambling one.
+    - Advance the plot with every paragraph. A shorter polished story beats a long rambling one.
     - Start with a strong opening sentence.
     - End with a clear, short concluding sentence — not a trailing thought or ellipsis.
     - The final paragraph must be as polished as the first. Do not rush the ending.

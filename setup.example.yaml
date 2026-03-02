@@ -11,18 +11,45 @@ Gemini_evaluation_model: "gemini-3-flash-preview"
 Vector_store_model: "all-MiniLM-L6-v2"
 Generative_model: "Qwen/Qwen2.5-7B-Instruct"
 Load_generative_model_in_4bit: true
-Model_max_prompt_tokens: 8192
-Story_generation_n_results: 1
+Model_max_prompt_tokens: 10240
+Story_generation_n_results: 3
 
-# GENERATION MODES
+# GENERATION MODES (FAST = focused, THINKING = more exploratory)
 Generation_mode_fast: "FAST"
 Generation_mode_thinking: "THINKING"
-Generation_fast_max_tokens: 768
 Generation_fast_temperature: 0.5
 Generation_fast_top_p: 0.9
-Generation_thinking_max_tokens: 1536
-Generation_thinking_temperature: 0.7
+Generation_thinking_temperature: 0.9
 Generation_thinking_top_p: 0.9
+
+# Repetition controls
+# repetition_penalty: multiplicative penalty on repeated tokens (1.0 = off, >1.0 = penalize)
+# frequency_penalty: subtracts (count * penalty) from logits
+# presence_penalty: subtracts once for tokens that already appeared
+Repetition_penalty: 1.3
+No_repeat_ngram_size: 4
+Frequency_penalty: 0.5
+Presence_penalty: 0.3
+
+# Three-layer generation. Set false to use single-pass.
+Three_layer_generation: true
+
+# Single-pass max tokens (used when Three_layer_generation is false)
+Single_pass_fast_max_tokens: 768
+Single_pass_thinking_max_tokens: 1536
+
+# Layer 1: 5W1H extraction from retrieval context
+Layer1_max_tokens: 600
+
+# Minimum generation ratio for Layers 2 & 3 (0.0-1.0)
+Min_generation_ratio: 0.9
+
+# Layer 2: Story summary flow from 5W1H
+Layer2_max_tokens: 1024
+
+# Layer 3: Full story expansion
+Layer3_fast_max_tokens: 1536
+Layer3_thinking_max_tokens: 2048
 
 # BOOK SEARCH SETTINGS
 Archive_url: "https://archive.org/advancedsearch.php"

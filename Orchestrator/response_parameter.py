@@ -233,7 +233,8 @@ def vector_delete_result(ids: list[str]) -> dict:
 
 def generate_story_result(query: str, save: bool, n_results: int, mode: Gen_mode) -> dict:
     try:
-        gen_params = generative_ai.get_generation_params(mode)
+        temperature, top_p = generative_ai.get_mode_sampling(mode)
+        gen_params = {"temperature": temperature, "top_p": top_p, "three_layer": generative_ai.THREE_LAYER_GENERATION}
         content = generative_ai.generate_full_story(query, n_results=n_results, mode=mode)
         if not content:
             return {"success": False, "content": "", "saved": False, "saved_path": None, "timestamp": ""}
