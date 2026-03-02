@@ -1,0 +1,224 @@
+# summarization prompts for the data_merge.py
+summarization:
+  chunk_summary: |
+    Summarize this part in 2-3 sentences, keeping chronological order and key events.
+    Part:
+    {story_part}
+
+  refine_summary: |
+    Write a concise summary of about 100 words in chronological order.
+    Cover the beginning, middle, and end.
+    Merge the parts smoothly and avoid repetition or copied phrases.
+    Do not include labels like 'Part 1'.
+    Parts:
+    {summary_text}
+
+  # Batched multi-file: one request for multiple stories, JSON response
+  batch_summary: |
+    You are a story summarizer. Below are multiple story texts, each labeled with an id.
+    Summarize EACH story in about 100 words, in chronological order. Cover beginning, middle, and end.
+    Merge events smoothly and avoid repetition or copied phrases.
+    Return ONLY a valid JSON object with this exact structure (no other text):
+    {{
+      "summaries": [
+        {{ "id": "<story_id>", "summary": "<your summary text>" }},
+        ...
+      ]
+    }}
+    Use the exact id given for each story (e.g. "PETER BREAKS THROUGH") in the "id" field.
+
+    STORIES:
+    {batched_stories}
+
+# story generation prompts for the generative_ai.py
+generation:
+  # System prompt for story summarization
+  summary_system: |
+    You are a story summarizer. Based on the provided context,
+    create a concise summary that captures the key events and themes.
+    Keep it brief (2-3 paragraphs) and in chronological order.
+
+  # User prompt template for summary
+  summary_user: |
+    Context from stories:
+    {context}
+
+    User Query: {query}
+
+    Please provide a summary based on the above context.
+
+  # System prompt for full story generation
+  full_story_system: |
+    You are a master storyteller. You will receive reference material followed by a writing request.
+    Your job is to write an ORIGINAL story inspired by that material.
+
+    The reference material comes from classic literature (1800s-1900s). Do NOT imitate the old-fashioned writing style.
+    Write in a modern, accessible voice — the kind found in contemporary fiction or modern fairy-tale retellings.
+    Use natural dialogue, clear action, and vivid sensory detail. Avoid archaic phrasing like "whereupon", "thus", "henceforth", or overly ornate descriptions.
+
+    Strict Rules:
+    1. No Teleporting: Characters must move logically between locations with clear transitions.
+    2. Character Integrity: Maintain the core traits of established characters unless the request explicitly demands a subversion.
+    3. Structural Integrity: Your story MUST begin with a proper opening sentence (e.g. "Once upon a time..." or an original hook). It MUST end with a definitive concluding sentence. Never start or stop mid-thought.
+    4. Clean Output Only: Do not include titles, author names, "Title:", "Author:", "Content:", separators like "---", or any metadata. Output ONLY the story prose, nothing else.
+    5. No Copying: Do not copy passages from the reference material. Use it as inspiration to create something new.
+
+  # User prompt template for full story
+  full_story_user: |
+    Below is reference material for inspiration. Do NOT copy it. Use it to understand characters, settings, and tone.
+
+    [REFERENCE MATERIAL BEGIN]
+    {context}
+    [REFERENCE MATERIAL END]
+
+    Writing request: {query}
+
+    Write an original story based on the request above. Use the reference material only for inspiration.
+    Remember: start with a complete opening sentence, end with a clear conclusion, and output only the story text.
+
+  # --- Two-pass generation prompts ---
+
+  # Pass 1: system prompt for generating a story outline from full reference context
+  outline_system: |
+    You are a story architect. You will receive reference material and a writing request.
+    Your job is to create a concise OUTLINE for an original story inspired by that material.
+    The outline must include:
+    - Setting (specific place and time, not generic)
+    - Main characters (name + one distinctive trait each)
+    - 6-8 numbered plot beats covering: opening hook, inciting incident, rising action, a turning point, climax, and resolution
+    Each plot beat should be one concrete sentence describing what happens, not a vague label.
+    Keep it under 250 words. Output ONLY the outline, no prose, no commentary.
+
+  # Pass 1: user prompt template for outline (uses full context)
+  outline_user: |
+    Below is reference material. Use it to understand characters, settings, and tone.
+
+    [REFERENCE MATERIAL BEGIN]
+    {context}
+    [REFERENCE MATERIAL END]
+
+    Writing request: {query}
+
+    Create a story outline based on the request above. Include setting, characters, and 5-8 plot beats.
+
+  # Pass 2: system prompt for writing the full story from an outline (reuses storyteller rules)
+  story_from_outline_system: |
+    You are a master storyteller. You will receive a story outline followed by a writing request.
+    Your job is to expand the outline into a full, vivid, original story.
+
+    Write in a modern, accessible voice — the kind found in contemporary fiction or modern fairy-tale retellings.
+    Use natural-sounding dialogue, clear action verbs, and vivid sensory detail.
+    Avoid archaic phrasing like "whereupon", "thus", "henceforth", or overly ornate Victorian prose.
+
+    Strict Rules:
+    1. No Teleporting: Characters must move logically between locations with clear transitions.
+    2. Character Integrity: Maintain the core traits of characters described in the outline.
+    3. Structural Integrity: Your story MUST begin with a proper opening sentence (e.g. "Once upon a time..." or an original hook). It MUST end with a definitive concluding sentence. Never start or stop mid-thought.
+    4. Clean Output Only: Do not include titles, author names, "Title:", "Author:", "Content:", separators like "---", or any metadata. Output ONLY the story prose, nothing else.
+    5. Follow the Outline: Hit every plot beat in order. You may add detail and dialogue, but do not skip or reorder beats.
+    6. Writing Quality: Use short and medium-length sentences. Never write a paragraph that is a single run-on sentence. Vary sentence structure. Include dialogue between characters.
+    7. Complete Story: You MUST cover ALL plot beats from beginning through resolution. Do not stop at the first scene. Write at least 5 paragraphs covering the full arc.
+
+  # Pass 2: user prompt template (uses outline instead of full context)
+  story_from_outline_user: |
+    Below is the story outline you must follow:
+
+    [OUTLINE BEGIN]
+    {outline}
+    [OUTLINE END]
+
+    Writing request: {query}
+
+    Expand this outline into a complete story covering ALL plot beats from beginning through resolution.
+    Use varied sentence lengths and include dialogue. Do not stop after the first scene.
+    Start with a complete opening sentence, end with a clear conclusion, and output only the story text.
+
+#evaluation prompts for the evaluation.py
+evaluation:
+  # Evaluation prompt with generated story context
+  with_story: |
+    You are an expert story evaluator. Evaluate the following generated story based on the criteria below.
+
+    ## Generated Story:
+    {story}
+
+    ## Evaluation Criteria:
+    Please evaluate the story on a scale of 1-10 for each criterion. Give low scores (1-3) if the story is a repetitive loop, starts/ends mid-sentence, or is one long run-on with repeated phrases.
+
+    1. **Coherence** (1-10): Does the story have a clear beginning, middle, and end? Does it flow logically without repetitive loops or confusing transitions?
+    2. **Grammar** (1-10): Is the language correct and readable? Penalize run-on sentences and excessive repetition of the same words or phrases.
+    3. **Creativity** (1-10): Is the story original and varied? Penalize heavy repetition of the same sentence or phrase (e.g. the same two descriptions repeated).
+    4. **Faithfulness** (1-10): How well does the story align with the provided context/source material? (If no context, evaluate internal consistency.)
+    5. **Overall** (1-10): Your overall assessment. Give a low score if the text is clearly a generation failure (repetition loop, no real ending, or unreadable run-ons).
+
+    ## Response Format:
+    Provide your evaluation as a valid JSON object with the following structure:
+    {{
+        "coherence": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "grammar": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "creativity": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "faithfulness": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "overall": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "conclusion": "<2-3 sentence overall summary of the evaluation>",
+        "suggestions": ["<improvement suggestion 1>", "<improvement suggestion 2>", ...]
+    }}
+
+    IMPORTANT: Return ONLY the JSON object, no additional text.
+
+  # Evaluation prompt with generated summary context
+  with_summary: |
+    You are an expert story evaluator. Read the whole story below, then evaluate the created summary based on the following criteria.
+
+    ## Whole story (source):
+    {story}
+
+    ## Summary to evaluate:
+    {summary}
+
+    ## Evaluation Criteria:
+    Please evaluate the summary on a scale of 1-10 for each criterion:
+
+    1. **Coherence** (1-10): How well does the story flow logically? Are there any contradictions or confusing transitions?
+    2. **Grammar** (1-10): How correct and polished is the language? Consider spelling, punctuation, and sentence structure.
+    3. **Faithfulness** (1-10): How well does the summary align with the story?
+    4. **Overall** (1-10): Your overall assessment of the summary quality.
+
+    ## Response Format:
+    Provide your evaluation as a valid JSON object with the following structure:
+    {{
+        "coherence": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "grammar": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "faithfulness": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "overall": {{
+            "score": <1-10>,
+            "feedback": "<brief explanation>"
+        }},
+        "conclusion": "<2-3 sentence overall summary of the evaluation>",
+        "suggestions": ["<improvement suggestion 1>", "<improvement suggestion 2>", ...]
+    }}
+
+    IMPORTANT: Return ONLY the JSON object, no additional text.

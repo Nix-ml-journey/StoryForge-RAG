@@ -1,0 +1,56 @@
+BASE_PATH: "C:/path/to/StoryForge-RAG"
+Port: 8000
+
+# API KEYS (set real values locally only)
+Gemini_api_key: "YOUR_GEMINI_API_KEY"
+Google_book_api_key: "YOUR_GOOGLE_BOOKS_API_KEY"
+
+# MODEL CONFIGURATION
+Gemini_summary_model: "gemini-2.5-flash"
+Gemini_evaluation_model: "gemini-3-flash-preview"
+Vector_store_model: "all-MiniLM-L6-v2"
+Generative_model: "Qwen/Qwen2.5-7B-Instruct"
+Load_generative_model_in_4bit: true
+Model_max_prompt_tokens: 8192
+Story_generation_n_results: 1
+
+# GENERATION MODES
+Generation_mode_fast: "FAST"
+Generation_mode_thinking: "THINKING"
+Generation_fast_max_tokens: 768
+Generation_fast_temperature: 0.5
+Generation_fast_top_p: 0.9
+Generation_thinking_max_tokens: 1536
+Generation_thinking_temperature: 0.7
+Generation_thinking_top_p: 0.9
+
+# BOOK SEARCH SETTINGS
+Archive_url: "https://archive.org/advancedsearch.php"
+Archive_metadata_url: "https://archive.org/metadata/"
+Downloaded_rawbook_dir: "Downloaded_Books"
+Downloaded_data_meta: "Downloaded_Metadata"
+
+Book_data:
+  - id
+  - title
+  - authors
+  - description
+
+Download_formats:
+  - pdf
+  - epub
+
+# DATA PATHS
+Extracted_text_dir: "Text_Extracted"
+Story_input: "Stories"
+Metadata_input: "Metadata"
+Merged_data_output: "Data_Merged"
+
+# VECTOR STORE SETTINGS
+Chroma_path: "chroma_db"
+Chroma_collection_name: "English_Stories"
+
+# OUTPUT PATHS
+Generated_story_output: "Generated_Stories"
+Generated_summary_output: "Summarized_Stories"
+Evaluated_stories_output: "Evaluated_Stories"
