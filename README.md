@@ -24,41 +24,49 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - End-to-end pipeline from raw books to evaluated generated stories
 - Retrieval-first architecture with Chroma + embeddings
 - Model selection based on quality/speed constraints (`Qwen2.5-7B` as practical local trade-off)
-- Two-pass generation (outline → expand) to maximize token budget for longer, structured stories
-- Prompt-split generation design in `prompts.yaml` (full story, outline, and story-from-outline prompts)
+- Three-layer generation (5W1H -> summary flow -> story expansion) for stronger structure control
+- Prompt-split generation design in `prompts.yaml` (single-pass + layer1/layer2/layer3 templates)
 - Mode-based generation controls (`FAST` / `THINKING`) with separate token/sampling settings
 - Prompt-budget-aware context truncation before generation
-- Post-generation cleanup safeguards to trim malformed tails and repeated noise
+- Repetition controls (repetition/frequency/presence penalties + no-repeat ngram)
+- Advanced decoding via `Generative_AI/penalty_processors.py` to reduce repetition loops while excluding common stopwords from penalty application
+- Post-generation cleanup safeguards to trim malformed tails and degeneration artifacts
 - Reliability work for real failures (API rate limits, GPU OOM, malformed outputs)
 - Format-aware Archive download handling (`pdf` / `epub`) with cleaner file selection
 - Duplicate-download protection by identifier to avoid redundant fetches
 - API + orchestrator refactor for cleaner endpoint responsibilities
 
-## New Feature: Two-Pass Story Generation
+## New Feature: Three-Layer Story Generation
 
-The latest generation upgrade adds a two-pass flow designed for longer, cleaner stories under token limits:
+The latest generation upgrade adds a three-layer flow designed for longer, cleaner stories under token limits:
 
-1. **Pass 1 (Outline):** uses retrieved context to create a compact story plan.
-2. **Pass 2 (Expand):** uses the outline instead of full retrieval chunks so most tokens are reserved for writing the final story.
+1. **Layer 1 (5W1H extraction):** distills retrieved context into concrete `Who/What/When/Where/Why/How`.
+2. **Layer 2 (story summary flow):** converts the 5W1H into a connected narrative plan.
+3. **Layer 3 (story expansion):** expands that plan into the final full story.
 
-This reduces truncation risk and improves story structure consistency.
+If any intermediate layer returns empty output, generation falls back to single-pass mode.
 
 Enable/configure in `setup.yaml`:
 
-- `Two_pass_generation: true`
+- `Three_layer_generation: true`
 - `Story_generation_n_results` (retrieved context chunks; default 3)
 - `Generation_mode_fast` / `Generation_mode_thinking`
 - `Generation_fast_temperature` / `Generation_thinking_temperature`
-- `Outline_max_tokens`
-- `Generation_pass2_fast_max_tokens`
-- `Generation_pass2_thinking_max_tokens`
+- `Single_pass_fast_max_tokens` / `Single_pass_thinking_max_tokens`
+- `Layer1_max_tokens`
+- `Layer2_max_tokens`
+- `Layer3_fast_max_tokens` / `Layer3_thinking_max_tokens`
+- `Min_generation_ratio` (applies to layers 2 and 3)
+- `Repetition_penalty`, `No_repeat_ngram_size`
+- `Frequency_penalty`, `Presence_penalty`
 - `Model_max_prompt_tokens` (prompt budget ceiling)
 
 Related prompt templates live in `prompts.yaml` under `generation`:
 
 - `full_story_system` / `full_story_user`
-- `outline_system` / `outline_user`
-- `story_from_outline_system` / `story_from_outline_user`
+- `layer1_5w1h_system` / `layer1_5w1h_user`
+- `layer2_summary_system` / `layer2_summary_user`
+- `layer3_story_system` / `layer3_story_user`
 
 ## What It Does
 
@@ -67,7 +75,7 @@ Related prompt templates live in `prompts.yaml` under `generation`:
 - Extracts text from PDF/EPUB sources
 - Builds metadata + merged records for retrieval
 - Ingests records into Chroma vector store
-- Generates stories from retrieved context (single-pass or two-pass outline → expand)
+- Generates stories from retrieved context (single-pass or three-layer generation)
 - Evaluates generated outputs with rubric-based scoring
 
 ## Tech Stack
@@ -106,7 +114,7 @@ Related prompt templates live in `prompts.yaml` under `generation`:
 3. Create metadata templates
 4. Merge metadata + documents
 5. Ingest into Chroma
-6. Generate story (single-pass or two-pass: outline first, then expand)
+6. Generate story (single-pass or three-layer: 5W1H -> summary -> full story)
 7. Evaluate generated story/summary
 
 ## Who This Is For
