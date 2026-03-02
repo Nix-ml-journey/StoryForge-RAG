@@ -1,0 +1,35 @@
+# HTTP and networking
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn>=0.32.0
+
+# Configuration
+pyyaml>=6.0.2
+
+# Progress bars
+tqdm>=4.66.0
+
+#Text extraction (PyMuPDF, epub-to-text)
+pymupdf>=1.24.0
+epub-to-text>=0.1.0
+
+# Vector database
+chromadb>=1.4.1
+
+# Machine Learning / PyTorch
+torch>=2.0.0
+transformers>=4.57.6
+sentence-transformers>=5.2.0
+accelerate>=0.33.0
+bitsandbytes>=0.43.0
+
+# LangChain ecosystem
+langchain-core>=0.3.0
+langchain-google-genai>=2.0.0
+langchain-text-splitters>=0.3.0
+
+# Google Generative AI SDK
+google-genai>=0.2.0
