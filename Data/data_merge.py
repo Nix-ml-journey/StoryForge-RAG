@@ -32,7 +32,7 @@ prompt_template = SUMMARIZATION_PROMPTS.get("chunk_summary", "")
 refine_prompt = SUMMARIZATION_PROMPTS.get("refine_summary", "")
 batch_summary_prompt = SUMMARIZATION_PROMPTS.get("batch_summary", "")
 
-BATCH_SIZE = 3
+BATCH_SIZE = 4
 
 from Data.metadata import check_summary_empty_count, is_summary_empty
 
@@ -89,8 +89,7 @@ def Save_Merged_Data(BASE_PATH, Merge_Data_Output, merged_data):
     return True
 
 
-def _id_sort_key(ids_val):
-    """Extract numeric part from ids e.g. 'id_1' -> 1 for sorting."""
+def id_sort_key(ids_val):
     if not ids_val or not isinstance(ids_val, str):
         return 0
     try:
@@ -99,7 +98,7 @@ def _id_sort_key(ids_val):
         return 0
 
 
-def _get_merged_files_sorted_by_id(output_folder, batch_size=3):
+def get_merged_files_sorted_by_id(output_folder, batch_size=BATCH_SIZE):
     output_folder = Path(output_folder)
     if not output_folder.exists():
         return []
@@ -118,7 +117,7 @@ def _get_merged_files_sorted_by_id(output_folder, batch_size=3):
         ids_val = data.get("ids", "") or data.get("ID", "")
         stem = f.stem
         files_with_data.append((f, data, stem, ids_val))
-    files_with_data.sort(key=lambda x: _id_sort_key(x[3]))
+    files_with_data.sort(key=lambda x: id_sort_key(x[3]))
     batches = []
     for i in range(0, len(files_with_data), batch_size):
         batch = [(p, d, s) for p, d, s, _ in files_with_data[i : i + batch_size]]
@@ -126,7 +125,7 @@ def _get_merged_files_sorted_by_id(output_folder, batch_size=3):
     return batches
 
 
-def _parse_batch_summary_response(text):
+def parse_batch_summary_response_from_text(text):
     if not text or not isinstance(text, str):
         return []
     text = text.strip()
@@ -156,7 +155,7 @@ def create_summaries_for_batch(batch_items, llm, batch_prompt_template):
     prompt = batch_prompt_template.format(batched_stories=batched_stories)
     out = llm.invoke(prompt)
     text = getattr(out, "content", str(out)) or ""
-    summaries = _parse_batch_summary_response(text)
+    summaries = parse_batch_summary_response_from_text(text)
     result = []
     for s in summaries:
         if isinstance(s, dict):
@@ -175,7 +174,7 @@ def create_summaries_for_merged_data(BASE_PATH, Merge_Data_Output, Gemini_summar
             return (False, 0)
 
         if batch_summary_prompt and batch_summary_prompt.strip():
-            batches = _get_merged_files_sorted_by_id(output_folder, batch_size=BATCH_SIZE)
+            batches = get_merged_files_sorted_by_id(output_folder)
             if not batches:
                 logging.warning("No merged files with documents found for batch summarization")
                 return (True, 0)
@@ -214,8 +213,8 @@ def create_summaries_for_merged_data(BASE_PATH, Merge_Data_Output, Gemini_summar
         for json_file in tqdm(json_files, desc="Creating summaries"):
             with open(json_file, "r", encoding="utf-8") as file:
                 data = json.load(file)
-            documents = data.get("documents", "")
-            if not documents or not documents.strip():
+            documents = data.get("documents", "") or ""
+            if not documents.strip():
                 continue
 
             llm = ChatGoogleGenerativeAI(
