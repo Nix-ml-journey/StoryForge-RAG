@@ -24,9 +24,10 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - End-to-end pipeline from raw books to evaluated generated stories
 - Retrieval-first architecture with Chroma + embeddings
 - Model selection based on quality/speed constraints (`Qwen2.5-7B` as practical local trade-off)
-- Three-layer generation (5W1H -> summary flow -> story expansion) for stronger structure control
+- Three-layer generation (5W1H → sectioned summary flow → multi-pass story expansion) with optional narrative structures from `flow_structure.yaml`
 - Prompt-split generation design in `prompts.yaml` (single-pass + layer1/layer2/layer3 templates)
-- Mode-based generation controls (`FAST` / `THINKING`) with separate token/sampling settings
+- Generation modes: `FAST`, `THINKING`, and `SHORT` (~50% shorter Layer 3 budgets than FAST)
+- Optional per-layer temperature/top-p overrides in `setup.yaml`
 - Prompt-budget-aware context truncation before generation
 - Repetition controls (repetition/frequency/presence penalties + no-repeat ngram)
 - Advanced decoding via `Generative_AI/penalty_processors.py` to reduce repetition loops while excluding common stopwords from penalty application
@@ -34,32 +35,29 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - Reliability work for real failures (API rate limits, GPU OOM, malformed outputs)
 - Format-aware Archive download handling (`pdf` / `epub`) with cleaner file selection
 - Duplicate-download protection by identifier to avoid redundant fetches
-- API + orchestrator refactor for cleaner endpoint responsibilities
+- Evaluation with primary + fallback Gemini models and retry on transient API errors
+- API groups: `/orchestration` (pipeline steps), `/create-eval` (generate/evaluate stories and summaries)
+- `debug_layers/` scripts to run Layer 1–3 in isolation for debugging (see `debug_layers/README.md`)
 
-## New Feature: Three-Layer Story Generation
+## Three-Layer Story Generation
 
-The latest generation upgrade adds a three-layer flow designed for longer, cleaner stories under token limits:
+The generation path distills retrieved context, plans a sectioned narrative, then expands it into full prose:
 
-1. **Layer 1 (5W1H extraction):** distills retrieved context into concrete `Who/What/When/Where/Why/How`.
-2. **Layer 2 (story summary flow):** converts the 5W1H into a connected narrative plan.
-3. **Layer 3 (story expansion):** expands that plan into the final full story.
+1. **Layer 1 (5W1H extraction):** distills retrieved context into concrete `Who/What/When/Where/Why/How` (optional style/tone extraction via orchestration `extract_style`).
+2. **Structure choice:** `Generative_AI/choser.py` picks a narrative flow from `flow_structure.yaml` (mode-filtered: FAST favors linear-friendly structures; THINKING can use non-linear flows).
+3. **Layer 2 (sectioned summary):** maps 5W1H into the chosen structure—typically **five sections one-by-one** (`Layer2_per_section`) so each block stays grounded in facts.
+4. **Layer 3 (story expansion):** **multi-pass prose** (one expansion per summary section by default) for length and coherence under token limits.
 
 If any intermediate layer returns empty output, generation falls back to single-pass mode.
 
-Enable/configure in `setup.yaml`:
+Enable/configure in `setup.yaml` (see `setup.example.yaml` for commented defaults):
 
-- `Three_layer_generation: true`
-- `Story_generation_n_results` (retrieved context chunks; default 3)
-- `Generation_mode_fast` / `Generation_mode_thinking`
-- `Generation_fast_temperature` / `Generation_thinking_temperature`
-- `Single_pass_fast_max_tokens` / `Single_pass_thinking_max_tokens`
-- `Layer1_max_tokens`
-- `Layer2_max_tokens`
-- `Layer3_fast_max_tokens` / `Layer3_thinking_max_tokens`
-- `Min_generation_ratio` (applies to layers 2 and 3)
-- `Repetition_penalty`, `No_repeat_ngram_size`
-- `Frequency_penalty`, `Presence_penalty`
-- `Model_max_prompt_tokens` (prompt budget ceiling)
+- `Three_layer_generation`
+- `Story_generation_n_results`
+- `Generation_mode_fast` / `Generation_mode_thinking` / `Generation_mode_short`
+- `Generation_*_temperature` / `Generation_*_top_p` and optional `Layer1_*`, `Layer2_*`, `Layer3_*` overrides
+- Single-pass and layer token budgets, `Layer2_per_section`, `Layer2_section_max_tokens`, `Layer3_section_count`, `Layer3_section_min_tokens` / `Layer3_section_max_tokens` (and SHORT variants)
+- `Min_generation_ratio`, penalties, `Model_max_prompt_tokens`
 
 Related prompt templates live in `prompts.yaml` under `generation`:
 
@@ -87,13 +85,14 @@ Related prompt templates live in `prompts.yaml` under `generation`:
 
 ## Project Structure
 
-- `API/` - FastAPI routes and endpoint contracts
+- `API/` - FastAPI routes (`orchestration`, `create-eval`, data, etc.)
 - `Orchestrator/` - Pipeline orchestration and step control
 - `Book_search/` - Search/download + extraction entry points
 - `Data/` - Metadata and merge logic
 - `Vector_Store/` - Chroma ingestion/query utilities
-- `Generative_AI/` - Context building and story generation
+- `Generative_AI/` - Context building, story generation, penalty processors, flow structure choice
 - `Evaluation/` - Automated scoring and feedback
+- `debug_layers/` - Optional layer-by-layer CLI debugging
 
 ## Quick Start
 
@@ -114,13 +113,17 @@ Related prompt templates live in `prompts.yaml` under `generation`:
 3. Create metadata templates
 4. Merge metadata + documents
 5. Ingest into Chroma
-6. Generate story (single-pass or three-layer: 5W1H -> summary -> full story)
+6. Generate story (single-pass or three-layer: 5W1H → structure → sectioned summary → expanded story)
 7. Evaluate generated story/summary
 
 ## Who This Is For
 
 - Recruiters and hiring managers reviewing applied AI/data engineering projects
 - Engineers who want a concrete reference for retrieval + generation + evaluation pipelines
+
+## Current status
+
+With the current setup, generated stories are still often **incomplete** (cut short or thin in places), and I am actively debugging and tuning that. My main working hypothesis is **retrieval coverage**: the Chroma index built from what I have ingested so far only exposes **about 47 records** to RAG, which is small for diverse long-form conditioning—so weak or repetitive context upstream may be part of the problem, alongside token limits and generation settings. I am expanding ingestion and revisiting chunking/metadata to improve what retrieval returns.
 
 ## Security Notes
 

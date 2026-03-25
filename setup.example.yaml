@@ -1,57 +1,80 @@
-BASE_PATH: "C:/path/to/StoryForge-RAG"
+# ── Paths ──
+BASE_PATH: "C:/path/to/your/project"
 Port: 8000
 
-# API KEYS (set real values locally only)
+# ── API Keys (set real values locally only) ──
 Gemini_api_key: "YOUR_GEMINI_API_KEY"
 Google_book_api_key: "YOUR_GOOGLE_BOOKS_API_KEY"
 
-# MODEL CONFIGURATION
+# ── Models ──
 Gemini_summary_model: "gemini-2.5-flash"
 Gemini_evaluation_model: "gemini-3-flash-preview"
+Gemini_evaluation_fallback_model: "gemini-2.5-flash"  # used when primary is unavailable
 Vector_store_model: "all-MiniLM-L6-v2"
 Generative_model: "Qwen/Qwen2.5-7B-Instruct"
-Load_generative_model_in_4bit: true
+Load_generative_model_in_4bit: true            # 4-bit quantisation; requires bitsandbytes
 Model_max_prompt_tokens: 10240
-Story_generation_n_results: 3
+Story_generation_n_results: 3                   # RAG chunks used as context (more = richer but heavier)
 
-# GENERATION MODES (FAST = focused, THINKING = more exploratory)
-Generation_mode_fast: "FAST"
-Generation_mode_thinking: "THINKING"
+# ── Generation Modes ──
+# SHORT = same sampling as FAST but ~50% fewer words (halved Layer 3 token budgets).
+Generation_mode_fast: "FAST"                    # focused, lower temperature
+Generation_mode_thinking: "THINKING"            # creative, higher temperature
+Generation_mode_short: "SHORT"                  # fast sampling, ~50% shorter output
+
+# ── Sampling (shared by all layers) ──
 Generation_fast_temperature: 0.5
 Generation_fast_top_p: 0.9
 Generation_thinking_temperature: 0.9
 Generation_thinking_top_p: 0.9
 
-# Repetition controls
-# repetition_penalty: multiplicative penalty on repeated tokens (1.0 = off, >1.0 = penalize)
-# frequency_penalty: subtracts (count * penalty) from logits
-# presence_penalty: subtracts once for tokens that already appeared
+# Optional per-layer overrides (three-layer pipeline only).
+# When set, these override the generic Generation_* temperatures above.
+Layer1_temperature: 0.1            # Layer 1 (facts): very precise
+Layer1_top_p: 0.9
+Layer2_temperature: 0.6            # Layer 2 (flow outline): balanced creativity
+Layer2_top_p: 0.9
+Layer3_temperature: 0.35           # Layer 3 (prose): tighter sampling for grammar/consistency
+Layer3_top_p: 0.9
+
+# ── Repetition Controls (shared by all layers) ──
+# repetition_penalty >1.0 = penalise repeated tokens; frequency/presence 0.0 = off
 Repetition_penalty: 1.3
 No_repeat_ngram_size: 4
 Frequency_penalty: 0.5
 Presence_penalty: 0.3
 
-# Three-layer generation. Set false to use single-pass.
-Three_layer_generation: true
+# ── Three-Layer Pipeline ──
+Three_layer_generation: true                    # false → single-pass generation
 
-# Single-pass max tokens (used when Three_layer_generation is false)
+# Single-pass fallback tokens (only when Three_layer_generation is false)
 Single_pass_fast_max_tokens: 768
 Single_pass_thinking_max_tokens: 1536
+Single_pass_short_max_tokens: 400              # SHORT: ~50% of fast
 
-# Layer 1: 5W1H extraction from retrieval context
+# Layer 1 – 5W1H extraction (stops early when done)
 Layer1_max_tokens: 600
 
-# Minimum generation ratio for Layers 2 & 3 (0.0-1.0)
-Min_generation_ratio: 0.9
+# Layer 2 – sectioned story summary (5W1H + source references)
+Layer2_max_tokens: 1400                         # single-shot total; unused when Layer2_per_section is true
+Layer2_per_section: true                        # true = generate 5 sections one-by-one (reliable 5 blocks)
+Layer2_section_max_tokens: 280                  # per section when Layer2_per_section is true
+Min_generation_ratio: 0.6                       # Layer 2 must generate >= 60% of max before stopping
 
-# Layer 2: Story summary flow from 5W1H
-Layer2_max_tokens: 1024
+# Layer 3 – multi-pass prose expansion (one pass per section)
+Layer3_section_count: 5                         # sections produced by Layer 2
+Layer3_section_min_tokens: 1200                 # ~900 words → 5 × 1200 ≈ 4 500 words min
+Layer3_section_max_tokens: 1730                 # ~1 300 words → 5 × 1730 ≈ 6 500 words max
 
-# Layer 3: Full story expansion
+# Layer 3 SHORT mode — ~50% fewer words than FAST (same pipeline, halved token budgets)
+Layer3_section_min_tokens_short: 600            # ~450 words per section → ~2 250 words total
+Layer3_section_max_tokens_short: 865            # ~650 words per section → ~3 250 words total
+
+# Layer 3 single-pass fallbacks (used only if section parsing fails)
 Layer3_fast_max_tokens: 1536
 Layer3_thinking_max_tokens: 2048
 
-# BOOK SEARCH SETTINGS
+# ── Book Search ──
 Archive_url: "https://archive.org/advancedsearch.php"
 Archive_metadata_url: "https://archive.org/metadata/"
 Downloaded_rawbook_dir: "Downloaded_Books"
@@ -67,17 +90,17 @@ Download_formats:
   - pdf
   - epub
 
-# DATA PATHS
+# ── Data Paths ──
 Extracted_text_dir: "Text_Extracted"
 Story_input: "Stories"
 Metadata_input: "Metadata"
 Merged_data_output: "Data_Merged"
 
-# VECTOR STORE SETTINGS
+# ── Vector Store ──
 Chroma_path: "chroma_db"
 Chroma_collection_name: "English_Stories"
 
-# OUTPUT PATHS
+# ── Output Paths ──
 Generated_story_output: "Generated_Stories"
 Generated_summary_output: "Summarized_Stories"
 Evaluated_stories_output: "Evaluated_Stories"

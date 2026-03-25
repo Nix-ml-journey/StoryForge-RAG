@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from Generative_AI.generative_ai import Gen_mode
+from Generative_AI.generative_ai import Gen_mode, parse_gen_mode
 from Orchestrator.orchestrator import Orchestrator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -19,11 +19,6 @@ VALID_PIPELINE_STEPS = [
     "5_generate_and_evaluate",
 ]
 
-def _parse_gen_mode(mode: Optional[str]) -> Gen_mode:
-    if not mode:
-        return Gen_mode.FAST
-    return Gen_mode.THINKING if str(mode).lower() == "thinking" else Gen_mode.FAST
-
 class RunPipelineRequest(BaseModel):
     title: str = Field(..., min_length=1, description="Book title or search query to run the pipeline for")
     steps: Optional[list[str]] = Field(
@@ -34,19 +29,31 @@ class RunPipelineRequest(BaseModel):
         )
     )
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    extract_style: Optional[bool] = Field(
+        default=False,
+        description="Optional. If true, Layer 1 also extracts narrative style/tone from source material.",
+    )
     model_config = ConfigDict(
         json_schema_extra={
-            "example": {
-                "title": "The Adventures of Sherlock Holmes",
-                "steps": [
-                    "1_fetch_and_extract",
-                    "2_create_metadata_template",
-                    "3_merge_check_summary",
-                    "4_ingest",
-                    "5_generate_and_evaluate",
-                ],
-                "mode": "fast",
-            }
+            "examples": [
+                {
+                    "summary": "Standard generation (no style extraction)",
+                    "value": {
+                        "title": "The Adventures of Sherlock Holmes",
+                        "steps": ["5_generate_and_evaluate"],
+                        "mode": "fast",
+                    },
+                },
+                {
+                    "summary": "With style extraction enabled",
+                    "value": {
+                        "title": "The Adventures of Sherlock Holmes",
+                        "steps": ["5_generate_and_evaluate"],
+                        "mode": "fast",
+                        "extract_style": True,
+                    },
+                },
+            ]
         }
     )
 
@@ -61,13 +68,22 @@ class RunStepRequest(BaseModel):
     step: str = Field(..., description="One pipeline step to run")
     title: str = Field(default="manual_step", min_length=1, description="Title/query used by steps that need it")
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    extract_style: Optional[bool] = Field(
+        default=False,
+        description="Optional. If true, Layer 1 also extracts narrative style/tone from source material.",
+    )
     model_config = ConfigDict(
         json_schema_extra={
-            "example": {
-                "step": "4_ingest",
-                "title": "manual_step",
-                "mode": "fast",
-            }
+            "examples": [
+                {
+                    "summary": "Standard step (no style extraction)",
+                    "value": {"step": "5_generate_and_evaluate", "title": "The Golden Bird", "mode": "fast"},
+                },
+                {
+                    "summary": "With style extraction enabled",
+                    "value": {"step": "5_generate_and_evaluate", "title": "The Golden Bird", "mode": "fast", "extract_style": True},
+                },
+            ]
         }
     )
 
@@ -90,7 +106,8 @@ async def run_pipeline(request: RunPipelineRequest):
             orchestrator.run_pipeline,
             title=request.title,
             steps=request.steps,
-            gen_mode=_parse_gen_mode(request.mode),
+            gen_mode=parse_gen_mode(request.mode),
+            extract_style=bool(request.extract_style),
         )
         return RunPipelineResponse(
             success=result.get("success", False),
@@ -122,7 +139,8 @@ async def run_step(request: RunStepRequest):
             orchestrator.run_pipeline,
             title=request.title,
             steps=[request.step],
-            gen_mode=_parse_gen_mode(request.mode),
+            gen_mode=parse_gen_mode(request.mode),
+            extract_style=bool(request.extract_style),
         )
         return RunStepResponse(
             success=result.get("success", False),

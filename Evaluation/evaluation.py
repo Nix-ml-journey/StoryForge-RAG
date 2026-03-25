@@ -21,6 +21,7 @@ with open(prompts_file, "r", encoding="utf-8") as file:
 
 BASE_PATH = config.get("BASE_PATH")
 gemini_evaluation_model = config.get("Gemini_evaluation_model")
+gemini_evaluation_fallback_model = config.get("Gemini_evaluation_fallback_model")
 gemini_api_key = config.get("Gemini_api_key")
 generated_story_output = config.get("Generated_story_output")
 generated_summary_output = config.get("Generated_summary_output")
@@ -49,27 +50,37 @@ def _invoke_with_retry(model, prompt: str):
         except Exception as e:
             last_exc = e
             if not _is_retryable_api_error(e) or attempt == EVAL_RETRY_MAX_ATTEMPTS - 1:
-                raise
+                break
             delay = EVAL_RETRY_BASE_DELAY_SEC * (EVAL_RETRY_BACKOFF_FACTOR ** attempt)
             logging.warning(
                 "Evaluation API transient error (attempt %s/%s), retrying in %.1fs: %s",
                 attempt + 1, EVAL_RETRY_MAX_ATTEMPTS, delay, e,
             )
             time.sleep(delay)
+
+    if last_exc is not None and _is_retryable_api_error(last_exc) and gemini_evaluation_fallback_model:
+        logging.warning(
+            "Primary evaluation model exhausted retries. Switching to fallback: %s",
+            gemini_evaluation_fallback_model,
+        )
+        fallback = evaluate_model(model_name=gemini_evaluation_fallback_model)
+        return fallback.invoke(prompt)
+
     if last_exc is not None:
         raise last_exc
 
-def evaluate_model(temperature: float = 0.3):
+def evaluate_model(temperature: float = 0.3, model_name: str = None):
     if not gemini_api_key:
         raise ValueError("Gemini API key is not set in the configuration")
-    if not gemini_evaluation_model:
+    name = model_name or gemini_evaluation_model
+    if not name:
         raise ValueError("Gemini evaluation model is not set in the configuration")
     llm = ChatGoogleGenerativeAI(
-        model = gemini_evaluation_model,
-        temperature = temperature,
-        api_key = gemini_api_key,
+        model=name,
+        temperature=temperature,
+        api_key=gemini_api_key,
     )
-    logging.info(f"Initialized StoryEvaluator with model: {gemini_evaluation_model}")
+    logging.info(f"Initialized StoryEvaluator with model: {name}")
     return llm
 
 def search_story_date(selected_date: str) -> List[Path]:

@@ -27,7 +27,6 @@ from Data.data_merge import (
     check_number_summaries,
 )
 import Data.data_merge as data_merge
-from Evaluation.evaluation import evaluate_model, evaluate_generated_story, evaluate_generated_summary, save_evaluation_results
 
 LOG = logging.getLogger(__name__)
 FAIL = {"success": False, "results": [], "metadata": {}, "urls": []}
@@ -231,11 +230,11 @@ def vector_delete_result(ids: list[str]) -> dict:
         LOG.exception("vector_delete_result failed")
         return {"success": False, "ids": ids, "error": str(e)}
 
-def generate_story_result(query: str, save: bool, n_results: int, mode: Gen_mode) -> dict:
+def generate_story_result(query: str, save: bool, n_results: int, mode: Gen_mode, extract_style: bool = False) -> dict:
     try:
         temperature, top_p = generative_ai.get_mode_sampling(mode)
         gen_params = {"temperature": temperature, "top_p": top_p, "three_layer": generative_ai.THREE_LAYER_GENERATION}
-        content = generative_ai.generate_full_story(query, n_results=n_results, mode=mode)
+        content = generative_ai.generate_full_story(query, n_results=n_results, mode=mode, extract_style=extract_style)
         if not content:
             return {"success": False, "content": "", "saved": False, "saved_path": None, "timestamp": ""}
         saved_path = generative_ai.save_generated_story(content) if save else None
