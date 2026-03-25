@@ -11,10 +11,12 @@ I also used AI assistants during development for research, debugging support, an
 I recently shipped a **three-layer generation feature** to improve long-form output quality under strict token limits:
 
 - **Layer 1 (5W1H):** extract concrete story elements from retrieved context.
-- **Layer 2 (Summary flow):** convert those elements into a connected narrative plan.
-- **Layer 3 (Story expansion):** generate the full story from the plan.
+- **Layer 2 (Sectioned summary):** map those elements into a **chosen narrative structure** (from `flow_structure.yaml`)—usually **five sections generated one-by-one** so each block stays tied to facts.
+- **Layer 3 (Story expansion):** expand the summary into full prose, typically **one generation pass per section** for length and coherence.
 
-I also moved generation behavior into clearer prompt contracts in `prompts.yaml` (single-pass + layer1/layer2/layer3 templates), added explicit generation profiles (`FAST`, `THINKING`) with separate sampling/token settings, added repetition-control processors (`repetition_penalty`, `no_repeat_ngram`, frequency/presence penalties), and kept post-generation cleanup guards in `Generative_AI/generative_ai.py` to reduce malformed endings and degeneration artifacts. The direction is promising, but results are still not as consistent as I expected.
+I also moved generation behavior into clearer prompt contracts in `prompts.yaml` (single-pass + layer1/layer2/layer3 templates), added explicit generation profiles (`FAST`, `THINKING`, `SHORT`) with separate sampling/token settings, optional per-layer temperature overrides, repetition-control processors (`repetition_penalty`, `no_repeat_ngram`, frequency/presence penalties), and kept post-generation cleanup guards in `Generative_AI/generative_ai.py` to reduce malformed endings and degeneration artifacts. The direction is promising, but results are still not as consistent as I expected.
+
+`Generative_AI/choser.py` picks the narrative **structure** after Layer 1 and before Layer 2 so Layer 2 only maps 5W1H into a fixed section order instead of inventing structure and content at once. FAST mode restricts choices to linear-friendly flows; THINKING can use richer non-linear patterns.
 
 I introduced `Generative_AI/penalty_processors.py` as an advanced decoding control layer to reduce repetitive word loops during generation. It applies frequency/presence penalties while excluding common stopwords from those penalties, so the model is discouraged from repeating low-value content words without over-penalizing normal function words needed for grammatical sentences.
 
@@ -59,9 +61,9 @@ To keep the system maintainable, I separated responsibilities by module:
 - `Book_search/` handles source discovery, download, and extraction entry points.
 - `Data/` handles metadata creation and merge logic.
 - `Vector_Store/` handles Chroma ingestion and retrieval.
-- `Generative_AI/` handles context building and generation.
-- `Evaluation/` handles rubric-based scoring.
-- `Orchestrator/` + `API/` handle pipeline control and service endpoints.
+- `Generative_AI/` handles context building, structure choice, and generation.
+- `Evaluation/` handles rubric-based scoring (Gemini primary model with fallback after retries on transient errors).
+- `Orchestrator/` + `API/` handle pipeline control and service endpoints (`/orchestration`, `/create-eval`, etc.).
 
 This separation let me iterate on one stage at a time without destabilizing the full pipeline.
 
@@ -115,29 +117,15 @@ I stabilized local inference by enabling 4-bit loading with bitsandbytes.
 
 ### Generation token budget strategy
 
-With the model prompt budget capped, single-pass generation often left only 768–1536 tokens for output after the system prompt, reference context, and query consumed most of the window. Generated stories often felt truncated or rushed because of this.
+With the model prompt budget capped, single-pass generation often left limited room for output after the system prompt, reference context, and query consumed most of the window. Generated stories often felt truncated or rushed because of this.
 
-I solved this with a **three-layer generation** approach:
+I solved this with a **three-layer generation** approach that **stages** work:
 
-- **Layer 1 (5W1H extraction):** The model receives full reference context (default: 3 story chunks) and produces concrete Who/What/When/Where/Why/How elements.
-- **Layer 2 (Story summary flow):** The model turns that structured 5W1H into a connected narrative summary.
-- **Layer 3 (Full Story):** The model expands the summary into final prose with larger token budgets (default: up to 1536 in `FAST`, up to 2048 in `THINKING`).
+- **Layer 1 (5W1H extraction):** compress reference context into concrete elements.
+- **Layer 2 (Sectioned summary):** map 5W1H into the chosen flow from `flow_structure.yaml`, with **per-section** generation when enabled so sections do not overwrite each other in one shot.
+- **Layer 3 (Full story):** expand section-by-section with configurable min/max token budgets per section; **`SHORT`** mode halves Layer 3 budgets versus **`FAST`** for shorter stories.
 
-Updated token table (`FAST` mode):
-
-| Stage | Prompt (input) | Generation (output) | Total |
-|---|---:|---:|---:|
-| Layer 1 - 5W1H | ~9,900 | 600 | ~10,500 |
-| Layer 2 - Summary | ~750 | 1,024 | ~1,774 |
-| Layer 3 - Story | ~1,450 | 1,536 | ~2,986 |
-
-Updated token table (`THINKING` mode):
-
-| Stage | Prompt (input) | Generation (output) | Total |
-|---|---:|---:|---:|
-| Layer 1 - 5W1H | ~9,900 | 600 | ~10,500 |
-| Layer 2 - Summary | ~750 | 1,024 | ~1,774 |
-| Layer 3 - Story | ~1,450 | 2,048 | ~3,498 |
+Approximate per-stage budgets evolved with the pipeline; authoritative numbers live in `setup.example.yaml` (`Layer1_max_tokens`, `Layer2_*`, `Layer3_section_*`, etc.). Treat older fixed tables as illustrative only.
 
 Why 5W1H helps in this pipeline:
 
@@ -155,17 +143,30 @@ This effectively compresses reference knowledge in stages and gives the model a 
 Single-file summary requests hit rate limits quickly.  
 I switched to batched summarization (3 files/request) and remapped summaries back to source records.
 
+### Iteration: structure, facts, and repetition
+
+During tuning I hit predictable failure modes:
+
+- **Invented scenes:** If Layer 2 saw the full 5W1H at once without clear mapping to each narrative section, a smaller model could ignore facts and improvise. The fix path was **section-scoped facts** (only the 5W1H fragments relevant to the current section) and explicit instructions to rewrite facts, not invent new scenes.
+- **Missing HOW in Layer 1:** If the model skipped plot-bearing elements, downstream layers had little to expand. Mitigations: prompts and sampling that stress complete 5W1H, and treating empty or thin layers as signals to retry or fall back.
+- **Repeated sections:** Generating all sections in one call without cross-section awareness could repeat the same beat. **Per-section Layer 2** and clearer structure choice (`choser.py` + `flow_structure.yaml`) address that by construction.
+- **Cleanup side effects:** Aggressive string fixes can create new artifacts; cleanup logic has to be tested against real outputs and adjusted when it does more harm than good.
+
+**Cut-offs** at the end of generation remain a practical constraint: tight max-token settings or stop conditions can still truncate prose. Tuning Layer 3 min/max tokens and `Min_generation_ratio` is an ongoing balance between length, coherence, and runtime.
+
+For reproducible debugging without running the full API, I added **`debug_layers/`** (see `debug_layers/README.md`): run Layer 1, then 2, then 3 from the CLI with pinned queries and optional pinned flow structure names.
+
 ## 5) Reliability Upgrades
 
 - Introduced explicit orchestrator steps for clearer pipeline control.
 - Standardized merged output format for predictable ingestion.
-- Added generation profiles (`FAST`, `THINKING`) for controlled behavior.
-- Added three-layer generation (5W1H → summary flow → expansion) for stronger structure and completeness.
+- Added generation profiles (`FAST`, `THINKING`, `SHORT`) for controlled behavior.
+- Added three-layer generation with structure selection, sectioned Layer 2, and multi-pass Layer 3.
 - Added repetition-control logits processors (frequency/presence penalties with stopword-aware filtering).
 - Added `penalty_processors.py` to reduce repeated wording and exclude selected common words from penalty application.
 - Added prompt-aware context truncation against model prompt limits (to reduce hard truncation side-effects).
 - Added output cleanup/truncation safeguards to reduce malformed text.
-- Added retry logic for transient evaluation API failures.
+- Added retry logic and fallback model for transient evaluation API failures.
 - Added duplicate-download guards to skip already-downloaded Archive results.
 - Improved Archive file matching logic to select requested formats more reliably.
 - Added public-safe repo setup:
@@ -185,7 +186,15 @@ I switched to batched summarization (3 files/request) and remapped summaries bac
 - For summary generation, Gemini 2.5 produced the most consistent behavior in this pipeline.
 - This project was developed under tight budget limits, so model and infrastructure choices prioritized free-tier or low-cost options while keeping practical performance.
 
-## 8) API and Orchestrator Lessons
+## 8) Current status (incomplete outputs and RAG scale)
+
+**Honest checkpoint:** with the pipeline as it runs today, outputs are still often **not complete**—stories can feel truncated, under-detailed, or uneven across sections. I am working through fixes rather than treating this as “done.”
+
+**Hypothesis I am testing:** generation is only as good as the **context RAG provides**. Right now the vector store only has **about 47 indexed records** from the material I have ingested. That is a narrow retrieval base for varied queries and long multi-layer expansion: neighbors may be weakly related, repetitive, or missing plot-relevant detail, which shows up as thin or invented downstream behavior no matter how much I tune decoding.
+
+**What I am doing next:** grow and diversify ingestion (more sources, cleaner merges), revisit **chunking and metadata** so retrieved passages carry enough story signal, and keep separating “model/token limits” from “empty or wrong context” using `debug_layers/` and retrieval inspection—so improvements are evidence-based, not guesswork.
+
+## 9) API and Orchestrator Lessons
 
 I struggled with API design in early versions. I initially grouped too many endpoints under a single route style, which created duplicate logic and made maintenance difficult.
 
@@ -195,7 +204,7 @@ I then refactored the API in stages:
 - then separated responsibilities more clearly,
 - and finally organized around distinct endpoint sections so each part of the pipeline is easier to reason about.
 
-The current structure uses dedicated route groups and cleaner separation of concerns, which reduced coupling and improved endpoint reliability.
+The current structure uses dedicated route groups (`/orchestration` for pipeline steps with optional `extract_style` on generation, `/create-eval` for story/summary generation and evaluation) and cleaner separation of concerns, which reduced coupling and improved endpoint reliability.
 
 I also introduced async handling in the API layer (with thread offloading where needed) to avoid unnecessary blocking during heavier operations.
 

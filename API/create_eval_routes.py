@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import yaml
 from pathlib import Path
 
-from Generative_AI.generative_ai import Gen_mode
+from Generative_AI.generative_ai import Gen_mode, parse_gen_mode
 from Orchestrator.orchestrator import Orchestrator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -18,12 +18,6 @@ _DEFAULT_N_RESULTS = _config.get("Story_generation_n_results", 1)
 
 create_eval_router = APIRouter(prefix="/create-eval", tags=["Create Eval"])
 orchestrator = Orchestrator()
-
-
-def _parse_gen_mode(mode: Optional[str]) -> Gen_mode:
-    if not mode:
-        return Gen_mode.FAST
-    return Gen_mode.THINKING if str(mode).lower() == "thinking" else Gen_mode.FAST
 
 
 class StoryGenerateRequest(BaseModel):
@@ -171,7 +165,7 @@ async def story_generate(request: StoryGenerateRequest):
             generation_type=request.generation_type,
             save=request.save,
             n_results=request.n_results,
-            mode=_parse_gen_mode(request.mode),
+            mode=parse_gen_mode(request.mode),
         )
         return StoryGenerateResponse(
             success=result.get("success", False),
