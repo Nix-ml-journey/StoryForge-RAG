@@ -1,11 +1,12 @@
+import json
+import logging
 import time
-import yaml 
-import logging 
-import json 
-from pathlib import Path
-from langchain_google_genai import ChatGoogleGenerativeAI
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from pathlib import Path
+from typing import Any, Optional
+
+import yaml
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -34,6 +35,7 @@ with_summary_prompt = EVALUATION_PROMPTS.get("with_summary", "")
 EVAL_RETRY_MAX_ATTEMPTS = 6
 EVAL_RETRY_BASE_DELAY_SEC = 2
 EVAL_RETRY_BACKOFF_FACTOR = 2
+
 
 def _is_retryable_api_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
@@ -69,7 +71,8 @@ def _invoke_with_retry(model, prompt: str):
     if last_exc is not None:
         raise last_exc
 
-def evaluate_model(temperature: float = 0.3, model_name: str = None):
+
+def evaluate_model(temperature: float = 0.3, model_name: Optional[str] = None):
     if not gemini_api_key:
         raise ValueError("Gemini API key is not set in the configuration")
     name = model_name or gemini_evaluation_model
@@ -83,43 +86,27 @@ def evaluate_model(temperature: float = 0.3, model_name: str = None):
     logging.info(f"Initialized StoryEvaluator with model: {name}")
     return llm
 
-def search_story_date(selected_date: str) -> List[Path]:
+def _search_files_by_date(output_dir: str, selected_date: str, label: str = "files") -> list[Path]:
     try:
-        output_folder = Path(BASE_PATH) / generated_story_output
+        output_folder = Path(BASE_PATH) / output_dir
         if not output_folder.exists():
-            logging.error(f"Generated story output folder not found: {output_folder}")
+            logging.error(f"{label} folder not found: {output_folder}")
             return []
-
-        stories_generated_date = []
-        for file_path in output_folder.iterdir():
-            if file_path.is_file() and file_path.suffix == ".txt":
-                file_name = file_path.stem
-                file_date = file_name.split("_")[0]
-                if file_date == selected_date:
-                    stories_generated_date.append(file_path)
-        return stories_generated_date
+        return [
+            p for p in output_folder.iterdir()
+            if p.is_file() and p.suffix == ".txt" and p.stem.split("_")[0] == selected_date
+        ]
     except Exception as e:
-        logging.error(f"Error searching stories for date {selected_date}: {e}")
+        logging.error(f"Error searching {label} for date {selected_date}: {e}")
         return []
 
-def search_summary_date(selected_date: str) -> List[Path]:
-    try:
-        output_folder = Path(BASE_PATH) / generated_summary_output
-        if not output_folder.exists():
-            logging.error(f"Generated summary output folder not found: {output_folder}")
-            return []
 
-        summaries_generated_date = []
-        for file_path in output_folder.iterdir():
-            if file_path.is_file() and file_path.suffix == ".txt":
-                file_name = file_path.stem
-                file_date = file_name.split("_")[0]
-                if file_date == selected_date:
-                    summaries_generated_date.append(file_path)
-        return summaries_generated_date
-    except Exception as e:
-        logging.error(f"Error searching summaries for date {selected_date}: {e}")
-        return []
+def search_story_date(selected_date: str) -> list[Path]:
+    return _search_files_by_date(generated_story_output, selected_date, "story")
+
+
+def search_summary_date(selected_date: str) -> list[Path]:
+    return _search_files_by_date(generated_summary_output, selected_date, "summary")
 
 def find_story_path_for_summary(summary_path: Path) -> Optional[Path]:
     try:
@@ -134,10 +121,10 @@ def find_story_path_for_summary(summary_path: Path) -> Optional[Path]:
         date_part = stem.split("_")[0] if "_" in stem else stem
         for p in story_folder.iterdir():
             if p.is_file() and p.suffix == ".txt" and p.stem.startswith(date_part):
-                return p 
+                return p
     except Exception as e:
         logging.error(f"Error finding story path for summary {summary_path}: {e}")
-        return None
+    return None
 
 def _parse_json_response(response) -> dict:
     raw = response.content if hasattr(response, 'content') else response
@@ -166,7 +153,7 @@ def _parse_json_response(response) -> dict:
         logging.error(f"Raw response (first 500 chars): {text[:500]}")
         return {}
 
-def evaluate_generated_story(model, file_path) -> Dict[str, Any]:
+def evaluate_generated_story(model, file_path) -> dict[str, Any]:
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             story = file.read()
@@ -178,7 +165,7 @@ def evaluate_generated_story(model, file_path) -> Dict[str, Any]:
         logging.error(f"Error evaluating generated story: {e}")
         return {}
 
-def evaluate_generated_summary(model, summary_path, story_path=None) -> Dict[str, Any]:
+def evaluate_generated_summary(model, summary_path, story_path=None) -> dict[str, Any]:
     try:
         with open(summary_path, "r", encoding="utf-8") as file:
             summary = file.read()
@@ -194,7 +181,7 @@ def evaluate_generated_summary(model, summary_path, story_path=None) -> Dict[str
         logging.error(f"Error evaluating generated summary: {e}")
         return {}
 
-def save_evaluation_results(evaluation_data: Dict[str, Any], result_type: str, source_stem: str = None):
+def save_evaluation_results(evaluation_data: dict[str, Any], result_type: str, source_stem: Optional[str] = None):
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique = source_stem if source_stem else datetime.now().strftime("%H%M%S")
@@ -207,7 +194,6 @@ def save_evaluation_results(evaluation_data: Dict[str, Any], result_type: str, s
         logging.info(f"Evaluation results saved to: {output_path}")
     except Exception as e:
         logging.error(f"Error saving evaluation results: {e}")
-        return {}
 
 def orchestrator_evaluation(selected_date: str):
     model = evaluate_model()

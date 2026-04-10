@@ -77,31 +77,27 @@ class VectorStoreStatusResponse(BaseModel):
 
 class VectorStoreQueryRequest(BaseModel):
     vector_store: dict = Field(default_factory=dict)
-    collection: str = ""
+    collection: str = "English_Stories"
     query: Optional[str] = None
     n_results: int = 5
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "vector_store": {},
-                "collection": "English_Stories",
-                "query": "Sherlock Holmes detective mystery",
+                "query": "a brave knight and a dragon",
                 "n_results": 5,
             }
         }
     )
 
 class VectorStoreInsertRequest(BaseModel):
-    vector_store: dict
-    collection: str
+    vector_store: dict = Field(default_factory=dict)
+    collection: str = "English_Stories"
     ids: list[str]
     metadata: dict
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "vector_store": {},
-                "collection": "English_Stories",
-                "ids": ["id_1001"],
+                "ids": ["id_01"],
                 "metadata": {
                     "Title": "The Adventures of Sherlock Holmes",
                     "Author": "Arthur Conan Doyle",
@@ -113,18 +109,16 @@ class VectorStoreInsertRequest(BaseModel):
     )
 
 class VectorStoreUpdateRequest(BaseModel):
-    vector_store: dict
-    collection: str
+    vector_store: dict = Field(default_factory=dict)
+    collection: str = "English_Stories"
     ids: list[str]
     metadata: dict
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "vector_store": {},
-                "collection": "English_Stories",
-                "ids": ["id_1001"],
+                "ids": ["id_01"],
                 "metadata": {
-                    "document": "Updated story content for this id.",
+                    "document": "Updated story content goes here.",
                     "Summary": "Updated summary text.",
                 },
             }
@@ -132,17 +126,14 @@ class VectorStoreUpdateRequest(BaseModel):
     )
 
 class VectorStoreDeleteRequest(BaseModel):
-    vector_store: dict
-    collection: str
+    vector_store: dict = Field(default_factory=dict)
+    collection: str = "English_Stories"
     ids: list[str]
     metadata: Optional[dict] = None
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "vector_store": {},
-                "collection": "English_Stories",
-                "ids": ["id_1001", "id_1002"],
-                "metadata": {},
+                "ids": ["id_14"],
             }
         }
     )

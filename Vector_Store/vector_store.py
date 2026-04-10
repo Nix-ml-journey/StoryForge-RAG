@@ -1,3 +1,4 @@
+import os
 import yaml
 import logging
 import json
@@ -20,7 +21,62 @@ with open(config_file, "r", encoding="utf-8") as file:
     Merge_Data_Output = config.get("Merged_data_output")
     vector_store_model = config.get("Vector_store_model")
 
-model = SentenceTransformer(vector_store_model, device=device)
+_model_instance: SentenceTransformer | None = None
+
+def _load_embedding_model() -> SentenceTransformer:
+    global _model_instance
+    if _model_instance is not None:
+        return _model_instance
+
+    offline = os.environ.get("OFFLINE_MODE", "").lower() in ("1", "true", "yes")
+    try:
+        _model_instance = SentenceTransformer(vector_store_model, device=device)
+    except Exception as online_err:
+        if offline:
+            logging.warning(
+                "Online load failed and OFFLINE_MODE is set: %s. "
+                "Retrying with local_files_only=True.",
+                online_err,
+            )
+        else:
+            logging.warning(
+                "Online load failed (DNS/network issue?): %s. "
+                "Retrying with local_files_only=True. "
+                "Set OFFLINE_MODE=true to skip online attempts.",
+                online_err,
+            )
+        try:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            _model_instance = SentenceTransformer(vector_store_model, device=device)
+        except Exception as local_err:
+            logging.error(
+                "Cannot load embedding model '%s' even from cache. "
+                "Ensure the model has been downloaded at least once while online. "
+                "Error: %s",
+                vector_store_model,
+                local_err,
+            )
+            raise RuntimeError(
+                f"Embedding model '{vector_store_model}' unavailable offline and cache is missing. "
+                f"Run once while online to populate cache, or set the model path to a local directory."
+            ) from local_err
+        finally:
+            if not offline:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+
+    logging.info("Loaded embedding model: %s (device=%s)", vector_store_model, device)
+    return _model_instance
+
+
+class _LazyModel:
+    """Proxy so that `from vector_store import model` works without immediate loading."""
+    def __getattr__(self, name):
+        return getattr(_load_embedding_model(), name)
+    def __call__(self, *args, **kwargs):
+        return _load_embedding_model()(*args, **kwargs)
+
+
+model = _LazyModel()
 
 def load_merged_data(BASE_PATH, Merge_Data_Output):
     try:
@@ -82,5 +138,6 @@ def create_embeddings(model, data):
         logging.error(f"Error creating embeddings: {e}")
         return None
     
-def encode_query(model, query):
-    return model.encode(query).tolist()
+def encode_query(model_or_lazy, query):
+    m = model_or_lazy if isinstance(model_or_lazy, SentenceTransformer) else _load_embedding_model()
+    return m.encode(query).tolist()

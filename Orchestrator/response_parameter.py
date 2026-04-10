@@ -19,7 +19,7 @@ from Data.metadata import (
 )
 from Evaluation.evaluation import evaluate_generated_story, evaluate_generated_summary, evaluate_model, save_evaluation_results
 from Generative_AI import generative_ai
-from Generative_AI.generative_ai import Gen_mode
+from Generative_AI.generative_ai import Gen_mode, StoryType
 from Vector_Store.chromadb import Collection, delete_data, query_data, update_data, ingest_into_chroma
 from Data.data_merge import (
     Merge_Metadata_and_Story,
@@ -223,18 +223,23 @@ def vector_update_result(ids: list[str], metadata: dict) -> dict:
 
 def vector_delete_result(ids: list[str]) -> dict:
     try:
-        for id in ids:
-            delete_data(id)
+        failed = [id for id in ids if not delete_data(id)]
+        if failed:
+            return {
+                "success": False,
+                "ids": ids,
+                "error": f"Delete failed for: {failed}. Check server logs; ids must match Chroma exactly (see GET /vector_store/ids).",
+            }
         return {"success": True}
     except Exception as e:
         LOG.exception("vector_delete_result failed")
         return {"success": False, "ids": ids, "error": str(e)}
 
-def generate_story_result(query: str, save: bool, n_results: int, mode: Gen_mode, extract_style: bool = False) -> dict:
+def generate_story_result(query: str, save: bool, n_results: int, mode: Gen_mode, extract_style: bool = False, story_type: Optional[StoryType] = None) -> dict:
     try:
         temperature, top_p = generative_ai.get_mode_sampling(mode)
-        gen_params = {"temperature": temperature, "top_p": top_p, "three_layer": generative_ai.THREE_LAYER_GENERATION}
-        content = generative_ai.generate_full_story(query, n_results=n_results, mode=mode, extract_style=extract_style)
+        gen_params = {"temperature": temperature, "top_p": top_p, "three_layer": generative_ai.THREE_LAYER_GENERATION, "story_type": story_type.value if story_type else None}
+        content = generative_ai.generate_full_story(query, n_results=n_results, mode=mode, extract_style=extract_style, story_type=story_type)
         if not content:
             return {"success": False, "content": "", "saved": False, "saved_path": None, "timestamp": ""}
         saved_path = generative_ai.save_generated_story(content) if save else None
