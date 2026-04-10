@@ -74,6 +74,13 @@ This separation let me iterate on one stage at a time without destabilizing the 
 Raw PDF/EPUB text often contained broken formatting and line noise.  
 That directly reduced retrieval precision and generation quality.
 
+I later added a retrieval-aware generation mode to separate **single** and **series** story behavior in practice:
+
+- if generation mode is `single`, retrieval only uses records tagged as single in the vector store,
+- if generation mode is `series`, retrieval only uses records tagged as series in the vector store.
+
+Because older indexed records did not consistently store this field, I removed the previous vector-store data and re-ingested after validation. I also ran a double-check pass to ensure the saved metadata is now consistent, so retrieval filtering behaves correctly for both modes.
+
 ### Data alignment
 
 Stories, metadata JSON files, and merged records had to stay aligned by file stem.  
@@ -138,6 +145,17 @@ Why 5W1H helps in this pipeline:
 
 This effectively compresses reference knowledge in stages and gives the model a cleaner path from context to final prose. The feature is toggled via `Three_layer_generation` in `setup.yaml`, with automatic fallback to single-pass if intermediate layers return empty output.
 
+### Query–retrieval alignment strategy (fail closed)
+
+One of the biggest regressions I hit was **query–retrieval misalignment**: the vector search sometimes returned a concatenation of unrelated tales. Without guardrails, Layer 1 could extract a plausible 5W1H from the wrong story, and downstream layers would faithfully elaborate the wrong plot.
+
+To make this failure mode explicit and controllable, I added two protective mechanisms:
+
+- **Alignment scoring + fail-closed**: if the retrieved context has **zero keyword overlap** with the query, Layer 1 returns a structured **"insufficient context"** 5W1H (Unknown fields) instead of guessing.
+- **Best-match context filtering**: when retrieval returns multiple story blocks (each labeled like `[Title by Author]`), the pipeline scores each block by query keyword overlap and filters/sorts to keep the best match (dropping zero-overlap blocks when any relevant block exists).
+
+This doesn’t “fix retrieval” in the embedding sense, but it prevents the pipeline from confidently generating the wrong story when retrieval is clearly off.
+
 ### Summary throughput strategy
 
 Single-file summary requests hit rate limits quickly.  
@@ -166,6 +184,10 @@ For reproducible debugging without running the full API, I added **`debug_layers
 - Added `penalty_processors.py` to reduce repeated wording and exclude selected common words from penalty application.
 - Added prompt-aware context truncation against model prompt limits (to reduce hard truncation side-effects).
 - Added output cleanup/truncation safeguards to reduce malformed text.
+- Added retrieval guardrails: query–context alignment scoring, fail-closed "insufficient context" signal, and best-match story filtering when retrieval returns multiple tales.
+- Reduced Layer 3 per-section token budgets now that reject+retry quality gates reliably catch degeneration.
+- Isolated Layer 2 single-shot mode to **Layer 1 + query only** (raw retrieval references dropped) to prevent “follow the wrong vivid tale” failures.
+- Added a Layer 2 **HOW-event coverage check** to detect missing plot beats early (warns when sections don’t reflect Layer 1 HOW events).
 - Added retry logic and fallback model for transient evaluation API failures.
 - Added duplicate-download guards to skip already-downloaded Archive results.
 - Improved Archive file matching logic to select requested formats more reliably.

@@ -26,6 +26,11 @@ from Generative_AI.penalty_processors import (
     has_together_they_artifact,
     count_ungrounded_proper_nouns,
     story_has_proper_ending,
+    detect_junk_density,
+    check_query_context_alignment,
+    query_context_alignment_score,
+    pick_best_context_story,
+    check_how_coverage,
     validate_layer1,
     validate_layer2_section,
     validate_layer3_section,
@@ -76,10 +81,10 @@ LAYER3_THINKING_MAX_TOKENS = config.get("Layer3_thinking_max_tokens", 2048)
 MIN_GENERATION_RATIO = config.get("Min_generation_ratio", 0.6)
 
 LAYER3_SECTION_COUNT = config.get("Layer3_section_count", 5)
-LAYER3_SECTION_MIN_TOKENS = config.get("Layer3_section_min_tokens", 1200)
-LAYER3_SECTION_MAX_TOKENS = config.get("Layer3_section_max_tokens", 1730)
-LAYER3_SECTION_MIN_TOKENS_SHORT = config.get("Layer3_section_min_tokens_short", 600)
-LAYER3_SECTION_MAX_TOKENS_SHORT = config.get("Layer3_section_max_tokens_short", 865)
+LAYER3_SECTION_MIN_TOKENS = config.get("Layer3_section_min_tokens", 800)
+LAYER3_SECTION_MAX_TOKENS = config.get("Layer3_section_max_tokens", 1200)
+LAYER3_SECTION_MIN_TOKENS_SHORT = config.get("Layer3_section_min_tokens_short", 400)
+LAYER3_SECTION_MAX_TOKENS_SHORT = config.get("Layer3_section_max_tokens_short", 600)
 
 # Layer-specific temperature/top_p (optional; fallback = get_mode_sampling(mode))
 LAYER1_TEMPERATURE = config.get("Layer1_temperature")
@@ -115,6 +120,11 @@ class Gen_mode(str, Enum):
     THINKING = GENERATION_MODE_THINKING
     SHORT = GENERATION_MODE_SHORT
 
+class StoryType(str, Enum):
+    SINGLE = "single"
+    SERIES = "series"
+    MIX = "mix"
+
 class _SafeFormatDict(dict):
     def __missing__(self, key):
         return ""
@@ -135,6 +145,16 @@ def parse_gen_mode(mode: Optional[str]) -> Gen_mode:
     if m == "short":
         return Gen_mode.SHORT
     return Gen_mode.FAST
+
+def parse_story_type(story_type: Optional[str]) -> StoryType:
+    if not story_type:
+        return StoryType.MIX
+    t = str(story_type).strip().lower()
+    if t == "series":
+        return StoryType.SERIES
+    if t == "single":
+        return StoryType.SINGLE
+    return StoryType.MIX
 
 def get_generation_mode(mode: Union[Gen_mode, str, None] = Gen_mode.FAST):
     mode_str = _mode_to_str(mode)
@@ -180,6 +200,7 @@ def get_layer3_token_limits(mode: Union[Gen_mode, str, None] = None) -> tuple[in
         return LAYER3_SECTION_MIN_TOKENS_SHORT, LAYER3_SECTION_MAX_TOKENS_SHORT
     return LAYER3_SECTION_MIN_TOKENS, LAYER3_SECTION_MAX_TOKENS
 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.info(f"Using device: {device}")
 logging.info(
@@ -201,6 +222,7 @@ def get_chroma_client():
         raise
 
 _model_cache: dict = {}
+
 
 def get_generative_model(generative_model):
     if generative_model in _model_cache:
@@ -246,33 +268,36 @@ def get_generative_model(generative_model):
         logging.error(f"Error loading generative model and tokenizer: {e}")
         raise
 
-def _query_collection(query_text: str, n_results: int = 5, query_type: str = "content"):
+def _query_collection(query_text: str, n_results: int = 5, query_type: str = "content", story_type: Optional[StoryType] = None):
     _, collection = get_chroma_client()
     query_embedding = encode_query(embedding_model, query_text)
+
+    if story_type == StoryType.SERIES:
+        where = {"$and": [{"query_type": query_type}, {"Is_series": True}]}
+    elif story_type == StoryType.SINGLE:
+        where = {"$and": [{"query_type": query_type}, {"Is_series": False}]}
+    else:
+        where = {"query_type": query_type}
 
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=n_results,
-        where={"query_type": query_type},
+        where=where,
         include=["distances", "documents", "metadatas", "embeddings"],
     )
 
-    logging.info(f"Found {len(results['documents'][0])} results for query: {query_text}")
+    logging.info(f"Found {len(results['documents'][0])} results for query: {query_text} (story_type={story_type})")
     return results
 
-def query_summary_searching(query_text: str, n_results: int = 5, query_type: str = "summary"):
-    return _query_collection(query_text, n_results, query_type)
+def query_summary_searching(query_text: str, n_results: int = 5, query_type: str = "summary", story_type: Optional[StoryType] = None):
+    return _query_collection(query_text, n_results, query_type, story_type=story_type)
 
-def query_content_searching(query_text: str, n_results: int = 5, query_type: str = "content"):
-    return _query_collection(query_text, n_results, query_type)
+def query_content_searching(query_text: str, n_results: int = 5, query_type: str = "content", story_type: Optional[StoryType] = None):
+    return _query_collection(query_text, n_results, query_type, story_type=story_type)
 
-def build_context(query_results: dict, query_type: str = "summary"):
+def build_context(query_results: dict, query_type: str = "summary", query: str = ""):
     context_parts = []
-
-    for i, (doc, metadata) in enumerate(zip(
-        query_results["documents"][0],
-        query_results["metadatas"][0],
-    )):
+    for doc, metadata in zip(query_results["documents"][0], query_results["metadatas"][0]):
         title = metadata.get('Title', 'Unknown')
         author = metadata.get('Author', 'Unknown')
         summary = metadata.get('Summary', 'Unknown')
@@ -281,6 +306,15 @@ def build_context(query_results: dict, query_type: str = "summary"):
             context_parts.append(f"[{title} by {author}]\n{summary}")
         else:
             context_parts.append(f"[{title} by {author}]\n{doc}")
+
+    if query and len(context_parts) > 1:
+        original_count = len(context_parts)
+        context_parts = pick_best_context_story(query, context_parts)
+        if len(context_parts) < original_count:
+            logging.info(
+                "build_context: filtered %d → %d stories by query relevance",
+                original_count, len(context_parts),
+            )
 
     return "\n\n".join(context_parts)
 
@@ -302,6 +336,8 @@ def build_layer2_reference(query_results: dict, tokenizer, max_opening_tokens: i
             openings.append(f"[{title}]\n{doc}")
     return "\n\n".join(summaries), "\n\n".join(openings)
 
+
+# ── 5W1H helpers ──
 
 def _split_how_events(how_text: str) -> list[str]:
     if not how_text:
@@ -508,7 +544,31 @@ def generate_response(
     }
     if min_tokens > 0:
         gen_kwargs["min_new_tokens"] = min_tokens
-    generated_ids = model.generate(**model_inputs, **gen_kwargs)
+
+    try:
+        generated_ids = model.generate(**model_inputs, **gen_kwargs)
+    except torch.cuda.OutOfMemoryError:
+        logging.warning(
+            "CUDA OOM during generate (prompt_tokens=%d, max_new=%d). "
+            "Halving context and retrying on CPU.",
+            prompt_length, max_tokens,
+        )
+        torch.cuda.empty_cache()
+        halved_len = max(prompt_length // 2, 128)
+        model_inputs_cpu = {
+            k: v[:, :halved_len].to("cpu") for k, v in model_inputs.items()
+        }
+        gen_kwargs.pop("logits_processor", None)
+        if "min_new_tokens" in gen_kwargs:
+            gen_kwargs["min_new_tokens"] = min(gen_kwargs["min_new_tokens"], max_tokens // 2)
+        try:
+            model_cpu = model.to("cpu")
+            generated_ids = model_cpu.generate(**model_inputs_cpu, **gen_kwargs)
+            model.to(device)
+        except Exception as cpu_err:
+            model.to(device)
+            logging.error("CPU fallback also failed: %s", cpu_err)
+            return ""
 
     output_ids = generated_ids[:, model_inputs.input_ids.shape[1]:]
     response = tokenizer.decode(output_ids[0], skip_special_tokens=True)
@@ -525,14 +585,16 @@ def generate_response(
     logging.info("Generation complete")
     return response
 
-def generate_full_story(query: str, n_results: Optional[int] = None, mode: Union[Gen_mode, str, None] = Gen_mode.FAST, extract_style: bool = False):
+def generate_full_story(query: str, n_results: Optional[int] = None, mode: Union[Gen_mode, str, None] = Gen_mode.FAST, extract_style: bool = False, story_type: StoryType = StoryType.MIX):
     if n_results is None:
         n_results = STORY_GENERATION_N_RESULTS
-    results = query_content_searching(query, n_results=n_results, query_type="content")
-    context = build_context(results, query_type="content")
+    results = query_content_searching(query, n_results=n_results, query_type="content", story_type=story_type)
+    context = build_context(results, query_type="content", query=query)
 
     use_thinking = _mode_to_str(mode) == "thinking"
     _, tokenizer = get_generative_model(GENERATIVE_MODEL)
+
+    logging.info(f"Story type filter: {story_type.value}")
 
     if THREE_LAYER_GENERATION:
         return generate_three_layer(query, context, mode, use_thinking, tokenizer, query_results=results, extract_style=extract_style)
@@ -553,7 +615,6 @@ def generate_single_pass(query: str, context: str, mode, use_thinking: bool, tok
     )
 
 # ── Layer 1 ──
-_LAYER1_MAX_RETRIES = 1
 
 def _run_layer1(query, context, mode, use_thinking, tokenizer, temperature, top_p, extract_style):
     l1_system = LAYER1_SYSTEM_PROMPT
@@ -561,7 +622,27 @@ def _run_layer1(query, context, mode, use_thinking, tokenizer, temperature, top_
         l1_system += "\n" + LAYER1_STYLE_ADDON
         logging.info("Layer 1: STYLE extraction enabled")
 
-    logging.info("Layer 1: generating 5W1H from context")
+    alignment_score = query_context_alignment_score(query, context)
+    aligned, alignment_warnings = check_query_context_alignment(query, context)
+    if not aligned:
+        for w in alignment_warnings:
+            logging.warning("Layer 1 query-context alignment: %s", w)
+    if alignment_score == 0.0:
+        logging.warning(
+            "Layer 1: zero query-context alignment (score=%.2f). "
+            "Context does not contain any query keywords — returning insufficient-context signal.",
+            alignment_score,
+        )
+        return (
+            "WHO:\nUnknown — context does not match the query.\n"
+            "WHAT:\nInsufficient context to extract events.\n"
+            "WHEN:\nUnknown\n"
+            "WHERE:\nUnknown\n"
+            "WHY:\nUnknown\n"
+            "HOW:\n(1) Unknown (2) Unknown (3) Unknown (4) Unknown"
+        )
+
+    logging.info("Layer 1: generating 5W1H from context (alignment=%.0f%%)", alignment_score * 100)
     l1_context = truncate_context(
         context, l1_system, query, tokenizer,
         enable_thinking=use_thinking, user_prompt_template=LAYER1_USER_PROMPT,
@@ -678,13 +759,10 @@ def _run_layer2(query, five_w_one_h, mode, use_thinking, tokenizer, temperature,
     else:
         l2_max = get_layer_max_tokens(2, mode)
         l2_min = int(l2_max * MIN_GENERATION_RATIO)
-        ref_summaries, ref_openings = "", ""
-        if query_results:
-            ref_summaries, ref_openings = build_layer2_reference(query_results, tokenizer)
-            logging.info(f"Layer 2 references: summaries={len(ref_summaries)} chars, openings={len(ref_openings)} chars")
+        logging.info("Layer 2 single-shot: using only Layer 1 + query (raw retrieval context dropped)")
         fmt = _SafeFormatDict(
             five_w_one_h=five_w_one_h, query=query,
-            reference_summaries=ref_summaries, reference_openings=ref_openings,
+            reference_summaries="", reference_openings="",
             section_headers=section_headers, section_mapping=section_mapping,
             structure_name=flow_structure.get("name", "The Standard (Linear)"),
             character_names=character_names,
@@ -726,11 +804,42 @@ def _run_layer2(query, five_w_one_h, mode, use_thinking, tokenizer, temperature,
             logging.info("Layer 2: normalized character names based on WHO from Layer 1")
             story_summary = normalized
         story_summary = clean_layer2_artifacts(story_summary)
+
+        parsed_5w1h_final = parse_5w1h_sections(five_w_one_h)
+        how_events_final = _split_how_events(parsed_5w1h_final.get("how", ""))
+        if how_events_final:
+            covered, missing_events = check_how_coverage(story_summary, how_events_final)
+            if not covered:
+                logging.warning(
+                    "Layer 2 HOW coverage gap: %d/%d HOW events not reflected in sections: %s",
+                    len(missing_events), len(how_events_final),
+                    "; ".join(missing_events[:3]),
+                )
+            else:
+                logging.info("Layer 2 HOW coverage: all %d events reflected", len(how_events_final))
+
         logging.info("Layer 2 done (%d tokens)", len(tokenizer.encode(story_summary, add_special_tokens=False)))
     return story_summary or ""
 
+def _clean_and_check(chunk_raw: str) -> tuple[str, int, int]:
+    chunk_raw = (chunk_raw or "").strip()
+    raw_words = len(chunk_raw.split())
+    if not chunk_raw:
+        return "", raw_words, 0
+    chunk_clean = clean_generated_output(chunk_raw, aggressive=False)
+    cleaned_words = len(chunk_clean.split())
+    return chunk_clean.strip(), raw_words, cleaned_words
+
+
 # ── Layer 3 ──
 def _run_layer3(query, story_summary, five_w_one_h, use_thinking, tokenizer, temperature, top_p, mode=None):
+    if "[SECTION" not in story_summary.upper():
+        logging.warning(
+            "Layer 3 regression guard: Layer 2 output has no [SECTION markers. "
+            "This usually means parse_sections received the wrong file (e.g. structure definition). "
+            "Preview: %s", story_summary[:200],
+        )
+
     sections = parse_sections(story_summary)
     if not sections:
         logging.warning("Layer 2 output could not be parsed into sections — treating as single section")
@@ -822,15 +931,6 @@ def _run_layer3(query, story_summary, five_w_one_h, use_thinking, tokenizer, tem
             if section_prose_retry and story_has_proper_ending(section_prose_retry):
                 section_prose_raw = section_prose_retry
 
-        def _clean_and_check(chunk_raw: str) -> tuple[str, int, int]:
-            chunk_raw = (chunk_raw or "").strip()
-            raw_words = len(chunk_raw.split())
-            if not chunk_raw:
-                return "", raw_words, 0
-            chunk_clean = clean_generated_output(chunk_raw, aggressive=False)
-            cleaned_words = len(chunk_clean.split())
-            return chunk_clean.strip(), raw_words, cleaned_words
-
         chunk, raw_words, cleaned_words = _clean_and_check(section_prose_raw)
         if raw_words > 0 and cleaned_words < raw_words * 0.5:
             logging.warning(
@@ -895,37 +995,80 @@ def generate_three_layer(query: str, context: str, mode, use_thinking: bool, tok
         logging.warning("Layer 3 produced no sections — falling back to single-pass")
         return generate_single_pass(query, context, mode, use_thinking, tokenizer)
 
-    story = "\n\n".join(story_parts)
-    story = clean_layer3_story(story, five_w_one_h)
-
     allowed_names = set()
     if five_w_one_h:
         who_names = extract_who_names(five_w_one_h)
         allowed_names = {n.strip() for n in who_names if n.strip()}
         allowed_names.update(("the merchant", "the son", "the dwarf", "the princess", "merchant", "son", "dwarf", "princess"))
 
-    if has_unbalanced_quotes(story):
-        logging.warning("Layer 3 output has unbalanced dialogue quotes")
-    if has_together_they_artifact(story):
-        logging.warning("Layer 3 output contains 'Together they' artifact — may need stronger cleanup")
-    ungrounded = count_ungrounded_proper_nouns(story, allowed_names)
-    if ungrounded > 3:
-        logging.warning("Layer 3 output has %d ungrounded proper nouns (allowed: %s)", ungrounded, list(allowed_names)[:5])
-    if not story_has_proper_ending(story):
-        logging.warning("Layer 3 output may be cut off or lack a proper ending")
+    MAX_LAYER3_RETRIES = 1
+    best_story = None
+    best_issues = 999
+    best_story_parts = story_parts
 
-    paragraphs = [p.strip() for p in story.split("\n\n") if p.strip()]
-    word_count = len(story.split())
-    if len(paragraphs) < 3 or word_count < 100:
-        logging.warning(
-            "Layer 3 story too short (%d paragraphs, %d words) — "
-            "falling back to single-pass to guarantee usable output",
-            len(paragraphs), word_count,
-        )
-        return generate_single_pass(query, context, mode, use_thinking, tokenizer)
+    for attempt in range(1 + MAX_LAYER3_RETRIES):
+        if attempt > 0:
+            logging.warning("Layer 3 reject+retry attempt %d/%d with lower temperature", attempt, MAX_LAYER3_RETRIES)
+            retry_temp = max(0.1, float(temp3) * 0.6)
+            story_parts = _run_layer3(query, story_summary, five_w_one_h, use_thinking, tokenizer, retry_temp, top_p3, mode=mode)
+            if not story_parts:
+                logging.warning("Layer 3 retry produced no sections")
+                continue
+
+        story = "\n\n".join(story_parts)
+        story = clean_layer3_story(story, five_w_one_h)
+
+        issues: list[str] = []
+        if has_unbalanced_quotes(story):
+            issues.append("unbalanced quotes")
+        if has_together_they_artifact(story):
+            issues.append("'Together they' artifact")
+        ungrounded = count_ungrounded_proper_nouns(story, allowed_names)
+        if ungrounded > 3:
+            issues.append(f"{ungrounded} ungrounded proper nouns")
+        if not story_has_proper_ending(story):
+            issues.append("no proper ending / cut-off")
+        is_junk, junk_reason = detect_junk_density(story)
+        if is_junk:
+            issues.append(f"junk density: {junk_reason}")
+
+        paragraphs = [p.strip() for p in story.split("\n\n") if p.strip()]
+        word_count = len(story.split())
+        if len(paragraphs) < 3 or word_count < 100:
+            issues.append(f"too short ({len(paragraphs)} paragraphs, {word_count} words)")
+
+        if len(issues) < best_issues:
+            best_story = story
+            best_issues = len(issues)
+            best_story_parts = story_parts
+
+        if not issues:
+            logging.info("Layer 3 output passed all quality gates")
+            break
+
+        logging.warning("Layer 3 quality issues (attempt %d): %s", attempt + 1, "; ".join(issues))
+
+    story = best_story
+    if story is None or best_issues > 0:
+        if story is None:
+            logging.warning("Layer 3 produced no usable output — falling back to single-pass")
+            return generate_single_pass(query, context, mode, use_thinking, tokenizer)
+
+        paragraphs = [p.strip() for p in story.split("\n\n") if p.strip()]
+        word_count = len(story.split())
+        is_junk, _ = detect_junk_density(story)
+        if len(paragraphs) < 3 or word_count < 100 or is_junk:
+            logging.warning(
+                "Layer 3 story unusable after retries (%d paragraphs, %d words, junk=%s) — "
+                "falling back to single-pass",
+                len(paragraphs), word_count, is_junk,
+            )
+            return generate_single_pass(query, context, mode, use_thinking, tokenizer)
+
+        logging.warning("Layer 3 has %d remaining issues but output is usable — returning best attempt", best_issues)
 
     total_tokens = len(tokenizer.encode(story, add_special_tokens=False))
-    logging.info(f"Three-layer generation complete ({len(story_parts)} sections, ~{total_tokens} tokens)")
+    logging.info(f"Three-layer generation complete ({len(best_story_parts)} sections, ~{total_tokens} tokens)")
     return story
 
 def save_generated_story(content: str, filename: str = "Timestamp_generated_story.txt"):

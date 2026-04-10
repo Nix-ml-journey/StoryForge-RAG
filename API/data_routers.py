@@ -19,7 +19,7 @@ class SearchBookRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "query": "The Adventures of Sherlock Holmes",
+                "query": "Hansel and Gretel",
                 "n_results": 5,
             }
         }
@@ -35,10 +35,8 @@ class DownloadBookRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "query": "The Adventures of Sherlock Holmes",
-                "urls": [
-                    "https://archive.org/details/example-book"
-                ],
+                "query": "Hansel and Gretel",
+                "urls": ["https://archive.org/details/hansel-and-gretel"],
                 "formats": ["pdf", "epub"],
             }
         }
@@ -51,9 +49,8 @@ class MetadataCheckRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "folder_path": "C:/Users/User/Documents/Mini-project/New folder",
-                "file_name": "Metadata_input",
-                "metadata": {},
+                "folder_path": "C:/Users/User/Documents/Mini-project/New folder/Metadata",
+                "file_name": "Hansel and Gretel.json",
             }
         }
     )
@@ -66,12 +63,12 @@ class MetadataUpdateRequest(BaseModel):
         json_schema_extra={
             "example": {
                 "metadata": {
-                    "Author": "Arthur Conan Doyle",
-                    "Title": "The Adventures of Sherlock Holmes",
-                    "Summary": "A collection of detective stories.",
+                    "Author": "Brothers Grimm",
+                    "Title": "Hansel and Gretel",
+                    "Summary": "Two children lost in a forest discover a witch's candy house.",
                 },
-                "folder_path": "C:/Users/User/Documents/Mini-project/New folder",
-                "file_name": "example_metadata.json",
+                "folder_path": "C:/Users/User/Documents/Mini-project/New folder/Metadata",
+                "file_name": "Hansel and Gretel.json",
             }
         }
     )
@@ -83,8 +80,8 @@ class MergedDataRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "metadata_input": "Metadata_input",
-                "story_input": "Story_input",
+                "metadata_input": "Metadata",
+                "story_input": "Stories",
                 "merged_output": "Data_Merged",
             }
         }
@@ -96,8 +93,8 @@ class DataSummaryCheckRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "folder_path": "C:/Users/User/Documents/Mini-project/New folder",
-                "file_name": "Metadata_input",
+                "folder_path": "C:/Users/User/Documents/Mini-project/New folder/Metadata",
+                "file_name": "Hansel and Gretel.json",
             }
         }
     )
@@ -144,7 +141,8 @@ class ExtractTextRequest(BaseModel):
             "example": {
                 "use_default_paths": True,
                 "target": "all",
-            }
+            },
+            "description": "Both fields are optional — send {} or omit body to use defaults."
         }
     )
 

@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import yaml
 from pathlib import Path
 
-from Generative_AI.generative_ai import Gen_mode, parse_gen_mode
+from Generative_AI.generative_ai import Gen_mode, parse_gen_mode, parse_story_type
 from Orchestrator.orchestrator import Orchestrator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -26,15 +26,42 @@ class StoryGenerateRequest(BaseModel):
     save: bool = Field(default=True)
     n_results: int = Field(default=_DEFAULT_N_RESULTS, ge=1, le=20, description="Number of context chunks from vector store (default from setup.yaml)")
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    story_type: Optional[str] = Field(
+        default="mix",
+        description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both). Defaults to 'mix'.",
+    )
     model_config = ConfigDict(
         json_schema_extra={
-            "example": {
-                "query": "A mystery in old London",
-                "generation_type": "full_story",
-                "save": True,
-                "n_results": _DEFAULT_N_RESULTS,
-                "mode": "fast",
-            }
+            "examples": [
+                {
+                    "summary": "Minimal — only query is required",
+                    "value": {
+                        "query": "A brave knight and a cunning dragon",
+                    },
+                },
+                {
+                    "summary": "Full options (standalone stories, thinking mode)",
+                    "value": {
+                        "query": "A lost child finds a magical forest",
+                        "generation_type": "full_story",
+                        "save": True,
+                        "n_results": _DEFAULT_N_RESULTS,
+                        "mode": "thinking",
+                        "story_type": "single",
+                    },
+                },
+                {
+                    "summary": "Series stories with style extraction",
+                    "value": {
+                        "query": "Peter Pan adventures in Neverland",
+                        "generation_type": "full_story",
+                        "save": True,
+                        "n_results": _DEFAULT_N_RESULTS,
+                        "mode": "fast",
+                        "story_type": "series",
+                    },
+                },
+            ]
         }
     )
 
@@ -52,11 +79,11 @@ class StoryGenerateResponse(BaseModel):
 
 
 class SummaryGenerateRequest(BaseModel):
-    story_path: str = Field(..., description="Path to the story file")
+    story_path: str = Field(..., description="Relative path to the generated story .txt file")
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "story_path": "C:/Users/User/Documents/Mini-project/New folder/Generated_Stories/20260219_062746_Timestamp_generated_story.txt"
+                "story_path": "Generated_Stories/20260401_120000_generated_story.txt"
             }
         }
     )
@@ -71,14 +98,13 @@ class SummaryGenerateResponse(BaseModel):
 
 
 class StoryEvaluateRequest(BaseModel):
-    story: str = Field(..., min_length=10)
+    story: str = Field(..., min_length=10, description="Full story text to evaluate")
     context: Optional[str] = None
     save: bool = False
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "story": "Once upon a time, a detective solved a mystery in London...",
-                "context": None,
+                "story": "Once upon a time in a faraway kingdom, a brave young girl set out on a journey through the enchanted forest...",
                 "save": True,
             }
         }
@@ -86,14 +112,13 @@ class StoryEvaluateRequest(BaseModel):
 
 
 class StoryEvaluateFileRequest(BaseModel):
-    story_path: str = Field(...)
+    story_path: str = Field(..., description="Relative path to the generated story .txt file")
     context_path: Optional[str] = None
     save: bool = False
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "story_path": "C:/Users/User/Documents/Mini-project/New folder/Generated_Stories/20260219_062746_Timestamp_generated_story.txt",
-                "context_path": None,
+                "story_path": "Generated_Stories/20260401_120000_generated_story.txt",
                 "save": True,
             }
         }
@@ -111,14 +136,13 @@ class StoryEvaluateResponse(BaseModel):
 
 
 class SummaryEvaluateRequest(BaseModel):
-    summary_path: str = Field(...)
+    summary_path: str = Field(..., description="Relative path to the summary .txt file")
     context: Optional[str] = None
     save: bool = False
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "summary_path": "C:/Users/User/Documents/Mini-project/New folder/Summarized_Stories/20260219_summary_example.txt",
-                "context": None,
+                "summary_path": "Summarized_Stories/20260401_summary.txt",
                 "save": True,
             }
         }
@@ -126,14 +150,14 @@ class SummaryEvaluateRequest(BaseModel):
 
 
 class SummaryEvaluateFileRequest(BaseModel):
-    summary_path: str = Field(...)
-    context_path: Optional[str] = None
+    summary_path: str = Field(..., description="Relative path to the summary .txt file")
+    context_path: Optional[str] = Field(default=None, description="Optional: relative path to the original story .txt for comparison")
     save: bool = False
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "summary_path": "C:/Users/User/Documents/Mini-project/New folder/Summarized_Stories/20260219_summary_example.txt",
-                "context_path": "C:/Users/User/Documents/Mini-project/New folder/Generated_Stories/20260219_062746_Timestamp_generated_story.txt",
+                "summary_path": "Summarized_Stories/20260401_summary.txt",
+                "context_path": "Generated_Stories/20260401_120000_generated_story.txt",
                 "save": True,
             }
         }
@@ -166,6 +190,7 @@ async def story_generate(request: StoryGenerateRequest):
             save=request.save,
             n_results=request.n_results,
             mode=parse_gen_mode(request.mode),
+            story_type=parse_story_type(request.story_type),
         )
         return StoryGenerateResponse(
             success=result.get("success", False),

@@ -2,7 +2,7 @@ import logging
 import yaml 
 from pathlib import Path
 from typing import Optional 
-from Generative_AI.generative_ai import Gen_mode
+from Generative_AI.generative_ai import Gen_mode, StoryType
 from . import response_parameter as parameters 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -71,8 +71,8 @@ class Orchestrator:
         return parameters.vector_delete_result(ids)
     
     def generate_story(
-        self, query: str, generation_type: str = "full_story", save: bool = True, n_results: int = 5, mode: Gen_mode = Gen_mode.FAST, extract_style: bool = False) -> dict:
-        return parameters.generate_story_result(query, save, n_results, mode, extract_style=extract_style)
+        self, query: str, generation_type: str = "full_story", save: bool = True, n_results: int = 5, mode: Gen_mode = Gen_mode.FAST, extract_style: bool = False, story_type: StoryType = StoryType.MIX) -> dict:
+        return parameters.generate_story_result(query, save, n_results, mode, extract_style=extract_style, story_type=story_type)
 
     def generate_summary(self, story_path: str, mode: Gen_mode = Gen_mode.FAST) -> dict:
         return parameters.generate_summary_result(story_path, self.base_path, self.config.get("Generated_summary_output", "Summarized_Stories"))
@@ -86,7 +86,7 @@ class Orchestrator:
     def evaluate_summary(self, summary_path: str, context: Optional[str] = None, save: bool = False) -> dict:
         return parameters.evaluate_summary_result(summary_path, context, save) 
 
-    def run_pipeline(self, title: str, steps: Optional[list[str]] = None, gen_mode: Gen_mode = Gen_mode.FAST, extract_style: bool = False) -> dict:
+    def run_pipeline(self, title: str, steps: Optional[list[str]] = None, gen_mode: Gen_mode = Gen_mode.FAST, extract_style: bool = False, story_type: StoryType = StoryType.MIX) -> dict:
         default_steps = [
             "1_fetch_and_extract",
             "2_create_metadata_template",
@@ -155,7 +155,7 @@ class Orchestrator:
                     _cfg = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8"))
                     n_results = _cfg.get("Story_generation_n_results", 3)
                     logging.info(f"Step 5: using Story_generation_n_results={n_results} from setup.yaml")
-                    res = self.generate_story(query=title, generation_type="full_story", save=True, n_results=n_results, mode=gen_mode, extract_style=extract_style)
+                    res = self.generate_story(query=title, generation_type="full_story", save=True, n_results=n_results, mode=gen_mode, extract_style=extract_style, story_type=story_type)
                     if not res.get("success"):
                         raise RuntimeError("generate failed")
                     try:

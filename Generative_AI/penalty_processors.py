@@ -50,6 +50,11 @@ _EXPORT_CLEANING = (
     "has_together_they_artifact",
     "count_ungrounded_proper_nouns",
     "story_has_proper_ending",
+    "detect_junk_density",
+    "check_query_context_alignment",
+    "query_context_alignment_score",
+    "pick_best_context_story",
+    "check_how_coverage",
     "validate_layer1",
     "validate_layer2_section",
     "validate_layer3_section",
@@ -150,6 +155,9 @@ def build_logits_processors(prompt_length: int, tokenizer) -> LogitsProcessorLis
         if PRESENCE_PENALTY > 0:
             processors.append(PresencePenaltyProcessor(PRESENCE_PENALTY, prompt_length, stopword_ids))
     return processors
+
+
+# ── Text cleaning & language gate ──
 
 def apply_language_gate(text: str) -> str:
     if not (text or "").strip():
@@ -876,98 +884,30 @@ def has_together_they_artifact(text: str) -> bool:
     return bool(re.search(r"\bTogether\s+they\s+\w+", text, re.IGNORECASE))
 
 
+_GENERIC_SENTENCE_STARTERS = frozenset({
+    "Another", "After", "Before", "Then", "Now", "There", "Here", "Once",
+    "First", "Second", "Finally", "Meanwhile", "However", "Still", "Yet",
+    "So", "But", "And", "Or", "If", "When", "Where", "Why", "How", "What", "Who",
+    "Have", "Are", "Is", "Do", "Can", "Could", "Should", "Would", "May", "Might", "Must",
+    "I", "He", "She", "We", "They", "Me", "Him", "Her", "Us", "Them",
+    "My", "His", "Her", "Our", "Your", "This", "That", "These", "Those",
+    "Mother", "Father", "Son", "Daughter", "King", "Queen", "Count", "Princess",
+    "Mr", "Mrs", "Ms", "Dr", "Lord", "Duke", "Lady", "Sir",
+    "Greetings", "Together",
+})
+
+
 def count_ungrounded_proper_nouns(text: str, allowed: set[str] | list[str]) -> int:
     allowed_lower = {str(n).strip().lower() for n in allowed if str(n).strip()}
     if not allowed_lower:
         return 0
 
-    # Expand allowed with common role-name variants, so e.g. "the princess" also
-    # allows "princess" if the model capitalizes it.
     expanded_allowed: set[str] = set(allowed_lower)
     for n in allowed_lower:
         if n.startswith("the "):
             expanded_allowed.add(n[4:])
 
     matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text or "")
-
-    generic_sentence_starters = frozenset(
-        {
-            "Another",
-            "After",
-            "Before",
-            "Then",
-            "Now",
-            "There",
-            "Here",
-            "Once",
-            "First",
-            "Second",
-            "Finally",
-            "Meanwhile",
-            "However",
-            "Still",
-            "Yet",
-            "So",
-            "But",
-            "And",
-            "Or",
-            "If",
-            "When",
-            "Where",
-            "Why",
-            "How",
-            "What",
-            "Who",
-            "Have",
-            "Are",
-            "Is",
-            "Do",
-            "Can",
-            "Could",
-            "Should",
-            "Would",
-            "May",
-            "Might",
-            "Must",
-            "I",
-            "He",
-            "She",
-            "We",
-            "They",
-            "Me",
-            "Him",
-            "Her",
-            "Us",
-            "Them",
-            "My",
-            "His",
-            "Her",
-            "Our",
-            "Your",
-            "This",
-            "That",
-            "These",
-            "Those",
-            "Mother",
-            "Father",
-            "Son",
-            "Daughter",
-            "King",
-            "Queen",
-            "Count",
-            "Princess",
-            "Mr",
-            "Mrs",
-            "Ms",
-            "Dr",
-            "Lord",
-            "Duke",
-            "Lady",
-            "Sir",
-            "Greetings",
-            "Together",
-        }
-    )
 
     ungrounded = 0
     for m in matches:
@@ -980,8 +920,7 @@ def count_ungrounded_proper_nouns(text: str, allowed: set[str] | list[str]) -> i
             w = parts[0]
             wl = w.lower()
 
-            # Ignore common sentence-start tokens and pronouns.
-            if w in generic_sentence_starters or wl in STOPWORDS:
+            if w in _GENERIC_SENTENCE_STARTERS or wl in STOPWORDS:
                 continue
 
             # Count single-token names only if they're at least 4 letters.
@@ -1030,7 +969,158 @@ def story_has_proper_ending(text: str) -> bool:
     return True
 
 
-# ── Layer 1 validation ──
+def detect_junk_density(text: str, window: int = 200) -> tuple[bool, str]:
+    """Return (is_junk, reason) if text contains non-narrative spam."""
+    if not text or len(text.split()) < 40:
+        return False, ""
+
+    words = text.split()
+    total = len(words)
+
+    comma_runs = re.findall(r"(?:\b\w+\b,\s*){5,}", text)
+    if len(comma_runs) >= 2:
+        return True, f"Comma-separated noun/keyword spam detected ({len(comma_runs)} runs)"
+
+    upper_words = [w for w in words if w.isupper() and len(w) >= 2 and w.isalpha()]
+    if total > 50 and len(upper_words) / total > 0.08:
+        return True, f"High acronym/uppercase density ({len(upper_words)}/{total})"
+
+    for i in range(0, total - window, window // 2):
+        chunk_words = words[i : i + window]
+        chunk_text = " ".join(chunk_words)
+        sentences = re.findall(r"[.!?]", chunk_text)
+        if len(chunk_words) > 80 and len(sentences) < 2:
+            return True, f"Low sentence structure in {window}-word window (only {len(sentences)} enders)"
+
+    _OFFTOPIC_KEYWORDS = frozenset({
+        "neural", "networks", "machine", "learning", "artificial", "intelligence",
+        "robotics", "algorithm", "software", "hardware", "database", "kubernetes",
+        "javascript", "python", "neurotransmitters", "hormones", "adrenaline",
+        "cortisol", "photosynthesis", "quantum", "blockchain", "cryptocurrency",
+        "thermodynamics", "electromagnetic", "microprocessor", "semiconductor",
+    })
+    offtopic_count = sum(1 for w in words if w.lower().strip(",.;:!?") in _OFFTOPIC_KEYWORDS)
+    if total > 50 and offtopic_count / total > 0.03:
+        return True, f"Off-topic keyword density too high ({offtopic_count}/{total} technical terms)"
+
+    return False, ""
+
+
+# ── Validation ──
+
+_ALIGNMENT_STOP = frozenset({
+    "a", "an", "the", "this", "that", "is", "are", "was", "were", "be",
+    "been", "being", "have", "has", "had", "do", "does", "did", "will",
+    "would", "could", "should", "can", "may", "might", "must", "shall",
+    "to", "of", "in", "on", "at", "by", "for", "with", "from", "up",
+    "out", "off", "about", "into", "through", "and", "but", "or", "so",
+    "if", "then", "than", "not", "no", "as", "who", "whom", "what",
+    "which", "where", "when", "how", "why", "their", "they", "them",
+    "its", "it", "he", "she", "his", "her", "someone", "something",
+    "tries", "try", "finds", "find", "little", "strange",
+})
+
+
+def _extract_query_keywords(query: str) -> set[str]:
+    words = {w.lower().strip(",.;:!?'\"") for w in query.split()}
+    return {w for w in words if w not in _ALIGNMENT_STOP and len(w) >= 3}
+
+
+def check_query_context_alignment(query: str, context: str, min_keyword_overlap: int = 1) -> tuple[bool, list[str]]:
+    """Check if the retrieved context has enough overlap with the user query's key terms."""
+    warnings: list[str] = []
+    if not query or not context:
+        return True, []
+
+    query_keywords = _extract_query_keywords(query)
+    context_lower = context.lower()
+    matched = {kw for kw in query_keywords if kw in context_lower}
+    unmatched = query_keywords - matched
+
+    if len(matched) < min_keyword_overlap and query_keywords:
+        warnings.append(
+            f"Context may not match query: {len(matched)}/{len(query_keywords)} "
+            f"query keywords found. Missing: {', '.join(sorted(unmatched)[:5])}"
+        )
+
+    if query_keywords and not matched:
+        warnings.append("Zero query keywords found in context — likely misaligned retrieval")
+
+    return len(warnings) == 0, warnings
+
+
+def query_context_alignment_score(query: str, context: str) -> float:
+    """Return 0.0..1.0 indicating what fraction of query keywords appear in context."""
+    if not query or not context:
+        return 1.0
+    keywords = _extract_query_keywords(query)
+    if not keywords:
+        return 1.0
+    ctx_lower = context.lower()
+    matched = sum(1 for kw in keywords if kw in ctx_lower)
+    return matched / len(keywords)
+
+
+def pick_best_context_story(query: str, context_parts: list[str]) -> list[str]:
+    """Given multiple '[Title by Author]\\n...' blocks, return them sorted by query relevance.
+    
+    The most relevant story (highest keyword overlap) comes first. Strips blocks
+    with zero overlap if at least one block has overlap.
+    """
+    if not context_parts or not query:
+        return context_parts
+
+    query_keywords = _extract_query_keywords(query)
+    if not query_keywords:
+        return context_parts
+
+    scored: list[tuple[float, int, str]] = []
+    for idx, part in enumerate(context_parts):
+        part_lower = part.lower()
+        matched = sum(1 for kw in query_keywords if kw in part_lower)
+        score = matched / len(query_keywords)
+        scored.append((score, idx, part))
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    best_score = scored[0][0]
+    if best_score > 0:
+        filtered = [part for score, _, part in scored if score > 0]
+        return filtered
+
+    return context_parts
+
+
+def check_how_coverage(layer2_output: str, how_events: list[str]) -> tuple[bool, list[str]]:
+    """Check that Layer 2 sections reference the HOW events from Layer 1.
+    
+    Returns (all_covered, list_of_missing_event_summaries).
+    """
+    if not how_events or not layer2_output:
+        return True, []
+
+    l2_lower = layer2_output.lower()
+    missing: list[str] = []
+
+    for i, event in enumerate(how_events, start=1):
+        event_clean = event.strip()
+        if not event_clean or event_clean.lower() == "unknown":
+            continue
+        event_words = {
+            w.lower().strip(",.;:!?'\"()")
+            for w in event_clean.split()
+            if len(w) > 3 and w.lower() not in _ALIGNMENT_STOP
+        }
+        if not event_words:
+            continue
+        matched = sum(1 for w in event_words if w in l2_lower)
+        coverage = matched / len(event_words) if event_words else 0
+        if coverage < 0.25:
+            snippet = event_clean[:80] + ("..." if len(event_clean) > 80 else "")
+            missing.append(f"HOW({i}): '{snippet}' ({matched}/{len(event_words)} words found)")
+
+    return len(missing) == 0, missing
+
 
 def validate_layer1(five_w_one_h: str, context: str = "") -> tuple[bool, list[str]]:
     reasons: list[str] = []
@@ -1056,9 +1146,26 @@ def validate_layer1(five_w_one_h: str, context: str = "") -> tuple[bool, list[st
             if len(ev.split()) < 3:
                 reasons.append(f"HOW event too short: '{ev}'")
 
+    _HALLUCINATED_RELATIONSHIPS = (
+        "in-law", "in-laws", "sister-in-law", "brother-in-law",
+        "mother-in-law", "father-in-law", "sisters-in-law", "brothers-in-law",
+    )
+    l1_lower = five_w_one_h.lower()
+    ctx_lower = context.lower() if context else ""
+
+    for term in _HALLUCINATED_RELATIONSHIPS:
+        if term in l1_lower and (not context or term not in ctx_lower):
+            reasons.append(f"Layer 1 introduces '{term}' not found in context (relationship hallucination)")
+
+    when_text = parsed.get("when", "")
+    if when_text:
+        _SPECULATIVE_TIME_WORDS = ("winter", "summer", "spring", "autumn", "morning", "evening", "dawn", "dusk", "midnight")
+        for tw in _SPECULATIVE_TIME_WORDS:
+            if tw in when_text.lower() and (not context or tw not in ctx_lower):
+                reasons.append(f"WHEN adds '{tw}' not found in context — use 'unspecified' if unknown")
+
     if context:
-        ctx_lower = context.lower()
-        if "twelve years" in ctx_lower and "twelve" not in five_w_one_h.lower():
+        if "twelve years" in ctx_lower and "twelve" not in l1_lower:
             reasons.append("Context mentions 'twelve years' but Layer 1 does not preserve it")
         if "dwarf" in ctx_lower:
             who_text = parsed.get("who", "").lower()
@@ -1068,8 +1175,6 @@ def validate_layer1(five_w_one_h: str, context: str = "") -> tuple[bool, list[st
 
     return (len(reasons) == 0, reasons)
 
-
-# ── Layer 2 section validation ──
 
 def validate_layer2_section(
     content: str,
@@ -1083,9 +1188,20 @@ def validate_layer2_section(
     if has_together_they_artifact(content):
         reasons.append("Contains 'Together they' artifact")
 
-    long_words = [w for w in content.split() if len(w) > 18 and w.replace(",", "").replace(".", "").isalpha()]
+    words = content.split()
+    long_words = [w for w in words if len(w) > 18 and w.replace(",", "").replace(".", "").isalpha()]
     if long_words:
         reasons.append(f"Collapsed whitespace (long tokens: {', '.join(long_words[:3])})")
+
+    if len(words) >= 10:
+        long_count = sum(1 for w in words if len(w) > 25 and w.replace(",", "").replace(".", "").isalpha())
+        ratio = long_count / len(words)
+        if ratio > 0.05:
+            reasons.append(f"High collapsed-word ratio ({long_count}/{len(words)} words >25 chars)")
+
+    long_alpha_runs = re.findall(r"\b[a-zA-Z]{20,}\b", content)
+    if len(long_alpha_runs) >= 3:
+        reasons.append(f"Multiple collapsed runs ({len(long_alpha_runs)} alpha tokens >20 chars)")
 
     if previous_sections and previous_sections.strip():
         prev_words = set(re.findall(r"[a-z]+", previous_sections.lower()))
@@ -1097,8 +1213,6 @@ def validate_layer2_section(
 
     return (len(reasons) == 0, reasons)
 
-
-# ── Layer 3 section validation ──
 
 def validate_layer3_section(
     content: str,
@@ -1125,6 +1239,10 @@ def validate_layer3_section(
     words = content.split()
     if len(words) < 30:
         reasons.append(f"Section only has {len(words)} words (need at least 30)")
+
+    is_junk, junk_reason = detect_junk_density(content)
+    if is_junk:
+        reasons.append(f"Junk/topic drift: {junk_reason}")
 
     if section_number == total_sections:
         if not story_has_proper_ending(content):

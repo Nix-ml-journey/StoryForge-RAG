@@ -54,11 +54,13 @@ def store_data(Merge_Data, Collection=Collection, Client=Client):
             meta = item.get("metadatas") or {}
             row_id = str(item.get("ids", item.get("ID", "")))
             doc_text = item.get("documents", item.get("Document", item.get("Content", "")))
+            chapters = item.get("chapters") or {}
             meta_row = {
                 "Author": meta.get("Author", item.get("Author", "")),
                 "Title": meta.get("Title", item.get("Title", "")),
                 "Summary": meta.get("Summary", item.get("Summary", "")),
                 "query_type": "content",
+                "Is_series": bool(chapters.get("Is_series", False)),
             }
             if "series" in item and isinstance(item["series"], dict):
                 s = item["series"]
@@ -143,6 +145,7 @@ def load_merged_dir_for_chroma(merge_output_dir):
                 with open(file_path, "r", encoding="utf-8") as file:
                     item = json.load(file)
                 meta = item.get("metadatas") or {}
+                chapters = item.get("chapters") or {}
                 row_id = str(item.get("ids", item.get("ID", file_path.stem)))
                 ids.append(row_id)
                 meta_row = {
@@ -150,6 +153,7 @@ def load_merged_dir_for_chroma(merge_output_dir):
                     "Title": meta.get("Title", item.get("Title", "")),
                     "Summary": meta.get("Summary", item.get("Summary", "")),
                     "query_type": "content",
+                    "Is_series": bool(chapters.get("Is_series", False)),
                 }
                 if "series" in item and isinstance(item["series"], dict):
                     s = item["series"]

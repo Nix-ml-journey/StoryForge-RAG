@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from Generative_AI.generative_ai import Gen_mode, parse_gen_mode
+from Generative_AI.generative_ai import Gen_mode, parse_gen_mode, parse_story_type
 from Orchestrator.orchestrator import Orchestrator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -24,32 +24,54 @@ class RunPipelineRequest(BaseModel):
     steps: Optional[list[str]] = Field(
         default=None,
         description=(
-            "Pipeline steps to run. None = all 5 steps. Valid: 1_fetch_and_extract, "
-            "2_create_metadata_template, 3_merge_check_summary, 4_ingest, 5_generate_and_evaluate."
+            "Pipeline steps to run. Omit (or null) = all 5 steps. "
+            "Valid values: 1_fetch_and_extract, 2_create_metadata_template, "
+            "3_merge_check_summary, 4_ingest, 5_generate_and_evaluate."
         )
     )
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    story_type: Optional[str] = Field(
+        default="mix",
+        description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both).",
+    )
     extract_style: Optional[bool] = Field(
         default=False,
-        description="Optional. If true, Layer 1 also extracts narrative style/tone from source material.",
+        description="If true, Layer 1 also extracts narrative style/tone from source material.",
     )
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
                 {
-                    "summary": "Standard generation (no style extraction)",
+                    "summary": "Minimal — run ALL 5 steps (only title required)",
                     "value": {
-                        "title": "The Adventures of Sherlock Holmes",
-                        "steps": ["5_generate_and_evaluate"],
-                        "mode": "fast",
+                        "title": "Hansel and Gretel",
                     },
                 },
                 {
-                    "summary": "With style extraction enabled",
+                    "summary": "Generate and evaluate only (step 5)",
                     "value": {
-                        "title": "The Adventures of Sherlock Holmes",
+                        "title": "The Golden Bird",
                         "steps": ["5_generate_and_evaluate"],
                         "mode": "fast",
+                        "story_type": "mix",
+                    },
+                },
+                {
+                    "summary": "Ingest then generate (steps 4 + 5)",
+                    "value": {
+                        "title": "Rapunzel",
+                        "steps": ["4_ingest", "5_generate_and_evaluate"],
+                        "mode": "fast",
+                        "story_type": "single",
+                    },
+                },
+                {
+                    "summary": "Series stories with style extraction",
+                    "value": {
+                        "title": "Peter Pan",
+                        "steps": ["5_generate_and_evaluate"],
+                        "mode": "fast",
+                        "story_type": "series",
                         "extract_style": True,
                     },
                 },
@@ -65,23 +87,72 @@ class RunPipelineResponse(BaseModel):
     error: Optional[str] = None
 
 class RunStepRequest(BaseModel):
-    step: str = Field(..., description="One pipeline step to run")
-    title: str = Field(default="manual_step", min_length=1, description="Title/query used by steps that need it")
+    step: str = Field(
+        ...,
+        description=(
+            "One pipeline step to run. Valid values: 1_fetch_and_extract, "
+            "2_create_metadata_template, 3_merge_check_summary, 4_ingest, 5_generate_and_evaluate."
+        ),
+    )
+    title: str = Field(default="manual_step", min_length=1, description="Title/query (required for steps 1 and 5)")
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    story_type: Optional[str] = Field(
+        default="mix",
+        description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both).",
+    )
     extract_style: Optional[bool] = Field(
         default=False,
-        description="Optional. If true, Layer 1 also extracts narrative style/tone from source material.",
+        description="If true, Layer 1 also extracts narrative style/tone from source material.",
     )
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
                 {
-                    "summary": "Standard step (no style extraction)",
-                    "value": {"step": "5_generate_and_evaluate", "title": "The Golden Bird", "mode": "fast"},
+                    "summary": "Fetch and extract a book (step 1)",
+                    "value": {
+                        "step": "1_fetch_and_extract",
+                        "title": "Hansel and Gretel",
+                    },
                 },
                 {
-                    "summary": "With style extraction enabled",
-                    "value": {"step": "5_generate_and_evaluate", "title": "The Golden Bird", "mode": "fast", "extract_style": True},
+                    "summary": "Create metadata templates (step 2) — title optional",
+                    "value": {
+                        "step": "2_create_metadata_template",
+                        "title": "manual_step",
+                    },
+                },
+                {
+                    "summary": "Merge + check summaries (step 3) — title optional",
+                    "value": {
+                        "step": "3_merge_check_summary",
+                        "title": "manual_step",
+                    },
+                },
+                {
+                    "summary": "Ingest into vector store (step 4) — title optional",
+                    "value": {
+                        "step": "4_ingest",
+                        "title": "manual_step",
+                    },
+                },
+                {
+                    "summary": "Generate and evaluate story (step 5)",
+                    "value": {
+                        "step": "5_generate_and_evaluate",
+                        "title": "The Golden Bird",
+                        "mode": "fast",
+                        "story_type": "mix",
+                    },
+                },
+                {
+                    "summary": "Step 5 — series only with style extraction",
+                    "value": {
+                        "step": "5_generate_and_evaluate",
+                        "title": "Peter Pan",
+                        "mode": "fast",
+                        "story_type": "series",
+                        "extract_style": True,
+                    },
                 },
             ]
         }
@@ -108,6 +179,7 @@ async def run_pipeline(request: RunPipelineRequest):
             steps=request.steps,
             gen_mode=parse_gen_mode(request.mode),
             extract_style=bool(request.extract_style),
+            story_type=parse_story_type(request.story_type),
         )
         return RunPipelineResponse(
             success=result.get("success", False),
@@ -141,6 +213,7 @@ async def run_step(request: RunStepRequest):
             steps=[request.step],
             gen_mode=parse_gen_mode(request.mode),
             extract_style=bool(request.extract_style),
+            story_type=parse_story_type(request.story_type),
         )
         return RunStepResponse(
             success=result.get("success", False),

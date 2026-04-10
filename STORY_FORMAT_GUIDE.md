@@ -88,6 +88,20 @@ Use this when cleaning or checking story `.txt` files (e.g. from PDF extraction)
 **Keep as hyphenated** when it’s a normal compound:  
 e.g. `night-lights`, `heart-gripping`, `spring-cleaning`, `drawing-room`, `matter-of-fact`.
 
+### 4a. Validate every word that contains `-`
+
+**Rule:** Any word containing a hyphen must be checked and be intentional.
+
+- **Keep `-`** if it is a real compound word used in normal writing (e.g. `drawing-room`, `matter-of-fact`, `well-known`).
+- **Remove `-`** if it came from a line break/OCR split and should be one word (e.g. `how- ever` -> `however`, `dis- quieting` -> `disquieting`).
+- **Fix spacing around `-`**: no spaces in the middle of a hyphenated word (`well- known` -> `well-known`; `well -known` -> `well-known`).
+- **Check case when rejoining**: keep proper capitalization after cleanup (`Every- thing` -> `Everything`, `Un- fortunately` -> `Unfortunately`).
+- **If unsure:** compare with a trusted dictionary/spelling check; prefer the standard modern form.
+
+**Quick pattern check:**
+- If you see `word- word` and both sides look like fragments of one word, rejoin.
+- If you see a known compound/adjective form, keep hyphenated.
+
 ---
 
 ## 5. Dirty PDFs: weird symbols and noise
@@ -226,7 +240,29 @@ Also: no trailing spaces at the end of lines; keep line breaks consistent (one l
 
 ---
 
-## 11. Quick checklist
+## 11. File naming (for clean vector-store metadata)
+
+**Rule:** Keep story filenames consistent so source metadata is tidy and easy to filter/cite.
+
+**Recommended format:**
+- Use **Title Case** for major words.
+- Keep small connector words lowercase in the middle (`and`, `of`, `the`, `to`, `in`, `or`).
+- Keep title abbreviations correct in filenames too: `Mr.`, `Mrs.`, `Ms.`, `Dr.` with a space before the surname.
+- Preserve apostrophes and punctuation that are part of the real title.
+- Use `.txt` extension consistently.
+
+| Less consistent | Preferred |
+|-----------------|-----------|
+| `THE FLIGHT.txt` | `The Flight.txt` |
+| `ALIBABA And The Forty Thieves.txt` | `Alibaba and the Forty Thieves.txt` |
+| `DO YOU BELIEVE IN FARIES.txt` | `Do You Believe in Fairies.txt` |
+| `The wedding of Mrs.Fox-1.txt` | `The Wedding of Mrs. Fox-1.txt` |
+
+**Why this helps:** Filenames are often stored as document metadata (`source`, `title`, `path`) in vector stores. Clean names improve filtering, deduping, ranking display, and citation readability.
+
+---
+
+## 12. Quick checklist
 
 When checking a story file:
 
@@ -234,13 +270,14 @@ When checking a story file:
 - [ ] No space in contractions: `I'm` not `I 'm`, `it's` not `it 's`, etc.
 - [ ] Opening quote: `'Word` not `' Word`
 - [ ] Closing quote: `word,' she` and `word?' he` / `word!' she` (no space before `'`)
-- [ ] No PDF hyphenation: rejoin `word- next` when it’s one word
+- [ ] Hyphen check complete: every `-` word is verified (true compound kept, broken split rejoined)
 - [ ] No OCR typos (e.g. ofifing → offing, jienying → denying); see §6
 - [ ] Titles: `Mrs. Darling` not `Mrs.Darling` (space after the period)
 - [ ] No space before punctuation: `crying?` not `crying ?`, `right!` not `right !`
 - [ ] No trailing spaces at line ends
 - [ ] Consistent punctuation (e.g. no stray `'` at end of line)
 - [ ] Dialogue not split in the middle: one speech = one line/one chunk when splitting
+- [ ] Filename follows naming standard (§11): consistent title style, correct spelling, clean title abbreviations
 
 ---
 

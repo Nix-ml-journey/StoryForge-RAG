@@ -45,12 +45,11 @@ def load_flow_structures(path: Optional[Path] = None) -> list[dict[str, Any]]:
     if not structures or not isinstance(structures, list):
         _CACHED_STRUCTURES = [_default_linear_structure()]
         return _CACHED_STRUCTURES
-    # Validate: each must have name, flow, sections (length 5)
     valid = []
     for s in structures:
         if not isinstance(s, dict):
             continue
-        if "sections" in s and len(s.get("sections")) == 5 and "flow" in s:
+        if "sections" in s and len(s["sections"]) == 5 and "flow" in s:
             valid.append(s)
         else:
             logging.warning("Skipping invalid structure entry: missing flow or 5 sections.")
@@ -62,7 +61,6 @@ def load_flow_structures(path: Optional[Path] = None) -> list[dict[str, Any]]:
 
 
 def get_default_structure() -> dict[str, Any]:
-    """Return the default linear structure (1-2-3-4-5). Use when no picker is used or as fallback."""
     return _default_linear_structure()
 
 

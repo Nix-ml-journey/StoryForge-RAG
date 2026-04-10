@@ -11,6 +11,7 @@ Gemini_summary_model: "gemini-2.5-flash"
 Gemini_evaluation_model: "gemini-3-flash-preview"
 Gemini_evaluation_fallback_model: "gemini-2.5-flash"  # used when primary is unavailable
 Vector_store_model: "all-MiniLM-L6-v2"
+Choser_model: "Qwen2.5-1.5B-Instruct"
 Generative_model: "Qwen/Qwen2.5-7B-Instruct"
 Load_generative_model_in_4bit: true            # 4-bit quantisation; requires bitsandbytes
 Model_max_prompt_tokens: 10240
@@ -23,16 +24,16 @@ Generation_mode_thinking: "THINKING"            # creative, higher temperature
 Generation_mode_short: "SHORT"                  # fast sampling, ~50% shorter output
 
 # ── Sampling (shared by all layers) ──
-Generation_fast_temperature: 0.5
-Generation_fast_top_p: 0.9
-Generation_thinking_temperature: 0.9
-Generation_thinking_top_p: 0.9
+Generation_fast_temperature: 0.4
+Generation_fast_top_p: 0.8
+Generation_thinking_temperature: 0.3
+Generation_thinking_top_p: 0.7
 
 # Optional per-layer overrides (three-layer pipeline only).
 # When set, these override the generic Generation_* temperatures above.
 Layer1_temperature: 0.1            # Layer 1 (facts): very precise
 Layer1_top_p: 0.9
-Layer2_temperature: 0.6            # Layer 2 (flow outline): balanced creativity
+Layer2_temperature: 0.45           # Layer 2 (flow outline): tighter mapping
 Layer2_top_p: 0.9
 Layer3_temperature: 0.35           # Layer 3 (prose): tighter sampling for grammar/consistency
 Layer3_top_p: 0.9
@@ -53,7 +54,7 @@ Single_pass_thinking_max_tokens: 1536
 Single_pass_short_max_tokens: 400              # SHORT: ~50% of fast
 
 # Layer 1 – 5W1H extraction (stops early when done)
-Layer1_max_tokens: 600
+Layer1_max_tokens: 300
 
 # Layer 2 – sectioned story summary (5W1H + source references)
 Layer2_max_tokens: 1400                         # single-shot total; unused when Layer2_per_section is true
@@ -62,13 +63,15 @@ Layer2_section_max_tokens: 280                  # per section when Layer2_per_se
 Min_generation_ratio: 0.6                       # Layer 2 must generate >= 60% of max before stopping
 
 # Layer 3 – multi-pass prose expansion (one pass per section)
+# Reduced from 1200/1730 after quality gates (junk detector, reject+retry) were added
+# in 2026-04-09. Tighter budgets reduce drift risk now that gates reliably reject bad output.
 Layer3_section_count: 5                         # sections produced by Layer 2
-Layer3_section_min_tokens: 1200                 # ~900 words → 5 × 1200 ≈ 4 500 words min
-Layer3_section_max_tokens: 1730                 # ~1 300 words → 5 × 1730 ≈ 6 500 words max
+Layer3_section_min_tokens: 800                  # ~600 words → 5 × 800 ≈ 3 000 words min
+Layer3_section_max_tokens: 1200                 # ~900 words → 5 × 1200 ≈ 4 500 words max
 
 # Layer 3 SHORT mode — ~50% fewer words than FAST (same pipeline, halved token budgets)
-Layer3_section_min_tokens_short: 600            # ~450 words per section → ~2 250 words total
-Layer3_section_max_tokens_short: 865            # ~650 words per section → ~3 250 words total
+Layer3_section_min_tokens_short: 400            # ~300 words per section → ~1 500 words total
+Layer3_section_max_tokens_short: 600            # ~450 words per section → ~2 250 words total
 
 # Layer 3 single-pass fallbacks (used only if section parsing fails)
 Layer3_fast_max_tokens: 1536
@@ -104,3 +107,31 @@ Chroma_collection_name: "English_Stories"
 Generated_story_output: "Generated_Stories"
 Generated_summary_output: "Summarized_Stories"
 Evaluated_stories_output: "Evaluated_Stories"
+
+# ── Chroma DB schema (template) ──
+# Keep the same shape as `setup.yaml`, but do not put real data here.
+database_schema:
+  ids: "string"
+  metadatas:
+    Author: "string"
+    Title: "string"
+    Summary: "string"
+  chapters:
+    Chapter_name: "string"
+    Chapter_number: "integer"
+    Is_series: "boolean"
+  series: "optional object when Is_series=true"
+  documents: "string"
+
+sample_record_standalone:
+  ids: "id_1"
+  metadatas: { Author: "A", Title: "T", Summary: "S" }
+  chapters: { Chapter_name: "Intro", Chapter_number: 1, Is_series: false }
+  documents: "..."
+
+sample_record_series:
+  ids: "id_2"
+  metadatas: { Author: "A", Title: "T", Summary: "S" }
+  chapters: { Chapter_name: "Chapter One", Chapter_number: 1, Is_series: true }
+  series: { Series_name: "Series", Volume_name: "Book", Volume_number: 1 }
+  documents: "..."

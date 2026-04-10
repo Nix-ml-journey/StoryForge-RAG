@@ -32,6 +32,9 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - Repetition controls (repetition/frequency/presence penalties + no-repeat ngram)
 - Advanced decoding via `Generative_AI/penalty_processors.py` to reduce repetition loops while excluding common stopwords from penalty application
 - Post-generation cleanup safeguards to trim malformed tails and degeneration artifacts
+- Query–context alignment guardrails: if retrieved context does not match the query, Layer 1 fails closed with a structured "insufficient context" signal instead of extracting the wrong story
+- Multi-story retrieval filtering: when retrieval returns multiple story blocks, context is sorted/filtered to the best matching story by query keyword overlap
+- Layer 2 grounding improvements: Layer 2 single-shot is isolated to Layer 1 + query (raw retrieval references dropped), plus a HOW-event coverage check warns if planned sections miss Layer 1 plot beats
 - Reliability work for real failures (API rate limits, GPU OOM, malformed outputs)
 - Format-aware Archive download handling (`pdf` / `epub`) with cleaner file selection
 - Duplicate-download protection by identifier to avoid redundant fetches
@@ -44,9 +47,13 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 The generation path distills retrieved context, plans a sectioned narrative, then expands it into full prose:
 
 1. **Layer 1 (5W1H extraction):** distills retrieved context into concrete `Who/What/When/Where/Why/How` (optional style/tone extraction via orchestration `extract_style`).
+   - Guardrail: if retrieved context has **zero keyword overlap** with the query, Layer 1 returns a structured **"insufficient context"** 5W1H instead of guessing.
 2. **Structure choice:** `Generative_AI/choser.py` picks a narrative flow from `flow_structure.yaml` (mode-filtered: FAST favors linear-friendly structures; THINKING can use non-linear flows).
 3. **Layer 2 (sectioned summary):** maps 5W1H into the chosen structure—typically **five sections one-by-one** (`Layer2_per_section`) so each block stays grounded in facts.
+   - Grounding: in Layer 2 single-shot mode, the model now sees **only Layer 1 + query** (raw retrieval references are intentionally dropped).
+   - Coverage: after Layer 2, the pipeline checks whether Layer 1 HOW events are reflected in the sections and logs warnings when plot beats are missing.
 4. **Layer 3 (story expansion):** **multi-pass prose** (one expansion per summary section by default) for length and coherence under token limits.
+   - Token budgets were reduced (defaults + example config) now that reject+retry quality gates reliably catch degeneration.
 
 If any intermediate layer returns empty output, generation falls back to single-pass mode.
 
@@ -123,7 +130,16 @@ Related prompt templates live in `prompts.yaml` under `generation`:
 
 ## Current status
 
-With the current setup, generated stories are still often **incomplete** (cut short or thin in places), and I am actively debugging and tuning that. My main working hypothesis is **retrieval coverage**: the Chroma index built from what I have ingested so far only exposes **about 47 records** to RAG, which is small for diverse long-form conditioning—so weak or repetitive context upstream may be part of the problem, alongside token limits and generation settings. I am expanding ingestion and revisiting chunking/metadata to improve what retrieval returns.
+With the current setup, generated stories can still be **incomplete** (cut short or thin in places), and I am actively debugging and tuning that. Recent reliability upgrades added **fail-closed query–context alignment**, **multi-story context filtering**, **Layer 2 isolation to Layer 1 + query**, a **HOW coverage check**, and **tighter Layer 3 token budgets** to reduce drift now that quality gates reject junk output. My main working hypothesis remains **retrieval coverage**: the Chroma index built from what I have ingested so far only exposes **about 47 records** to RAG, which is small for diverse long-form conditioning—so weak or repetitive context upstream may be part of the problem, alongside token limits and generation settings. I am expanding ingestion and revisiting chunking/metadata to improve what retrieval returns.
+
+## Generation mode and data reset update
+
+I added a new generation mode to control whether output should be based on a **single** story source or a **series** source:
+
+- if the request is `single`, retrieval only pulls records tagged as single from the vector store,
+- if the request is `series`, retrieval only pulls records tagged as series from the vector store.
+
+Because older indexed data did not consistently store this single/series field, I removed the existing vector-store data and re-ingested it after validation. I also performed a double-check pass to make sure the saved data is now correct and consistent for this filter behavior.
 
 ## Security Notes
 
