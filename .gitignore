@@ -41,6 +41,7 @@ save_book/
 oldStories/
 Data_Merged old/
 debug_layers/
+layers_output_problems.md
 
 # Legacy/duplicate reference files
 *_EXAMPLE.py
