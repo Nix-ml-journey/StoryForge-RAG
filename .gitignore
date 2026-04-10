@@ -38,6 +38,9 @@ Stories/
 save_json/
 chroma_db/
 save_book/
+oldStories/
+Data_Merged old/
+debug_layers/
 
 # Legacy/duplicate reference files
 *_EXAMPLE.py
