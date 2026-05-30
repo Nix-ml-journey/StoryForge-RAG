@@ -27,6 +27,7 @@ Thumbs.db
 # Runtime outputs and datasets
 data/outputs/
 data/chroma_db/
+data/story_json/
 Generated_Stories/
 Evaluated_Stories/
 Summarized_Stories/
