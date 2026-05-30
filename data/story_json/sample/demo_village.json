@@ -1,0 +1,27 @@
+{
+  "Is_series": false,
+  "id": "demo_village",
+  "meta": {
+    "author": "Sample Author",
+    "title": "The Crossroads Lantern"
+  },
+  "chapter": {
+    "chapter_id": "ch_01",
+    "chapter_number": 1,
+    "chapter_name": "Opening"
+  },
+  "summary": "A village baker keeps a lantern at the crossroads so travelers can find the next safe step through the fog.",
+  "raw_text": "In a small village beside a grey lake, a baker named Mara kept a lantern lit every night.\n\nOne winter, travelers stopped asking for bread and started asking for directions. Mara wrote their answers in a notebook until the notebook knew more paths than the village map.\n\nWhen fog rolled in, she hung the lantern on a pole at the crossroads. People said the light did not show the whole road, only the next safe step.\n\nThat was enough for the village to find its way again.",
+  "chunks": [
+    {
+      "chunk_id": "demo_village_chunk_1",
+      "text": "In a small village beside a grey lake, a baker named Mara kept a lantern lit every night.\n\nOne winter, travelers stopped asking for bread and started asking for directions. Mara wrote their answers in a notebook until the notebook knew more paths than the village map.",
+      "section": "setup"
+    },
+    {
+      "chunk_id": "demo_village_chunk_2",
+      "text": "When fog rolled in, she hung the lantern on a pole at the crossroads. People said the light did not show the whole road, only the next safe step.\n\nThat was enough for the village to find its way again.",
+      "section": "resolution"
+    }
+  ]
+}
