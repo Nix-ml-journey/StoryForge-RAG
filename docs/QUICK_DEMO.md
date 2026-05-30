@@ -35,7 +35,7 @@ Current test coverage focuses on:
 - Metadata summary validation in `Data/metadata.py`
 - Story/metadata merge behavior in `Data/data_merge.py`
 
-The same lightweight suite is also wired into `.github/workflows/tests.yml` for push, pull request, and manual GitHub Actions runs.
+Run the same lightweight suite locally with `python -m pytest` (see `tests/`).
 
 ## 3. Review The Architecture
 

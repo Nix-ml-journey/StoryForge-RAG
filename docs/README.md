@@ -1,7 +1,5 @@
 # StoryForge-RAG
 
-[![Tests](../../actions/workflows/tests.yml/badge.svg)](../../actions/workflows/tests.yml)
-
 StoryForge-RAG is an end-to-end AI pipeline for book ingestion, metadata enrichment, vector search (Chroma), story generation, and automated quality evaluation via FastAPI.
 
 Built as a practical AI/data engineering project to demonstrate system design, model trade-offs, and real-world reliability handling (rate limits, OOM, unstable generations).
@@ -28,10 +26,9 @@ If you are reviewing this project quickly, start here:
 1. Read [`QUICK_DEMO.md`](./QUICK_DEMO.md) for the no-GPU/no-API-key validation path.
 2. Run the lightweight tests:
    - `python -m pytest`
-3. Check the GitHub Actions workflow in `.github/workflows/tests.yml`.
-4. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for the design decisions and trade-offs.
-5. Read [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) for the current improvement plan.
-6. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries and next steps.
+3. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for the design decisions and trade-offs.
+4. Read [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) for the current improvement plan.
+5. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries and next steps.
 
 The lightweight tests focus on deterministic project logic and do not require Gemini, Hugging Face, Google Books, Chroma data, or a local generation model.
 
@@ -164,7 +161,7 @@ These tests use temporary directories and avoid external services, local model l
 
 CI:
 
-- `.github/workflows/tests.yml` runs the lightweight pytest suite on push, pull request, and manual dispatch.
+- Run tests locally: `python -m pytest` (see `tests/`).
 - The workflow installs only lightweight test dependencies because the current tests intentionally avoid GPU/model/API dependencies.
 
 ## Configuration
