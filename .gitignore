@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local config / secrets
+.env
+.env.*
+setup.yaml
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Runtime outputs and datasets
+data/outputs/
+data/chroma_db/
+Generated_Stories/
+Evaluated_Stories/
+Summarized_Stories/
+Downloaded_Books/
+Downloaded_Metadata/
+Text_Extracted/
+Data_Merged/
+Metadata/
+Metadata_copy/
+Stories/
+save_json/
+chroma_db/
+save_book/
+oldStories/
+Data_Merged old/
+debug_layers/
+layers_output_problems.md
+STORY_FORMAT_GUIDE.md
+
+# Legacy/duplicate reference files
+*_EXAMPLE.py
+*_Example.py
+*_FIXED_EXAMPLE.py

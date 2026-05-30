@@ -1,0 +1,12 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Keep linting intentionally conservative while this portfolio project is being cleaned up.
+# These rules catch syntax/undefined-name issues without forcing a full style migration yet.
+select = ["E9", "F63", "F7", "F82"]

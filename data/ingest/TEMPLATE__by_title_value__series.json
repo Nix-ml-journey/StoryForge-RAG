@@ -1,0 +1,24 @@
+{
+  "Is_series": true,
+  "id": "id_01",
+  "series": {
+    "series_name": ""
+  },
+  "volume": {
+    "volume_id": "vol_01",
+    "volume_name": "",
+    "volume_number": 1
+  },
+  "meta": {
+    "author": "",
+    "title": ""
+  },
+  "chapter": {
+    "chapter_id": "",
+    "chapter_number": 1,
+    "chapter_name": ""
+  },
+  "summary": "",
+  "raw_text": "FULL CHAPTER TEXT HERE"
+}
+

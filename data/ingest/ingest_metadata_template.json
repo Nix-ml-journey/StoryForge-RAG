@@ -1,0 +1,53 @@
+{
+  "defaults": {
+    "_note": "Small overrides applied on top of the chosen base template (standalone vs series).",
+    "query_type": "content"
+  },
+  "by_title": {},
+  "_examples": {
+    "_standalone_story_example": {
+      "KEY (put this under by_title)": "Amun",
+      "VALUE": {
+        "Is_series": false,
+        "id": "id_01",
+        "meta": {
+          "author": "Your Name",
+          "title": "My Standalone Title"
+        },
+        "chapter": {
+          "chapter_id": "ch_01",
+          "chapter_number": 1,
+          "chapter_name": "Opening"
+        },
+        "section": "childhood",
+        "tags": ["origin", "character_intro"]
+      }
+    },
+    "_series_story_example": {
+      "KEY (put this under by_title)": "Amun",
+      "VALUE": {
+        "Is_series": true,
+        "id": "id_01",
+        "series": {
+          "id": "series_01",
+          "series_name": "Amun Chronicles"
+        },
+        "volume": {
+          "volume_id": "vol_01",
+          "volume_name": "Rise of the Monk",
+          "volume_number": 1
+        },
+        "meta": {
+          "author": "AM Holyday Studios Limited",
+          "title": "Amun Biography"
+        },
+        "chapter": {
+          "chapter_id": "ch_01",
+          "chapter_number": 1,
+          "chapter_name": "The Warrior Monk"
+        },
+        "tags": ["series", "chapter"]
+      }
+    }
+  }
+}

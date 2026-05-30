@@ -1,0 +1,204 @@
+# Structural shifts: narrative order of the 5 sections (WHO/WHERE, WHAT, TWIST, HOW, WHY/OUTCOME).
+# Picker runs after Layer 1 and before Layer 2 so Layer 2 only does mapping into the chosen order.
+# Each entry: name, flow (section order 1-5), sections (5 header labels in narrative order), style.
+
+flow_structures:
+  - name: "The Standard (Linear)"
+    flow: "1-2-3-4-5"
+    sections:
+      - "WHO, WHERE, WHEN (The Setup)"
+      - "WHAT (The Problem Starts)"
+      - "TWIST/COMPLICATION (The Challenge)"
+      - "HOW (The Big Action/Climax)"
+      - "WHY/OUTCOME (The Moral and Conclusion)"
+    style: "Clear, logical, and easy to follow."
+
+  - name: "The Action Hook (In Media Res)"
+    flow: "4-1-2-3-5"
+    sections:
+      - "HOW (Start with the fight or the escape)"
+      - "WHO, WHERE, WHEN (Flashback: How did I get here?)"
+      - "WHAT (The lead-up to the trouble)"
+      - "TWIST/COMPLICATION (The surprise that led to the climax)"
+      - "WHY/OUTCOME (The final result after the fight)"
+    style: "High energy. Grabs the reader immediately."
+
+  - name: "The Mystery (Reverse)"
+    flow: "5-4-3-2-1"
+    sections:
+      - "WHY/OUTCOME (Show the aftermath or crime scene)"
+      - "HOW (The final confrontation shown in reverse)"
+      - "TWIST/COMPLICATION (The hidden secret)"
+      - "WHAT (The original motive)"
+      - "WHO, WHERE, WHEN (The very beginning of the plan)"
+    style: "Analytical. The reader solves the story backward."
+
+  - name: "The Oops (Twist-First)"
+    flow: "3-1-2-4-5"
+    sections:
+      - "TWIST/COMPLICATION (Start with everything going wrong)"
+      - "WHO, WHERE, WHEN (The normal life before the mess)"
+      - "WHAT (What they were trying to do)"
+      - "HOW (How they fixed the mess)"
+      - "WHY/OUTCOME (The final lesson learned)"
+    style: "Great for comedy or high-stakes drama."
+
+  - name: "The Legend (Outcome-Framed)"
+    flow: "5-1-2-3-4"
+    sections:
+      - "WHY/OUTCOME (The ending: He was the greatest hero...)"
+      - "WHO, WHERE, WHEN (Back to humble beginnings)"
+      - "WHAT (His first mission)"
+      - "TWIST/COMPLICATION (The moment he almost failed)"
+      - "HOW (The final heroic act)"
+    style: "Epic. Tells the story as a told legend or biography."
+
+  - name: "The Sinking Ship (Rising Tension)"
+    flow: "1-2-4-3-5"
+    sections:
+      - "WHO, WHERE, WHEN (The calm start)"
+      - "WHAT (The journey begins)"
+      - "HOW (The climax happens early)"
+      - "TWIST/COMPLICATION (A second, worse problem after the fight)"
+      - "WHY/OUTCOME (Surviving the unexpected double-threat)"
+    style: "Unpredictable. Keeps the reader on their toes."
+
+  - name: "The Heist (The Plan)"
+    flow: "2-1-3-4-5"
+    sections:
+      - "WHAT (Start with the goal: We are robbing the bank.)"
+      - "WHO, WHERE, WHEN (Assemble the team and setting)"
+      - "TWIST/COMPLICATION (The security is tighter than expected)"
+      - "HOW (The execution of the heist)"
+      - "WHY/OUTCOME (The getaway and the motive)"
+    style: "Methodical and cool."
+
+  - name: "The False Victory"
+    flow: "4-5-1-2-3"
+    sections:
+      - "HOW (A huge battle ends)"
+      - "WHY/OUTCOME (The victory scene)"
+      - "WHO, WHERE, WHEN (Flashback to the training)"
+      - "WHAT (The reason for the war)"
+      - "TWIST/COMPLICATION (The ending reveal: the war is not actually over)"
+    style: "Dark and psychological."
+
+  - name: "The Flashback Loop"
+    flow: "1-4-2-3-5"
+    sections:
+      - "WHO, WHERE, WHEN (The introduction)"
+      - "HOW (Jump straight to the final fight)"
+      - "WHAT (Explain what led to that fight)"
+      - "TWIST/COMPLICATION (The mid-fight realization)"
+      - "WHY/OUTCOME (The resolution of the fight)"
+    style: "Common in modern TV (starts normal, jumps to end, fills in middle)."
+
+  - name: "The Impact (Outcome Focused)"
+    flow: "2-3-4-5-1"
+    sections:
+      - "WHAT (The incident happens)"
+      - "TWIST/COMPLICATION (It gets worse)"
+      - "HOW (The struggle to fix it)"
+      - "WHY/OUTCOME (The final result)"
+      - "WHO, WHERE, WHEN (Ending on the Who: the person changed by the events)"
+    style: "Character-focused. The who matters more at the end than at the start."
+
+  - name: "The Crime Scene (Analytical)"
+    flow: "5-1-3-4-2"
+    sections:
+      - "WHY/OUTCOME (Start with the aftermath; the empty vault)"
+      - "WHO, WHERE, WHEN (The characters introduced as suspects)"
+      - "TWIST/COMPLICATION (A piece of evidence that does not make sense)"
+      - "HOW (The reconstruction of the crime)"
+      - "WHAT (The final reveal of what was actually stolen; the motive)"
+    style: "Focuses on Why and What as the final payoff."
+
+  - name: "The Fated (Circular)"
+    flow: "1-5-2-3-4"
+    sections:
+      - "WHO, WHERE, WHEN (The character's humble start)"
+      - "WHY/OUTCOME (A flash-forward to their ultimate death or success)"
+      - "WHAT (The journey that leads them toward that fate)"
+      - "TWIST/COMPLICATION (The moment they think they can escape their fate)"
+      - "HOW (The final action that seals their destiny)"
+    style: "Melancholic and dramatic."
+
+  - name: "The Chaos Start (Disoriented)"
+    flow: "3-4-2-1-5"
+    sections:
+      - "TWIST/COMPLICATION (The world is already upside down; the betrayal)"
+      - "HOW (Trying to fight out of the mess)"
+      - "WHAT (Explaining the original goal that caused the mess)"
+      - "WHO, WHERE, WHEN (How it all began; the calm before the storm)"
+      - "WHY/OUTCOME (The resolution of the initial betrayal)"
+    style: "Very fast-paced; forces the reader to catch up."
+
+  - name: "The Conspiracy (Layered)"
+    flow: "2-4-1-5-3"
+    sections:
+      - "WHAT (A simple task; delivering a letter)"
+      - "HOW (The task turns into a high-speed chase)"
+      - "WHO, WHERE, WHEN (Revealing the person who sent the letter)"
+      - "WHY/OUTCOME (The letter is delivered, but...)"
+      - "TWIST/COMPLICATION (The contents of the letter change the meaning of the chase)"
+    style: "Suspenseful; saves the Twist for the very end."
+
+  - name: "The Hero's Regret (Retrospective)"
+    flow: "4-3-5-1-2"
+    sections:
+      - "HOW (The peak of the battle; the violence)"
+      - "TWIST/COMPLICATION (The tragic mistake made during the battle)"
+      - "WHY/OUTCOME (The sad result of that mistake)"
+      - "WHO, WHERE, WHEN (Back to the innocent person they used to be)"
+      - "WHAT (The small choice that started the tragedy)"
+    style: "Emotional and character-driven."
+
+  - name: "The Double-Blind (The Switch)"
+    flow: "1-3-4-2-5"
+    sections:
+      - "WHO, WHERE, WHEN (Meet Character A)"
+      - "TWIST/COMPLICATION (Character A is not who we think they are)"
+      - "HOW (Character A's real skills are shown)"
+      - "WHAT (What they were actually doing the whole time)"
+      - "WHY/OUTCOME (The true motive revealed)"
+    style: "Spy or thriller vibes."
+
+  - name: "The Action-Reaction"
+    flow: "4-2-1-3-5"
+    sections:
+      - "HOW (A massive explosion or event)"
+      - "WHAT (The event that triggered the explosion)"
+      - "WHO, WHERE, WHEN (The people affected by the debris)"
+      - "TWIST/COMPLICATION (A hidden survivor or complication)"
+      - "WHY/OUTCOME (The long-term impact on the world)"
+    style: "Cinematic; focuses on cause and effect."
+
+  - name: "The Instruction Manual (Process-Oriented)"
+    flow: "2-4-5-1-3"
+    sections:
+      - "WHAT (Defining the objective)"
+      - "HOW (The technical steps to achieve it)"
+      - "WHY/OUTCOME (The success or failure of the mission)"
+      - "WHO, WHERE, WHEN (Who was running the operation from the start)"
+      - "TWIST/COMPLICATION (The secret glitch or complication in the plan)"
+    style: "Cold, professional, and calculating."
+
+  - name: "The Flash-Forward Hook"
+    flow: "2-5-1-3-4"
+    sections:
+      - "WHAT (The conflict starts)"
+      - "WHY/OUTCOME (A glimpse of the future; the protagonist in prison)"
+      - "WHO, WHERE, WHEN (Returning to the start of the crime)"
+      - "TWIST/COMPLICATION (The moment the plan went wrong)"
+      - "HOW (The actual confrontation that led to the prison scene)"
+    style: "Common in How did I end up here? tropes."
+
+  - name: "The Slow Burn (Delayed Conflict)"
+    flow: "1-2-5-3-4"
+    sections:
+      - "WHO, WHERE, WHEN (Heavy world-building)"
+      - "WHAT (The inciting incident)"
+      - "WHY/OUTCOME (Showing the stakes; what happens if they fail)"
+      - "TWIST/COMPLICATION (A sudden detour or complication)"
+      - "HOW (The final, delayed explosion of action)"
+    style: "High-fantasy or deep drama."

@@ -1,0 +1,85 @@
+# ============================================================
+# StoryForge-RAG — Requirements
+# Python 3.10+  |  RTX 5060 Ti 16 GB (Blackwell / CUDA 12+)
+# ============================================================
+#
+# INSTALL ORDER (recommended):
+#
+#   1. PyTorch with CUDA (must be done first, before everything else):
+#        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+#
+#   2. All other dependencies:
+#        pip install -r requirements.txt
+#
+#   3. Flash Attention 2 (optional, ~30% faster generation on Blackwell — skip if not needed):
+#        pip install flash-attn --no-build-isolation
+#      Note: requires CUDA toolkit, a C++ compiler, AND Windows Long Paths enabled.
+#      To enable long paths (Admin PowerShell):
+#        New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+#      Then restart your terminal before installing. Without this, pip will fail with an OSError.
+#
+# ============================================================
+
+# --- Web framework ---
+fastapi>=0.115.0
+uvicorn>=0.32.0
+pydantic>=2.0.0
+
+# --- Configuration ---
+pyyaml>=6.0.2
+python-dotenv>=1.0.0
+
+# --- HTTP / networking ---
+requests>=2.31.0
+urllib3>=2.0.0
+
+# --- Progress bars ---
+tqdm>=4.66.0
+
+# --- Text extraction ---
+pymupdf>=1.24.0          # PDF extraction (import fitz)
+epub-to-text>=0.1.0      # EPUB extraction
+
+# --- Vector database ---
+chromadb>=1.4.1
+
+# --- LangChain core + integrations ---
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
+langchain-chroma>=0.2.0
+langchain-huggingface>=0.1.2
+langchain-google-genai>=2.0.0   # Gemini via LangChain (evaluation step)
+
+# --- HuggingFace ---
+huggingface-hub>=0.26.0          # InferenceClient (Step 2 grounded-facts API)
+transformers>=4.57.6             # AutoModelForCausalLM, AutoTokenizer, pipeline (Step 3)
+sentence-transformers>=3.0.0     # SentenceTransformer (BGE ingest) + CrossEncoder (reranker)
+accelerate>=0.33.0               # device_map="auto" for model loading
+
+# --- Google Gemini (evaluation fallback) ---
+google-genai>=1.0.0              # from google import genai
+
+# --- PyTorch (CUDA build installed separately — see note at top) ---
+# torch is listed here so pip freeze / dependency checks work correctly.
+# The version installed via --index-url above takes precedence.
+torch>=2.0.0
+
+# --- Testing / linting ---
+pytest>=8.0.0
+ruff>=0.8.0
+
+# ============================================================
+# OPTIONAL — uncomment only if needed
+# ============================================================
+
+# 4-bit quantization (cuts VRAM usage ~50%; needed for 13B+ models).
+# Windows users: bitsandbytes can be finicky — install only if you need it.
+# bitsandbytes>=0.43.0
+
+# Hybrid BM25 + semantic search (roadmap item 2.3):
+# rank-bm25>=0.2.2
+
+# Structured JSON output via grammar-constrained generation (roadmap item 2.4):
+# outlines>=0.1.0
