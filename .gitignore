@@ -111,6 +111,15 @@ STORY_FORMAT_GUIDE.md
 *_Example.py
 *_FIXED_EXAMPLE.py
 
+# --- Legacy duplicate packages (removed from repo; ignore if present locally) ---
+legacy/
+API/
+Orchestrator/
+Vector_Store/
+Generative_AI/
+Book_search/
+Evaluation/
+
 # --- Accidental / scratch ---
 str
 *.log

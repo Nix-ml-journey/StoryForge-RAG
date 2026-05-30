@@ -9,7 +9,7 @@ It will:
   3. Re-ingest all stories from data/stories/ using the new BGE-base model (768-dim)
 
 Usage (from project root, with venv active):
-    python reset_and_ingest.py
+    py scripts/reset_and_ingest.py
 """
 
 from __future__ import annotations
@@ -18,9 +18,8 @@ import shutil
 import sys
 from pathlib import Path
 
-# Ensure src/ is on the path
-ROOT = Path(__file__).resolve().parent
-SRC = ROOT / "src"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -55,10 +54,10 @@ def _reset_via_chromadb(chroma_path: Path, collection_name: str) -> None:
 
 def main() -> None:
     cfg = load_config()
-    base = Path(cfg.get("BASE_PATH") or ROOT).resolve()
+    base = Path(cfg.get("BASE_PATH") or REPO_ROOT).resolve()
     chroma_rel = cfg.get("Chroma_path") or "data/chroma_db"
     chroma_path = (base / chroma_rel).resolve()
-    legacy_chroma = ROOT / "chroma_db"
+    legacy_chroma = REPO_ROOT / "chroma_db"
     collection_name = str(cfg.get("Chroma_collection_name") or "StoryForgeRag_v1")
 
     print("=" * 60)

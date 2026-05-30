@@ -179,15 +179,19 @@ def main() -> int:
         description="Run a lightweight retrieval evaluation against the configured vector store."
     )
     parser.add_argument(
-        "--cases", default="Evaluation/retrieval_eval_cases.example.json", help="Path to retrieval eval cases JSON."
+        "--cases",
+        default="tests/fixtures/retrieval_eval_cases.example.json",
+        help="Path to retrieval eval cases JSON.",
     )
     parser.add_argument(
-        "--output", default="Evaluation/retrieval_eval_report.json", help="Where to write the JSON report."
+        "--output",
+        default="Evaluation/retrieval_eval_report.json",
+        help="Where to write the JSON report (gitignored when under Evaluation/).",
     )
     parser.add_argument("--k", type=int, default=3, help="Top-k retrieval cutoff.")
     args = parser.parse_args()
 
-    from Orchestrator.orchestrator import Orchestrator
+    from storyforge.orchestrator.orchestrator import Orchestrator
 
     orchestrator = Orchestrator()
     cases = load_cases(args.cases)
