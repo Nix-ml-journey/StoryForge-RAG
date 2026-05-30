@@ -1,9 +1,0 @@
-{
-  "cases": [
-    {
-      "query": "warrior redemption after a great mistake",
-      "expected_title": "Amun",
-      "expected_facts": ["warrior", "mistake"]
-    }
-  ]
-}

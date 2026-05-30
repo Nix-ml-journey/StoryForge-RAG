@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -176,28 +175,19 @@ def write_report(report: dict[str, Any], output_path: str | Path) -> Path:
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parents[3]
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-
     parser = argparse.ArgumentParser(
         description="Run a lightweight retrieval evaluation against the configured vector store."
     )
     parser.add_argument(
-        "--cases",
-        default=str(root / "tests" / "fixtures" / "retrieval_eval_cases.example.json"),
-        help="Path to retrieval eval cases JSON.",
+        "--cases", default="Evaluation/retrieval_eval_cases.example.json", help="Path to retrieval eval cases JSON."
     )
     parser.add_argument(
-        "--output",
-        default=str(root / "data" / "outputs" / "retrieval_eval_report.json"),
-        help="Where to write the JSON report.",
+        "--output", default="Evaluation/retrieval_eval_report.json", help="Where to write the JSON report."
     )
     parser.add_argument("--k", type=int, default=3, help="Top-k retrieval cutoff.")
     args = parser.parse_args()
 
-    from storyforge.orchestrator.orchestrator import Orchestrator
+    from Orchestrator.orchestrator import Orchestrator
 
     orchestrator = Orchestrator()
     cases = load_cases(args.cases)

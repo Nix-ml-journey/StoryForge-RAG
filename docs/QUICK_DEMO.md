@@ -29,10 +29,11 @@ These tests use temporary folders and do not touch local runtime data such as `S
 Current test coverage focuses on:
 
 - Shared config loading and `setup.example.yaml` fallback in `storyforge_config.py`
-- Hugging Face-first evaluation provider selection and Gemini fallback in `src/storyforge/evaluation/evaluation.py`
-- Retrieval metric calculations in `src/storyforge/evaluation/retrieval_eval.py`
-- Agentic loop decisions and attribution parsing in `tests/test_agentic_loop.py` and `tests/test_attribution_gate.py`
-- Story JSON workflow helpers in `tests/test_story_json_workflow.py`
+- Hugging Face-first evaluation provider selection and Gemini fallback in `Evaluation/evaluation.py`
+- Retrieval metric calculations in `Evaluation/retrieval_eval.py`
+- Layer 2 section parsing in `Generative_AI/section_parse.py`
+- Metadata summary validation in `Data/metadata.py`
+- Story/metadata merge behavior in `Data/data_merge.py`
 
 Run the same lightweight suite locally with `python -m pytest` (see `tests/`).
 
@@ -119,7 +120,7 @@ Useful docs pages:
 To run retrieval evaluation after ingesting data:
 
 ```bash
-python -m storyforge.evaluation.retrieval_eval --cases tests/fixtures/retrieval_eval_cases.example.json --output data/outputs/retrieval_eval_report.json --k 3
+python -m Evaluation.retrieval_eval --cases Evaluation/retrieval_eval_cases.example.json --output Evaluation/retrieval_eval_report.json --k 3
 ```
 
 HF-first evaluation is configured with:

@@ -4,9 +4,9 @@ test_generation.py
 Manual smoke-tests for the story generation endpoint.
 
 Usage (server must be running in another terminal: python main.py):
-    python scripts/test_generation.py              # run all tests
-    python scripts/test_generation.py --test 1     # run a single test by number
-    python scripts/test_generation.py --debug      # show full response including grounded facts
+    python test_generation.py              # run all tests
+    python test_generation.py --test 1     # run a single test by number
+    python test_generation.py --debug      # show full response including grounded facts
 
 Tests cover:
     1. Basic generation     — minimal request, just a query
