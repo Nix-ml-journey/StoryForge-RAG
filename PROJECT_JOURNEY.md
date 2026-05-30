@@ -154,5 +154,4 @@ Lazy imports in `rag/__init__.py` keep unit tests runnable without loading Trans
 
 - **Code:** https://github.com/Nix-ml-journey/StoryForge-RAG  
 - **Quick test path:** `docs/QUICK_DEMO.md`  
-- **Roadmap:** `docs/PROJECT_UPDATE_ROADMAP.md`, `docs/UPGRADE_ROADMAP_5060Ti.md`  
-- **Portfolio PDF source:** regenerate from `StoryForge_RAG_Portfolio.md` via `scripts/generate_portfolio_pdf.py`
+- **Roadmap:** `docs/PROJECT_UPDATE_ROADMAP.md`, `docs/UPGRADE_ROADMAP_5060Ti.md`

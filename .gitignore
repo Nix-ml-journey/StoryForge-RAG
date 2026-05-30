@@ -91,11 +91,12 @@ Evaluation/retrieval_eval_report.json
 Evaluation/retrieval_eval_cases.json
 tests/fixtures/retrieval_eval_cases.json
 
-# --- Portfolio (regenerate: python scripts/generate_portfolio_pdf.py) ---
+# --- Portfolio (local only; lives in ../StoryForge-portfolio/) ---
 Portfolio.txt
 StoryForge_RAG_Portfolio.md
 StoryForge_RAG_Portfolio.pdf
 docs/portfolio/
+portfolio/
 
 # --- Agent / personal notes ---
 Role.md
