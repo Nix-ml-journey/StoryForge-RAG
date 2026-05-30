@@ -60,8 +60,7 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - Optional per-layer temperature/top-p overrides in `setup.yaml`
 - Prompt-budget-aware context truncation before generation
 - Repetition controls (repetition/frequency/presence penalties + no-repeat ngram)
-- Advanced decoding via `Generative_AI/penalty_processors.py` to reduce repetition loops while excluding common stopwords from penalty application
-- Post-generation cleanup safeguards to trim malformed tails and degeneration artifacts
+- Post-generation cleanup safeguards to trim malformed tails and degeneration artifacts (`src/storyforge/rag/`)
 - Query–context alignment guardrails: if retrieved context does not match the query, Layer 1 fails closed with a structured "insufficient context" signal instead of extracting the wrong story
 - Multi-story retrieval filtering: when retrieval returns multiple story blocks, context is sorted/filtered to the best matching story by query keyword overlap
 - Grounding improvements: generation uses extracted facts as the source of truth instead of passing through a lossy summary-and-expansion chain
@@ -70,8 +69,7 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - Duplicate-download protection by identifier to avoid redundant fetches
 - Evaluation with Hugging Face first and Gemini fallback, with retry handling for transient API errors
 - API groups: `/orchestration` (pipeline steps), `/create-eval` (generate/evaluate stories and summaries)
-- `debug_layers/` scripts to run Layer 1–3 in isolation for debugging (see `debug_layers/README.md`)
-- Lightweight pytest coverage for section parsing, metadata checks, and data merge behavior
+- Lightweight pytest coverage for agentic loop decisions, attribution parsing, evaluation providers, and story JSON workflow
 
 ## Grounded Story Generation
 
@@ -119,15 +117,25 @@ Related prompt templates live in `prompts.yaml` under `generation`:
 
 ## Project Structure
 
-- `API/` - FastAPI routes (`orchestration`, `create-eval`, data, etc.)
-- `Orchestrator/` - Pipeline orchestration and step control
-- `Book_search/` - Search/download + extraction entry points
-- `Data/` - Metadata and merge logic
-- `Vector_Store/` - Chroma ingestion/query utilities
-- `Generative_AI/` - `config`, `modes` (enums + sampling), `inference` (model + `truncate_context`), `generation` (retrieval + layers + entrypoints), `generative_ai` facade, penalty processors, flow choice
-- `Evaluation/` - Automated scoring and feedback
-- `scripts/` - Utility scripts for CUDA checks, Gemini model listing, and merged-data validation
-- `debug_layers/` - Optional layer-by-layer CLI debugging
+```text
+main.py                 # FastAPI entry point
+setup.yaml              # Local config (gitignored)
+prompts.yaml            # Prompt templates
+src/storyforge/         # Active application package
+  api/                  # FastAPI routes
+  book_search/          # Archive.org download + text extraction
+  config/               # Config and secrets loading
+  data/                 # Story JSON workflow helpers
+  evaluation/           # Rubric scoring + retrieval eval
+  orchestrator/         # Pipeline step control
+  rag/                  # Grounded RAG + agentic loop
+  vector_store/         # Chroma ingest and query
+tests/                  # Lightweight pytest suite
+scripts/                # Optional CLI helpers
+data/                   # Local stories, Chroma DB, outputs
+docs/                   # Documentation and portfolio assets
+legacy/                 # Deprecated pre-src packages (reference only)
+```
 
 ## Quick Start
 
@@ -151,11 +159,11 @@ Run:
 The current lightweight suite covers:
 
 - Shared config loading with `setup.example.yaml` fallback (`storyforge_config.py`)
-- Hugging Face-first evaluation provider selection and Gemini fallback (`Evaluation/evaluation.py`)
-- Retrieval evaluation metrics for top-k accuracy and fact coverage (`Evaluation/retrieval_eval.py`)
-- Layer 2 section parsing (`Generative_AI/section_parse.py`)
-- Metadata summary validation (`Data/metadata.py`)
-- Story/metadata merge behavior (`Data/data_merge.py`)
+- Hugging Face-first evaluation provider selection and Gemini fallback (`src/storyforge/evaluation/evaluation.py`)
+- Retrieval evaluation metrics for top-k accuracy and fact coverage (`src/storyforge/evaluation/retrieval_eval.py`)
+- Agentic loop decision policy and attribution parsing (`tests/test_agentic_loop.py`, `tests/test_attribution_gate.py`)
+- Story JSON ingest workflow helpers (`tests/test_story_json_workflow.py`)
+- FastAPI create-eval route contracts with mocked orchestrator (`tests/test_create_eval_routes.py`)
 
 These tests use temporary directories and avoid external services, local model loading, and runtime data folders.
 
@@ -195,7 +203,7 @@ For local validation after data updates, run the data path in this order:
 
 ## Retrieval Evaluation
 
-`Evaluation/retrieval_eval.py` measures whether vector search returns the expected story for a query.
+`src/storyforge/evaluation/retrieval_eval.py` measures whether vector search returns the expected story for a query.
 
 It reports:
 
@@ -207,12 +215,10 @@ It reports:
 Example:
 
 ```bash
-python -m Evaluation.retrieval_eval --cases Evaluation/retrieval_eval_cases.example.json --output Evaluation/retrieval_eval_report.json --k 3
+python -m storyforge.evaluation.retrieval_eval --cases tests/fixtures/retrieval_eval_cases.example.json --output data/outputs/retrieval_eval_report.json --k 3
 ```
 
-The included `Evaluation/retrieval_eval_cases.example.json` is a small template. Replace or extend it with project-specific queries and expected facts after ingesting your real corpus.
-
-`Evaluation/retrieval_eval_report.example.json` shows the expected report shape using illustrative sample results.
+The included `tests/fixtures/retrieval_eval_cases.example.json` is a small template. Replace or extend it with project-specific queries and expected facts after ingesting your real corpus.
 
 ## Who This Is For
 

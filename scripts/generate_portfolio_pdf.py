@@ -1,5 +1,5 @@
 """
-Regenerate StoryForge_RAG_Portfolio.pdf from StoryForge_RAG_Portfolio.md.
+Regenerate docs/portfolio/StoryForge_RAG_Portfolio.pdf from the markdown source.
 
 Usage (from repo root):
     pip install fpdf2
@@ -12,8 +12,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MD_PATH = ROOT / "StoryForge_RAG_Portfolio.md"
-PDF_PATH = ROOT / "StoryForge_RAG_Portfolio.pdf"
+MD_PATH = ROOT / "docs" / "portfolio" / "StoryForge_RAG_Portfolio.md"
+PDF_PATH = ROOT / "docs" / "portfolio" / "StoryForge_RAG_Portfolio.pdf"
 
 
 def _ascii_safe(text: str) -> str:

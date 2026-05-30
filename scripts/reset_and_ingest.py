@@ -9,7 +9,7 @@ It will:
   3. Re-ingest all stories from data/stories/ using the new BGE-base model (768-dim)
 
 Usage (from project root, with venv active):
-    python reset_and_ingest.py
+    python scripts/reset_and_ingest.py
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 # Ensure src/ is on the path
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))

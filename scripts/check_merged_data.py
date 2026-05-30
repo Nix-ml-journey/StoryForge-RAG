@@ -162,7 +162,7 @@ def run_checks(
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     config_path = root / "setup.yaml"
     config = load_config(config_path)
 
