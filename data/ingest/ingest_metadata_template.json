@@ -6,7 +6,7 @@
   "by_title": {},
   "_examples": {
     "_standalone_story_example": {
-      "KEY (put this under by_title)": "Amun",
+      "KEY (put this under by_title)": "DemoStory",
       "VALUE": {
         "Is_series": false,
         "id": "id_01",
@@ -24,13 +24,13 @@
       }
     },
     "_series_story_example": {
-      "KEY (put this under by_title)": "Amun",
+      "KEY (put this under by_title)": "DemoStory",
       "VALUE": {
         "Is_series": true,
         "id": "id_01",
         "series": {
           "id": "series_01",
-          "series_name": "Amun Chronicles"
+          "series_name": "Demo Chronicles"
         },
         "volume": {
           "volume_id": "vol_01",

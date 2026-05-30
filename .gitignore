@@ -6,6 +6,10 @@ __pycache__/
 .Python
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
 
 # Virtual environments
 venv/
@@ -16,6 +20,7 @@ env/
 .env
 .env.*
 setup.yaml
+setup.local.yaml
 
 # IDE / OS
 .vscode/
@@ -24,30 +29,87 @@ setup.yaml
 Thumbs.db
 .DS_Store
 
-# Runtime outputs and datasets
+# =============================================================================
+# StoryForge — PRIVATE / LOCAL ONLY
+#
+# Safe to commit: src/, scripts/, tests/, templates, setup.example.yaml,
+#                and data/*/sample/ (public demo corpus only).
+# =============================================================================
+
+# --- Private story corpus (sample/ is the public demo) ---
+data/stories/**
+!data/stories/sample/
+!data/stories/sample/**
+Data/stories/**
+!Data/stories/sample/
+!Data/stories/sample/**
+
+data/story_json/**
+!data/story_json/sample/
+!data/story_json/sample/**
+Data/story_json/**
+!Data/story_json/sample/
+!Data/story_json/sample/**
+
+# --- Ingest manifest (full chunk text from your corpus) ---
+data/ingest/ingest_manifest.jsonl
+Data/ingest/ingest_manifest.jsonl
+data/ingest/**/*.jsonl
+!data/ingest/sample/
+!data/ingest/sample/**
+Data/ingest/**/*.jsonl
+!Data/ingest/sample/
+!Data/ingest/sample/**
+
+# --- Runtime / derived data ---
 data/outputs/
 data/chroma_db/
-data/story_json/
+data/raw_extracted/
+chroma_db/
+Raw_Extracted/
+
+# --- Generated story runs ---
 Generated_Stories/
 Evaluated_Stories/
 Summarized_Stories/
-Downloaded_Books/
-Downloaded_Metadata/
-Text_Extracted/
-Data_Merged/
-Metadata/
-Metadata_copy/
-Stories/
+
+# --- Legacy book-download and merge pipeline (local only) ---
+/Downloaded_Books/
+/Downloaded_Metadata/
+/Text_Extracted/
+/Data_Merged/
+/Metadata/
+/Metadata_copy/
+/Stories/
 save_json/
-chroma_db/
 save_book/
-oldStories/
-Data_Merged old/
+/oldStories/
+/Data_Merged old/
+
+# --- Local evaluation artifacts ---
+Evaluation/retrieval_eval_report.json
+Evaluation/retrieval_eval_cases.json
+tests/fixtures/retrieval_eval_cases.json
+
+# --- Portfolio (regenerate: python scripts/generate_portfolio_pdf.py) ---
+Portfolio.txt
+StoryForge_RAG_Portfolio.md
+StoryForge_RAG_Portfolio.pdf
+docs/portfolio/
+
+# --- Agent / personal notes ---
+Role.md
+
+# --- Local debugging / workflow notes ---
 debug_layers/
 layers_output_problems.md
 STORY_FORMAT_GUIDE.md
 
-# Legacy/duplicate reference files
+# --- Legacy duplicate example scripts at repo root ---
 *_EXAMPLE.py
 *_Example.py
 *_FIXED_EXAMPLE.py
+
+# --- Accidental / scratch ---
+str
+*.log
