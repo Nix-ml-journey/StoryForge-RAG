@@ -28,7 +28,10 @@ jobs:
           python -m pip install pytest pyyaml requests fastapi httpx ruff
 
       - name: Run Ruff
-        run: python -m ruff check .
+        run: python -m ruff check src tests scripts
 
-      - name: Run tests
-        run: python -m pytest
+      - name: Run lightweight tests
+        env:
+          PYTHONPATH: src
+          STORYFORGE_CONFIG_PATH: setup.example.yaml
+        run: python -m pytest -q
