@@ -19,6 +19,7 @@ from storyforge.rag import generative_ai
 from storyforge.rag.generative_ai import Gen_mode, StoryType
 from storyforge.rag.agentic_loop import run_agentic_story_loop
 from storyforge.rag.langchain_rag import generate_story_3step_langchain
+from storyforge.config.config import load_config
 from storyforge.vector_store.chromadb import Collection, delete_data, query_data, update_data
 from storyforge.vector_store.chromadb import reset_vector_store_dir, set_active_collection
 from storyforge.vector_store.ingest_stories import ingest_stories_dir
@@ -272,15 +273,20 @@ def generate_story_result(
 ) -> dict:
     try:
         temperature, top_p = generative_ai.get_mode_sampling(mode)
+        cfg = load_config()
+        cfg["Story_generation_n_results"] = int(n_results)
         gen_params = {
             "temperature": temperature,
             "top_p": top_p,
             "three_layer": True,
             "story_type": story_type.value if story_type else None,
+            "n_results": int(n_results),
         }
         # 3-step RAG: Chroma retrieve → HF facts → local story generation
         out = generate_story_3step_langchain(
             query,
+            cfg=cfg,
+            mode=mode,
             n_stories=3,
             chunks_per_story=2,
             show_progress=True,

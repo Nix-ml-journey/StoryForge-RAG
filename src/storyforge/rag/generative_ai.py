@@ -23,7 +23,7 @@ class StoryType(str, Enum):
 
 def parse_gen_mode(value: Optional[str]) -> Gen_mode:
     v = (value or "").strip().lower()
-    if v in {"thinking", "think", "slow"}:
+    if v in {"thinking", "think", "slow", "medium"}:
         return Gen_mode.THINKING
     return Gen_mode.FAST
 
@@ -88,6 +88,10 @@ def clean_story_output(text: str) -> str:
     text = "\n\n".join(fixed)
 
     text = re.sub(r'(?<=[\u201d"])(?=[A-Za-z])', " ", text)
+    # Remove whitespace right after an opening dialogue quote: '" Hello' -> '"Hello'
+    text = re.sub(r'(^|[\s(\[])(["\u201c])\s+([A-Za-z])', r"\1\2\3", text)
+    # Collapse accidental duplicated adjacent words: "them them" -> "them"
+    text = re.sub(r"\b([A-Za-z]+)(\s+\1\b)+", r"\1", text, flags=re.IGNORECASE)
 
     # Collapse double spaces from the steps above.
     text = re.sub(r"  +", " ", text)

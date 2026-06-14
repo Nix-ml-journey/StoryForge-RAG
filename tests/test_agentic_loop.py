@@ -63,6 +63,12 @@ def test_completeness_report_too_short():
     assert any("too short" in r for r in rep.reasons)
 
 
+def test_completeness_report_flags_sections_below_sentence_minimum():
+    rep = completeness_report(_five_section_story(extra_words=20), min_words=5, min_sentences_per_section=3)
+    assert rep.ok is False
+    assert any("sections below sentence minimum" in r for r in rep.reasons)
+
+
 # average_score / criterion_score
 def test_average_score_from_nested_criteria():
     data = {

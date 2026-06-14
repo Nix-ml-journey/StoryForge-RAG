@@ -33,3 +33,38 @@ def test_load_config_normalizes_example_base_path_for_fresh_clone(tmp_path):
 
     assert config["BASE_PATH"]
     assert "path/to/your/project" not in config["BASE_PATH"].replace("\\", "/")
+
+
+def test_example_config_exposes_generation_precision_flag():
+    config = load_config("setup.example.yaml", overlay_keys=False)
+    assert "Generation_precision" in config
+    assert str(config["Generation_precision"]).lower() in {"auto", "bf16", "fp16"}
+
+
+def test_example_config_exposes_ollama_generation_settings():
+    config = load_config("setup.example.yaml", overlay_keys=False)
+    assert config.get("Generation_provider") == "ollama"
+    assert config.get("Generative_model") == "qwen3.5:9b"
+    assert config.get("Ollama_base_url") == "http://localhost:11434"
+
+
+def test_example_config_exposes_hf_grounded_facts_json_mode_flag():
+    config = load_config("setup.example.yaml", overlay_keys=False)
+    assert "HF_grounded_facts_json_mode" in config
+    assert isinstance(config["HF_grounded_facts_json_mode"], bool)
+
+
+def test_example_config_exposes_thinking_mode_generation_flags():
+    config = load_config("setup.example.yaml", overlay_keys=False)
+    for key in (
+        "Generation_thinking_temperature",
+        "Generation_thinking_top_p",
+        "Single_pass_thinking_max_tokens",
+        "Generation_repetition_penalty",
+        "Generation_no_repeat_ngram_size",
+        "Min_sentences_per_section",
+        "Single_pass_refine_max_tokens",
+        "Agentic_loop_refine_token_boost_thinking",
+        "Agentic_loop_min_words_thinking",
+    ):
+        assert key in config

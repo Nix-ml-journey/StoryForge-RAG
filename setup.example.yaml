@@ -23,7 +23,7 @@ Evaluation_provider_priority:
 HF_evaluation_model: "Qwen/Qwen2.5-7B-Instruct"
 HF_evaluation_max_new_tokens: 700
 HF_evaluation_temperature: 0.1
-Gemini_evaluation_model: "gemini-3-flash-preview"
+Gemini_evaluation_model: "gemini-2.0-flash"
 Gemini_evaluation_fallback_model: "gemini-2.5-flash"
 
 # --- Data ---
@@ -38,16 +38,33 @@ Vector_store_model: "BAAI/bge-base-en-v1.5"
 Story_generation_n_results: 3
 
 # --- Step 2: grounded facts (HF API, no local VRAM) ---
-HF_grounded_facts_model: "Qwen/Qwen2.5-7B-Instruct"
+HF_grounded_facts_model: "Qwen/Qwen3-8B"
 HF_grounded_facts_max_new_tokens: 700
 HF_grounded_facts_temperature: 0.1
+# Try strict JSON mode for grounded-facts extraction (falls back if unsupported).
+HF_grounded_facts_json_mode: true
 
-# --- Step 3: story generation (local GPU) ---
-Generative_model: "Qwen/Qwen2.5-7B-Instruct"
-Model_max_prompt_tokens: 6144
+# --- Step 3: story generation (Ollama in Docker, or local Transformers GPU) ---
+# Provider: ollama | transformers
+Generation_provider: ollama
+Generative_model: "qwen3.5:9b"
+Ollama_base_url: "http://localhost:11434"
+# Precision for Transformers only (ignored when Generation_provider: ollama)
+Generation_precision: "auto"
+Model_max_prompt_tokens: 12288
 Generation_fast_temperature: 0.4
 Generation_fast_top_p: 0.8
-Single_pass_fast_max_tokens: 1800   # ~short stories; raise for long (e.g. 2800)
+Single_pass_fast_max_tokens: 3200   # ~short stories; raise for long (e.g. 3200)
+# Thinking/medium mode knobs (used when request mode is "thinking"/"medium")
+Generation_thinking_temperature: 0.35
+Generation_thinking_top_p: 0.85
+Single_pass_thinking_max_tokens: 4000
+# Anti-loop decoding controls (applies to both fast and thinking modes)
+Generation_repetition_penalty: 1.08
+Generation_no_repeat_ngram_size: 4
+# Story format guardrails
+Min_sentences_per_section: 3
+Single_pass_refine_max_tokens: 2800
 
 # Post-check for unknown names. false = log only; true = may truncate.
 Attribution_gate_truncate: false
@@ -57,6 +74,11 @@ Attribution_violation_threshold: 8
 Reranker_enabled: true
 Reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 Story_generation_rerank_top_n: 6
+
+# --- Hybrid search (BM25 + dense, fused via RRF) ---
+# false = pure dense vector (original behaviour)
+Hybrid_search_enabled: true
+Hybrid_bm25_weight: 0.3      # 0.0–1.0; 0.3 gives BM25 30 % and dense 70 %
 
 # --- Agentic loop ---
 Agentic_loop_enabled: true
@@ -68,6 +90,8 @@ Agentic_loop_reretrieve_k_boost: 2.0
 Agentic_loop_reretrieve_n_results: 5
 Agentic_loop_refine_token_boost: 600
 Agentic_loop_min_words: 250         # 250 = short; 1100 = long (Level B)
+Agentic_loop_refine_token_boost_thinking: 900
+Agentic_loop_min_words_thinking: 900
 
 # --- Book search (optional) ---
 Archive_url: "https://archive.org/advancedsearch.php"

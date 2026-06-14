@@ -7,6 +7,7 @@ from typing import Any
 
 from storyforge.config.config import load_config, load_prompts
 from storyforge.data.hf_summary import get_hf_token, summarize_long_text
+from storyforge.rag.generation_backend import invoke_prompt, load_ollama_llm, use_ollama_for_generation
 
 
 _ALLOWED_SECTION_TAGS = {
@@ -52,6 +53,14 @@ def _heuristic_section_tag(*, chunk_index: int, chunk_total: int) -> str:
     return "rising_action"
 
 
+def _load_section_labeler(cfg: dict[str, Any], model_id: str) -> tuple[str, Any, Any | None]:
+    if use_ollama_for_generation(cfg):
+        llm = load_ollama_llm(cfg, max_new_tokens=24, temperature=0.0, top_p=0.8)
+        return ("ollama", llm, None)
+    gen, tok = _load_local_section_labeler(model_id)
+    return ("transformers", gen, tok)
+
+
 def _load_local_section_labeler(model_id: str):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
@@ -74,7 +83,11 @@ def _load_local_section_labeler(model_id: str):
     return gen, tok
 
 
-def _label_one_section(*, gen, tok, system: str, user: str) -> str:
+def _label_one_section(*, backend: str, gen, tok, system: str, user: str) -> str:
+    if backend == "ollama":
+        text = invoke_prompt(gen, system=system, user=user)
+        return (text.splitlines()[0] if text else "").strip()
+
     from transformers import GenerationConfig
 
     prompt = f"{system.strip()}\n\n{user.strip()}\n"
@@ -125,8 +138,8 @@ def enrich_story_records(
         ingest_prompts.get("section_label_user")
         or "TITLE: {title}\nCHUNK_ID: {chunk_id}\nCHUNK:\n{chunk_text}\n\nReturn a short tag."
     )
-    section_model = str(cfg.get("Section_label_model") or cfg.get("Generative_model") or "Qwen/Qwen2.5-1.5B-Instruct")
-    section_bundle = None if skip_sections else _load_local_section_labeler(section_model)
+    section_model = str(cfg.get("Section_label_model") or cfg.get("Generative_model") or "qwen3.5:9b")
+    section_bundle = None if skip_sections else _load_section_labeler(cfg, section_model)
 
     if enable_tqdm is None:
         enable_tqdm = os.getenv("STORYFORGE_TQDM", "").strip() not in {"", "0", "false", "False"}
@@ -164,7 +177,7 @@ def enrich_story_records(
         if not skip_sections:
             chunks = rec.get("chunks")
             if isinstance(chunks, list) and section_bundle is not None:
-                section_gen, section_tok = section_bundle
+                section_backend, section_gen, section_tok = section_bundle
                 last_label = ""
                 repeat_streak = 0
                 total = len(chunks)
@@ -183,7 +196,13 @@ def enrich_story_records(
                         chunk_total=str(total),
                         chunk_text=chunk_text[:2000],
                     )
-                    label = _label_one_section(gen=section_gen, tok=section_tok, system=section_system, user=user).lower().strip()
+                    label = _label_one_section(
+                        backend=section_backend,
+                        gen=section_gen,
+                        tok=section_tok,
+                        system=section_system,
+                        user=user,
+                    ).lower().strip()
 
                     if label == last_label and label:
                         repeat_streak += 1

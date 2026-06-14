@@ -1,0 +1,31 @@
+# Ollama for StoryForge Step 3 generation (qwen3.5:9b).
+#
+# Start:
+#   docker compose up -d
+#
+# Pull model (first time):
+#   docker compose exec ollama ollama pull qwen3.5:9b
+#
+# Verify:
+#   curl http://localhost:11434/api/tags
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: storyforge-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    # GPU: requires NVIDIA Container Toolkit (Linux/WSL2 Docker Desktop).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama_data:

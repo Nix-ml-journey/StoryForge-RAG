@@ -51,6 +51,7 @@ langchain-text-splitters>=0.3.0
 langchain-chroma>=0.2.0
 langchain-huggingface>=0.1.2
 langchain-google-genai>=2.0.0   # Gemini via LangChain (evaluation step)
+langchain-ollama>=0.3.0         # Ollama for Step 3 story generation (qwen3.5:9b)
 
 # --- HuggingFace ---
 huggingface-hub>=0.26.0          # InferenceClient (Step 2 grounded-facts API)

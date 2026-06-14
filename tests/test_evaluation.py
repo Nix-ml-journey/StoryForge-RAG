@@ -10,9 +10,11 @@ class _FakeGemini:
 
 
 def test_evaluate_model_prefers_huggingface_when_token_is_available(monkeypatch):
-    monkeypatch.setattr(evaluation, "hf_api_key", "hf-token")
-    monkeypatch.setattr(evaluation, "hf_evaluation_model", "test-hf-eval-model")
-    monkeypatch.setattr(evaluation, "evaluation_provider_priority", ["huggingface", "gemini"])
+    monkeypatch.setattr(evaluation, "_cfg", lambda: {
+        "facehugging_api": "hf-token",
+        "HF_evaluation_model": "test-hf-eval-model",
+        "Evaluation_provider_priority": ["huggingface", "gemini"],
+    })
 
     model = evaluation.evaluate_model()
 
@@ -20,12 +22,13 @@ def test_evaluate_model_prefers_huggingface_when_token_is_available(monkeypatch)
     assert model["model"] == "test-hf-eval-model"
 
 
-def test_evaluate_model_uses_config_hf_model_when_global_is_none(monkeypatch):
-    # With the module-level override left as None, the HF judge must come from config.
-    monkeypatch.setattr(evaluation, "hf_api_key", "hf-token")
-    monkeypatch.setattr(evaluation, "hf_evaluation_model", None)
-    monkeypatch.setattr(evaluation, "evaluation_provider_priority", ["huggingface", "gemini"])
-    monkeypatch.setattr(evaluation, "_cfg", lambda: {"HF_evaluation_model": "Qwen/Qwen2.5-7B-Instruct"})
+def test_evaluate_model_reads_hf_model_from_config(monkeypatch):
+    # HF model must come from config when no model_name override is passed.
+    monkeypatch.setattr(evaluation, "_cfg", lambda: {
+        "facehugging_api": "hf-token",
+        "HF_evaluation_model": "Qwen/Qwen2.5-7B-Instruct",
+        "Evaluation_provider_priority": ["huggingface", "gemini"],
+    })
 
     model = evaluation.evaluate_model()
 
@@ -34,9 +37,12 @@ def test_evaluate_model_uses_config_hf_model_when_global_is_none(monkeypatch):
 
 
 def test_evaluate_model_falls_back_to_gemini_when_hf_unavailable(monkeypatch):
-    monkeypatch.setattr(evaluation, "hf_api_key", "")
-    monkeypatch.setattr(evaluation, "gemini_api_key", "gemini-token")
-    monkeypatch.setattr(evaluation, "evaluation_provider_priority", ["huggingface", "gemini"])
+    monkeypatch.setattr(evaluation, "_cfg", lambda: {
+        "facehugging_api": "",
+        "Gemini_api_key": "gemini-token",
+        "Gemini_evaluation_model": "gemini-2.0-flash",
+        "Evaluation_provider_priority": ["huggingface", "gemini"],
+    })
     monkeypatch.setattr(evaluation, "ChatGoogleGenerativeAI", lambda **_kwargs: _FakeGemini())
 
     model = evaluation.evaluate_model()
@@ -51,6 +57,10 @@ def test_invoke_with_retry_uses_gemini_fallback_after_hf_transient_error(monkeyp
         raise RuntimeError("503 service unavailable")
 
     monkeypatch.setattr(evaluation, "_invoke_hf_with_retry", _raise_transient)
+    monkeypatch.setattr(evaluation, "_cfg", lambda: {
+        "Gemini_evaluation_model": "gemini-2.0-flash",
+        "Gemini_evaluation_fallback_model": "gemini-2.5-flash",
+    })
     monkeypatch.setattr(
         evaluation, "_build_gemini_evaluator", lambda **_kwargs: _FakeGemini('{"overall": {"score": 7}}')
     )

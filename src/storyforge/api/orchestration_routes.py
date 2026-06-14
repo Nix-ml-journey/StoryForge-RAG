@@ -1,10 +1,16 @@
 import asyncio
+import json
 import logging
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from storyforge.config.config import load_config
+from storyforge.rag.extraction import extract_grounded_facts
 from storyforge.rag.generative_ai import parse_gen_mode, parse_story_type
+from storyforge.rag.retrieval import _docs_to_chunks, retrieve_docs
 from storyforge.orchestrator.orchestrator import Orchestrator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -247,3 +253,137 @@ async def run_step(request: RunStepRequest):
 @orchestration_router.get("/status", response_model=StatusResponse)
 async def orchestration_status():
     return StatusResponse(success=True, message="API is running", type="orchestration")
+
+
+# ---------------------------------------------------------------------------
+# Streaming endpoint
+# ---------------------------------------------------------------------------
+
+class GenerateStreamRequest(BaseModel):
+    query: str = Field(..., min_length=1, description="The story generation query")
+    mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    n_stories: int = Field(default=3, ge=1, le=10, description="Number of source stories to retrieve")
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "summary": "Stream a fast story",
+                    "value": {"query": "A warrior monk's journey through the desert", "mode": "fast", "n_stories": 3},
+                }
+            ]
+        }
+    )
+
+
+async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str]:
+    """Core SSE generator: Steps 1–2 sync in thread, Step 3 streams via Ollama."""
+
+    def _sse(data: dict) -> str:
+        return f"data: {json.dumps(data)}\n\n"
+
+    cfg = load_config()
+    mode = parse_gen_mode(request.mode)
+
+    # Step 1 — retrieve
+    yield _sse({"step": "retrieve", "status": "start"})
+    try:
+        docs = await asyncio.to_thread(
+            retrieve_docs, request.query, cfg, n_stories=request.n_stories
+        )
+        chunks = _docs_to_chunks(docs)
+    except Exception as exc:
+        yield _sse({"step": "retrieve", "status": "error", "detail": str(exc)})
+        return
+    yield _sse({"step": "retrieve", "status": "done", "n_chunks": len(chunks)})
+
+    # Step 2 — extract grounded facts
+    yield _sse({"step": "extract", "status": "start"})
+    try:
+        grounded_raw, parsed = await asyncio.to_thread(
+            extract_grounded_facts, request.query, chunks, cfg
+        )
+    except Exception as exc:
+        yield _sse({"step": "extract", "status": "error", "detail": str(exc)})
+        return
+    yield _sse({"step": "extract", "status": "done"})
+
+    # Step 3 — stream story generation via Ollama
+    yield _sse({"step": "generate", "status": "start"})
+    try:
+        from storyforge.rag.attribution import format_facts_for_prompt
+        from storyforge.rag.extraction import _get_generation_prompts
+        from storyforge.rag.generation import (
+            _flow_section_headers,
+            _is_thinking_mode,
+            _mode_generation_params,
+        )
+        from storyforge.rag.generation_backend import (
+            ollama_base_url,
+            ollama_model_id,
+            strip_thinking_tags,
+        )
+        from langchain_core.messages import HumanMessage
+        from langchain_ollama import ChatOllama  # type: ignore
+
+        prompts = _get_generation_prompts()
+        formatted_facts = format_facts_for_prompt(parsed)
+        facts_for_prompt = formatted_facts if formatted_facts else grounded_raw
+
+        story_prompt = (
+            f"{(prompts['story_system'] or '').strip()}\n\n"
+            + prompts["story_user"]
+            .format(
+                query=request.query,
+                section_headers=_flow_section_headers(cfg),
+                grounded_facts=facts_for_prompt,
+            )
+            .strip()
+        )
+
+        max_new, temperature, top_p = _mode_generation_params(cfg, mode=mode)
+        repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
+        llm = ChatOllama(
+            model=ollama_model_id(cfg),
+            base_url=ollama_base_url(cfg),
+            temperature=temperature,
+            top_p=top_p,
+            num_predict=max_new,
+            options={"repeat_penalty": repeat_penalty},
+            think=_is_thinking_mode(mode),
+        )
+
+        async for chunk in llm.astream([HumanMessage(content=story_prompt)]):
+            token = strip_thinking_tags(str(getattr(chunk, "content", "") or ""))
+            if token:
+                yield _sse({"step": "generate", "token": token})
+
+    except Exception as exc:
+        logging.exception("generate_stream Step 3 failed")
+        yield _sse({"step": "generate", "status": "error", "detail": str(exc)})
+        return
+
+    yield _sse({"step": "generate", "status": "done"})
+    yield "data: [DONE]\n\n"
+
+
+@orchestration_router.post(
+    "/generate_stream",
+    summary="Stream story generation (SSE)",
+    response_description="Server-Sent Events stream of generation progress and tokens",
+)
+async def generate_stream(request: GenerateStreamRequest):
+    """Three-step RAG with streamed Step 3 output over Server-Sent Events.
+
+    Events are JSON objects on ``data:`` lines:
+
+    - ``{"step": "retrieve", "status": "start|done|error", "n_chunks": N}``
+    - ``{"step": "extract",  "status": "start|done|error"}``
+    - ``{"step": "generate", "status": "start|done|error"}``
+    - ``{"step": "generate", "token": "<text fragment>"}``  — repeated per token
+    - ``[DONE]``  — terminal event
+    """
+    return StreamingResponse(
+        _stream_story_sse(request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

@@ -141,12 +141,71 @@ Lazy imports in `rag/__init__.py` keep unit tests runnable without loading Trans
 
 ---
 
+## Session: Ollama Docker migration + hardening (2026)
+
+This session migrated Step 3 generation from bare Transformers to **Ollama in Docker**, fixed a set of accumulated technical debt items, and added the planned upgrade features.
+
+### Motivation
+
+Running `AutoModelForCausalLM` inside the Python process meant:
+- Model cold-start on every API restart (~20 s for 7B).
+- VRAM fully consumed by the Python process; no easy warm-swap of model variants.
+- No streaming — the full story had to complete before the API returned.
+
+Ollama in Docker solves all three: model stays warm, Ollama manages GPU memory outside the process, and `ChatOllama.astream` enables per-token streaming.
+
+### Fixes applied
+
+**Security:** Three API keys found hardcoded in `setup.yaml` were blanked and user was instructed to rotate them. `secrets.py` now consolidates all HF token env-var aliases (`STORYFORGE_HF_API_KEY`, `HUGGINGFACEHUB_API_TOKEN`, `HUGGINGFACE_API_KEY`, `HF_TOKEN`) into a single `facehugging_api` config key.
+
+**Model name bugs:** `Gemini_evaluation_model` pointed at the non-existent `"gemini-3-flash-preview"`; corrected to `"gemini-2.0-flash"` in both `setup.yaml` and `setup.example.yaml`. HF fallback model in `_hf_chat_extract_json` was set to the Ollama tag `"qwen3.5:9b"` instead of a valid HF repo ID.
+
+**Qwen3.5 thinking tags:** `qwen3.5:9b` can emit `<think>...</think>` blocks before the response. Added `strip_thinking_tags()` in `generation_backend.py` (defensive strip even when `think=False`) and the `think=` parameter to `ChatOllama`.
+
+**repeat_penalty placement:** Moved from top-level `ChatOllama` kwargs (rejected in newer langchain-ollama) into `options={"repeat_penalty": ...}`.
+
+**Module-level globals in evaluation.py:** Six process-wide globals (`evaluation_provider_priority`, `hf_evaluation_model`, etc.) broke test isolation. Replaced with per-call `_cfg()` reads; tests now monkeypatch `_cfg` directly.
+
+### New features shipped
+
+**Hybrid BM25 + dense retrieval:** `rag/retrieval.py` fuses Chroma dense results with a BM25 pass over the same candidate pool using Reciprocal Rank Fusion. Controlled by `Hybrid_search_enabled` and `Hybrid_bm25_weight` in `setup.yaml`. Captures exact name/keyword matches that vector similarity misses.
+
+**Metadata filtering:** `retrieve_docs` now accepts `filter_metadata` (a Chroma `where` filter), enabling targeted series- or story-type-scoped retrieval.
+
+**`langchain_rag.py` split:** The 971-line monolith was split into three focused modules — `retrieval.py`, `extraction.py`, `generation.py` — plus a thin orchestrator. `agentic_loop.py` imports continue to resolve via re-exports in `langchain_rag.py` with no changes to the caller.
+
+**Streaming endpoint:** `POST /orchestration/generate_stream` returns Server-Sent Events. Steps 1–2 run in a thread, Step 3 streams tokens from Ollama via `ChatOllama.astream`. Contract tests in `tests/test_api_contracts.py` run with zero external dependencies.
+
+**Context window expansion:** `Model_max_prompt_tokens: 12288`, `Single_pass_fast_max_tokens: 3200`, `Single_pass_thinking_max_tokens: 4000`.
+
+**Step 2 model upgrade:** `HF_grounded_facts_model: "Qwen/Qwen3-8B"` — better JSON extraction than the previous 7B instruct model, still API-only (no VRAM cost).
+
+### Architecture modules (updated)
+
+| Module | Role |
+|--------|------|
+| `storyforge/book_search/` | Archive.org download, text extraction |
+| `storyforge/data/` | `story_json` workflow, HF summarization helpers |
+| `storyforge/vector_store/` | Chroma + ingest with BGE-aligned embeddings |
+| `storyforge/rag/retrieval.py` | Step 1: Chroma + hybrid BM25 + reranker |
+| `storyforge/rag/extraction.py` | Step 2: HF API grounded facts, local fallback |
+| `storyforge/rag/generation.py` | Step 3: Ollama / Transformers story generation |
+| `storyforge/rag/langchain_rag.py` | 3-step orchestrator + re-exports |
+| `storyforge/rag/agentic_loop.py` | Evaluate → REFINE / RE_RETRIEVE / ACCEPT |
+| `storyforge/rag/attribution.py` | Grounded-facts parsing, attribution gate |
+| `storyforge/rag/generation_backend.py` | `load_ollama_llm`, `strip_thinking_tags` |
+| `storyforge/evaluation/` | HF-first rubric JSON; Gemini on failure |
+| `storyforge/orchestrator/` + `api/` | Pipeline steps, FastAPI routes, SSE stream |
+
+---
+
 ## What I am doing next
 
 1. More ingest diversity and chunk-quality checks (retrieval is the ceiling).
 2. Tune long-form prompts and refine loop until Level B accepts consistently.
-3. Optional Level C only after stable VRAM/token budgeting.
+3. Structured JSON output for Step 2 (`outlines` library — eliminate `repair_json` calls).
 4. Stronger retrieval eval harness (precision@k on fixed query set).
+5. Optional Level C only after stable VRAM/token budgeting.
 
 ---
 

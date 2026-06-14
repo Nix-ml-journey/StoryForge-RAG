@@ -14,14 +14,6 @@ from storyforge.config.config import load_config, load_prompts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Optional overrides for tests; None = read from setup.yaml.
-evaluation_provider_priority: list[str] = ["huggingface", "gemini"]
-hf_evaluation_model: str | None = None  # None → HF_evaluation_model in setup.yaml
-hf_api_key: str | None = None
-gemini_api_key: str | None = None
-gemini_evaluation_model: str = ""
-gemini_evaluation_fallback_model: str = ""
-
 
 def _cfg() -> dict[str, Any]:
     return load_config()
@@ -66,15 +58,11 @@ def _normalise_provider_priority(value) -> list[str]:
 
 def _build_huggingface_evaluator(temperature: float = 0.3, model_name: Optional[str] = None) -> dict[str, Any]:
     cfg = _cfg()
-    if hf_api_key is None:
-        token = str(cfg.get("facehugging_api") or "").strip()
-    else:
-        token = str(hf_api_key).strip()
+    token = str(cfg.get("facehugging_api") or "").strip()
     if not token:
         raise ValueError("Hugging Face API key is not set for evaluation")
     model_id = (
         model_name
-        or (hf_evaluation_model if hf_evaluation_model is not None else "")
         or str(cfg.get("HF_evaluation_model") or "").strip()
         or "Qwen/Qwen2.5-1.5B-Instruct"
     )
@@ -93,13 +81,10 @@ def _build_gemini_evaluator(temperature: float = 0.3, model_name: Optional[str] 
     if ChatGoogleGenerativeAI is None:
         raise ImportError("langchain-google-genai is not installed")
     cfg = _cfg()
-    if gemini_api_key is None:
-        key = str(cfg.get("Gemini_api_key") or "").strip()
-    else:
-        key = str(gemini_api_key).strip()
+    key = str(cfg.get("Gemini_api_key") or "").strip()
     if not key:
         raise ValueError("Gemini API key is not set in the configuration")
-    default_name = (gemini_evaluation_model or str(cfg.get("Gemini_evaluation_model") or "")).strip()
+    default_name = str(cfg.get("Gemini_evaluation_model") or "").strip()
     name = model_name or default_name
     if not name:
         raise ValueError("Gemini evaluation model is not set in the configuration")
@@ -118,8 +103,6 @@ def _invoke_huggingface_once(evaluator: dict[str, Any], prompt: str) -> str:
     hf_evaluation_temperature = float(cfg.get("HF_evaluation_temperature", 0.1))
     model_id = evaluator["model"]
 
-    # Router chat_completion (same as Step 2 extraction). The old hf-inference
-    # route returns 400 for models like Qwen2.5-7B-Instruct.
     from huggingface_hub import InferenceClient
 
     client = InferenceClient(token=evaluator["api_key"])
@@ -130,7 +113,7 @@ def _invoke_huggingface_once(evaluator: dict[str, Any], prompt: str) -> str:
         temperature=evaluator.get("temperature", hf_evaluation_temperature),
     )
     try:
-        return (resp.choices[0].message.content or "").strip()  # type: ignore[attr-defined]
+        return (resp.choices[0].message.content or "").strip()
     except Exception:
         if isinstance(resp, dict):
             choices = resp.get("choices") or []
@@ -153,10 +136,7 @@ def _invoke_hf_with_retry(evaluator: dict[str, Any], prompt: str) -> str:
             delay = EVAL_RETRY_BASE_DELAY_SEC * (EVAL_RETRY_BACKOFF_FACTOR**attempt)
             logging.warning(
                 "HF evaluation transient error (attempt %s/%s), retrying in %.1fs: %s",
-                attempt + 1,
-                EVAL_RETRY_MAX_ATTEMPTS,
-                delay,
-                e,
+                attempt + 1, EVAL_RETRY_MAX_ATTEMPTS, delay, e,
             )
             time.sleep(delay)
     if last_exc is not None:
@@ -176,10 +156,7 @@ def _invoke_gemini_with_retry(model, prompt: str):
             delay = EVAL_RETRY_BASE_DELAY_SEC * (EVAL_RETRY_BACKOFF_FACTOR**attempt)
             logging.warning(
                 "Gemini evaluation transient error (attempt %s/%s), retrying in %.1fs: %s",
-                attempt + 1,
-                EVAL_RETRY_MAX_ATTEMPTS,
-                delay,
-                e,
+                attempt + 1, EVAL_RETRY_MAX_ATTEMPTS, delay, e,
             )
             time.sleep(delay)
     if last_exc is not None:
@@ -189,13 +166,12 @@ def _invoke_gemini_with_retry(model, prompt: str):
 
 def _invoke_with_retry(model, prompt: str):
     cfg = _cfg()
-    primary = (gemini_evaluation_model or str(cfg.get("Gemini_evaluation_model") or "")).strip()
-    fallback = (gemini_evaluation_fallback_model or str(cfg.get("Gemini_evaluation_fallback_model") or "")).strip()
+    primary = str(cfg.get("Gemini_evaluation_model") or "").strip()
+    fallback = str(cfg.get("Gemini_evaluation_fallback_model") or "").strip()
     if isinstance(model, dict) and model.get("provider") == "huggingface":
         try:
             return _invoke_hf_with_retry(model, prompt)
         except Exception as e:
-            # Any HF failure → try Gemini so the agentic loop still has a judge.
             try:
                 gemini = _build_gemini_evaluator(model_name=fallback or primary)
             except Exception:
@@ -209,8 +185,7 @@ def _invoke_with_retry(model, prompt: str):
         if not _is_retryable_api_error(e) or not fallback:
             raise
         logging.warning(
-            "Primary evaluation model exhausted retries. Switching to fallback: %s",
-            fallback,
+            "Primary evaluation model exhausted retries. Switching to fallback: %s", fallback,
         )
         fb = _build_gemini_evaluator(model_name=fallback)
         return _invoke_gemini_with_retry(fb, prompt)
@@ -223,7 +198,7 @@ def evaluate_model(
 ):
     cfg = _cfg()
     providers = [provider.lower()] if provider else _normalise_provider_priority(
-        cfg.get("Evaluation_provider_priority") or evaluation_provider_priority
+        cfg.get("Evaluation_provider_priority") or ["huggingface", "gemini"]
     )
     errors: list[str] = []
     for candidate in providers:
@@ -274,8 +249,7 @@ def evaluate_generated_story(model, file_path) -> dict[str, Any]:
             story = file.read()
         prompt = _eval_prompts()["with_story"].format(story=story)
         response = _invoke_with_retry(model, prompt)
-        evaluation_data = _parse_json_response(response)
-        return evaluation_data
+        return _parse_json_response(response)
     except Exception as e:
         logging.error(f"Error evaluating generated story: {e}")
         return {}
@@ -302,8 +276,7 @@ def evaluate_generated_summary(model, summary_path, story_path=None) -> dict[str
                 story_text = f.read()
         prompt = _eval_prompts()["with_summary"].format(summary=summary, story=story_text)
         response = _invoke_with_retry(model, prompt)
-        evaluation_data = _parse_json_response(response)
-        return evaluation_data
+        return _parse_json_response(response)
     except Exception as e:
         logging.error(f"Error evaluating generated summary: {e}")
         return {}
@@ -325,5 +298,3 @@ def save_evaluation_results(evaluation_data: dict[str, Any], result_type: str, s
         logging.info(f"Evaluation results saved to: {output_path}")
     except Exception as e:
         logging.error(f"Error saving evaluation results: {e}")
-
-

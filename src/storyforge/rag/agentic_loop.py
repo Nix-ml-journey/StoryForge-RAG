@@ -44,6 +44,8 @@ _NON_CRITERION_KEYS = {
 _TERMINAL_CHARS = '.!?"\u201d\u2019\')'
 _EXPECTED_SECTIONS = 5
 
+_SECTION_HEADER_RE = re.compile(r"^\[SECTION\s+(\d+).*?\]\s*$", re.IGNORECASE | re.MULTILINE)
+
 
 @dataclass(frozen=True)
 class CompletenessReport:
@@ -54,7 +56,33 @@ class CompletenessReport:
     reasons: tuple[str, ...] = ()
 
 
-def completeness_report(story: str, *, min_words: int = 250, expected_sections: int = _EXPECTED_SECTIONS) -> CompletenessReport:
+def _split_section_bodies(text: str) -> dict[int, str]:
+    matches = list(_SECTION_HEADER_RE.finditer(text or ""))
+    if not matches:
+        return {}
+    sections: dict[int, str] = {}
+    for i, m in enumerate(matches):
+        try:
+            section_idx = int(m.group(1))
+        except Exception:
+            continue
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text or "")
+        sections[section_idx] = (text or "")[start:end].strip()
+    return sections
+
+
+def _sentence_count(text: str) -> int:
+    return len(re.findall(r"[^.!?]+[.!?]", (text or "").strip()))
+
+
+def completeness_report(
+    story: str,
+    *,
+    min_words: int = 250,
+    expected_sections: int = _EXPECTED_SECTIONS,
+    min_sentences_per_section: int = 0,
+) -> CompletenessReport:
     """
     Rule-based check: all [SECTION n] headers present, ends with . ! or ?,
     and at least min_words. No LLM involved.
@@ -64,6 +92,13 @@ def completeness_report(story: str, *, min_words: int = 250, expected_sections: 
 
     found_sections = {int(n) for n in re.findall(r"\[SECTION\s+(\d+)", text, flags=re.IGNORECASE)}
     missing = tuple(i for i in range(1, expected_sections + 1) if i not in found_sections)
+    short_sections: list[str] = []
+    if min_sentences_per_section > 0 and not missing:
+        bodies = _split_section_bodies(text)
+        for i in range(1, expected_sections + 1):
+            count = _sentence_count(bodies.get(i, ""))
+            if count < min_sentences_per_section:
+                short_sections.append(f"SECTION {i} has {count} sentence(s) < {min_sentences_per_section}")
 
     ends_clean = bool(text) and text[-1] in _TERMINAL_CHARS
 
@@ -74,8 +109,10 @@ def completeness_report(story: str, *, min_words: int = 250, expected_sections: 
         reasons.append("does not end on terminal punctuation")
     if word_count < min_words:
         reasons.append(f"too short ({word_count} < {min_words} words)")
+    if short_sections:
+        reasons.append("sections below sentence minimum: " + "; ".join(short_sections))
 
-    ok = not missing and ends_clean and word_count >= min_words
+    ok = not missing and ends_clean and word_count >= min_words and not short_sections
     return CompletenessReport(
         ok=ok,
         word_count=word_count,
@@ -266,11 +303,27 @@ def run_agentic_story_loop(
     cfg = cfg or load_config()
 
     max_iter = max(1, int(cfg.get("Agentic_loop_max_iterations") or 3))
-    min_words = int(cfg.get("Agentic_loop_min_words") or 250)
+    mode_name = mode.value if isinstance(mode, Gen_mode) else str(mode or "").strip().lower()
+    is_thinking = mode_name in {Gen_mode.THINKING.value, "thinking", "think", "slow", "medium"}
+
+    min_words = int(
+        cfg.get("Agentic_loop_min_words_thinking" if is_thinking else "Agentic_loop_min_words")
+        or cfg.get("Agentic_loop_min_words")
+        or 250
+    )
+    min_sentences_per_section = int(cfg.get("Min_sentences_per_section") or 3)
     k_boost_step = float(cfg.get("Agentic_loop_reretrieve_k_boost") or 2.0)
     reretrieve_n = int(cfg.get("Agentic_loop_reretrieve_n_results") or 5)
-    refine_token_boost = int(cfg.get("Agentic_loop_refine_token_boost") or 600)
-    base_max_tokens = int(cfg.get("Single_pass_fast_max_tokens") or 768)
+    refine_token_boost = int(
+        cfg.get("Agentic_loop_refine_token_boost_thinking" if is_thinking else "Agentic_loop_refine_token_boost")
+        or cfg.get("Agentic_loop_refine_token_boost")
+        or 600
+    )
+    base_max_tokens = int(
+        cfg.get("Single_pass_thinking_max_tokens" if is_thinking else "Single_pass_fast_max_tokens")
+        or cfg.get("Single_pass_fast_max_tokens")
+        or 768
+    )
 
     eval_model = None
     has_eval = False
@@ -327,12 +380,17 @@ def run_agentic_story_loop(
             parsed,
             grounded_raw,
             cfg,
+            mode=mode,
             refine_feedback=refine_feedback,
             prior_draft=prior_draft,
             max_new_tokens=refine_max_new,
         )
 
-        comp = completeness_report(story, min_words=min_words)
+        comp = completeness_report(
+            story,
+            min_words=min_words,
+            min_sentences_per_section=min_sentences_per_section,
+        )
 
         eval_data: dict[str, Any] = {}
         if has_eval and eval_mod is not None:

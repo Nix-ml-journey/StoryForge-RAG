@@ -36,6 +36,7 @@ def overlay_api_keys_from_env(config: dict | None) -> None:
 
     hf = (
         os.environ.get("STORYFORGE_HF_API_KEY", "").strip()
+        or os.environ.get("HUGGINGFACEHUB_API_TOKEN", "").strip()
         or os.environ.get("HUGGINGFACE_API_KEY", "").strip()
         or os.environ.get("HF_TOKEN", "").strip()
     )

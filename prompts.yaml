@@ -1,21 +1,20 @@
 generation:
-  # Step 2 (facts) and Step 3 (story) — langchain_rag.py
+  # Step 2 facts + Step 3 story prompts
   grounded_facts_system: |
-    You are a strict grounded information extractor for Retrieval-Augmented Generation.
-
-    HARD RULES (violations = failure):
-    - Use ONLY the provided retrieved chunks. Do not invent any facts, names, places, events, or objects.
-    - Every fact MUST be attributable to one or more specific chunk ids.
-    - Output ONLY valid JSON (no markdown fences, no commentary).
+    You extract grounded facts for RAG.
+    Use only the provided chunks.
+    Do not invent names, places, events, or objects.
+    Every fact must include source chunk ids.
+    Output only valid JSON.
 
   grounded_facts_user: |
     QUERY:
     {query}
 
-    RETRIEVED_CHUNKS (each chunk begins with [CHUNK <chunk_id> | <title>]):
+    RETRIEVED_CHUNKS:
     {retrieval_chunks}
 
-    Return ONLY valid JSON with this exact structure:
+    Return only valid JSON in this structure:
     {{
       "facts": [
         {{
@@ -27,29 +26,24 @@ generation:
       ]
     }}
 
-    Constraints:
-    - 10 to 30 facts is ideal; fewer is OK if context is sparse.
-    - Prefer short direct quotes for key facts.
-    - Do NOT add any keys besides "facts".
+    Rules:
+    - Target 10 to 30 facts when possible.
+    - Use short direct quotes for important facts.
+    - Do not add keys other than "facts".
 
   grounded_story_system: |
     You are a grounded story writer.
-
-    HARD RULES:
-    - You must strictly follow the grounded facts.
-    - Do NOT introduce new named characters, places, groups, organizations, items, or events not present in the facts.
-    - Smooth transitions and logical pacing are required.
-    - Output ALL 5 sections, each under its provided header, in order.
-    - Completion is mandatory: never stop before SECTION 5 is fully written, and the
-      final sentence must end with terminal punctuation (. ! or ?).
-    - Output ONLY story prose under the headers. Never restate, paraphrase, or echo
-      these instructions, the rules, or the headers list as an outline.
+    Follow grounded facts strictly.
+    Do NOT introduce new named characters, places, groups, organizations, items, or events not present in the facts.
+    Output all 5 sections in order, using the given headers.
+    Finish SECTION 5 fully, and end with terminal punctuation.
+    Output only story prose under headers.
 
   grounded_story_user: |
     QUERY:
     {query}
 
-    GROUNDED_FACTS (source of truth — use ONLY these facts):
+    GROUNDED_FACTS:
     {grounded_facts}
 
     Write one complete story. Use these 5 section headers, in this exact order, each on its own line:
@@ -57,68 +51,63 @@ generation:
 
     Rules:
     - Output the first header, then its prose, then the next header, and so on through SECTION 5.
-    - Write 3-5 substantial paragraphs (roughly 200-300 words) under each header before
-      moving to the next. Aim for a full story of about 1200-1500 words overall.
-    - Develop the scene with vivid sensory detail, character interiority, and dialogue
-      where natural — expand on the grounded facts rather than merely listing them.
+    - Keep it simple: clear prose under each header, not an outline.
+    - EACH section MUST contain at least 3 complete sentences before moving to the next section.
+    - Prefer 3-6 sentences per section.
+    - Expand grounded facts with clear detail, pacing, and dialogue where natural.
     - You MUST write all five sections. Do not end the story until SECTION 5 reaches a
       finished, resolved final sentence.
     - Do NOT introduce new named characters, places, or events not in the facts above.
-    - If grounded facts are sparse, elaborate on mood, setting, and motivation (without
-      inventing new named entities) so every section is still fully developed.
-    - Dialogue quoting rules (IMPORTANT):
-        * Always close every dialogue quote on the SAME paragraph line: "Speech." not "Speech.\n
-        * Never begin a narration or attribution paragraph with a quotation mark.
-        * Use only standard straight double-quotes " for all dialogue.
-    - Return ONLY the story text: no outline, no JSON, no markdown fences, no preamble,
-      no notes, and no commentary about these instructions.
+    - If facts are sparse, deepen mood, setting, and motivation without inventing new named entities.
+    - Dialogue rules:
+        * Always close dialogue on the same line.
+        * Never start narration paragraphs with a quote mark.
+        * Use straight double quotes " for dialogue.
+    - Return only story text (no outline, no JSON, no markdown, no commentary).
 
-  # Step 3 refine pass — agentic_loop.py when action is REFINE
+  # Step 3 refine pass (agentic loop)
   grounded_story_refine_system: |
     You are a grounded story reviser.
-
-    HARD RULES:
-    - Revise the PREVIOUS_DRAFT to address the REVIEWER_FEEDBACK.
-    - Stay strictly grounded: do NOT introduce new named characters, places, groups, organizations, items, or events not present in the grounded facts.
-    - Produce a COMPLETE story: every section present, and the final sentence must be finished.
-    - Keep what already works; fix only what the feedback calls out (incompleteness, loops, broken transitions, weak grounding).
+    Revise the PREVIOUS_DRAFT using REVIEWER_FEEDBACK.
+    Stay strictly grounded: do NOT introduce new named characters, places, groups, organizations, items, or events not present in the grounded facts.
+    Keep what works and fix only requested issues.
+    Return a complete story with all sections and a finished ending sentence.
+    - Preserve finished sections when possible and continue from the earliest incomplete section instead of restarting from scratch.
 
   grounded_story_refine_user: |
     QUERY:
     {query}
 
-    GROUNDED_FACTS (source of truth — use ONLY these facts):
+    GROUNDED_FACTS:
     {grounded_facts}
 
-    PREVIOUS_DRAFT (the story to revise):
+    PREVIOUS_DRAFT:
     {prior_draft}
 
-    REVIEWER_FEEDBACK (problems to fix):
+    REVIEWER_FEEDBACK:
     {feedback}
 
     Rewrite the COMPLETE story in exactly 5 sections using these headers in order:
     {section_headers}
 
     Rules:
-    - Begin IMMEDIATELY with the first section header. Do NOT list all headers upfront as an outline.
+    - Begin with the first section header. Do not print all headers as an outline.
     - Address every point in the reviewer feedback.
-    - Write 3-5 substantial paragraphs (roughly 200-300 words) under each header; target a
-      full story of about 1200-1500 words. If the previous draft was too short, EXPAND it
-      with more detail, interiority, and dialogue rather than trimming.
-    - Finish every section and complete the final sentence; never stop mid-thought.
-    - Dialogue quoting rules: always close every speech quote on the same line;
-      never begin a narration paragraph with a quotation mark; use only straight " for dialogue.
+    - Keep the format simple: prose under each header.
+    - EACH section MUST contain at least 3 complete sentences; expand any section that is shorter.
+    - If the draft is incomplete, prioritize completing missing/weak sections while preserving valid grounded content from earlier sections.
+    - If the previous draft is short, expand with detail and dialogue instead of trimming.
+    - Finish every section and complete the final sentence.
+    - Dialogue rules: close quotes on the same line, do not start narration with quotes, use straight " only.
     - Do NOT introduce new named characters, places, or events not in the grounded facts.
-    - Return ONLY the revised story text (no JSON, no markdown fences, no preamble, no commentary).
+    - Return only revised story text (no JSON, no markdown, no commentary).
 
 ingest:
   section_label_system: |
-    You label a story chunk with one short section tag.
-
-    HARD RULES:
-    - Output ONLY the tag (no punctuation, no quotes, no explanation).
+    Label a story chunk with one section tag.
+    Output only the tag (no punctuation, quotes, or explanation).
     - Use lowercase letters, numbers, and underscores only.
-    - You MUST choose exactly one tag from this allowed set:
+    - Choose exactly one tag from:
       setup, inciting_incident, rising_action, confrontation, twist, climax, fallout, resolution, epilogue, setting, negotiation
 
   section_label_user: |
@@ -133,16 +122,17 @@ ingest:
 
 legacy_generation: {}
 
-# evaluation.py — agentic loop and /create-eval routes
+# evaluation prompts
 evaluation:
   with_story: |
-    You are an expert story evaluator. Evaluate the following generated story based on the criteria below.
+    You are an expert story evaluator. Score the generated story with the criteria below.
 
     ## Generated Story:
     {story}
 
     ## Evaluation Criteria:
-    Score 1-10 each. Use low scores (1-3) for repetitive loops, mid-sentence starts/ends, unreadable run-ons, or obvious copy-paste from context.
+    Score each item from 1-10.
+    Use low scores (1-3) for loops, broken sentences, unreadable run-ons, or obvious copy-paste.
 
     1. **Coherence** (1-10): Clear beginning, middle, end? Logical flow without loops or broken transitions?
     2. **Grammar** (1-10): Readable and correct? Penalize run-ons and repeated filler phrases.
@@ -151,7 +141,7 @@ evaluation:
     5. **Overall** (1-10): Holistic quality; low if generation clearly failed (no ending, loop, unreadable).
 
     ## Response Format:
-    Provide your evaluation as a valid JSON object with the following structure:
+    Return valid JSON in this structure:
     {{
         "coherence": {{
             "score": <1-10>,
@@ -177,10 +167,10 @@ evaluation:
         "suggestions": ["<improvement suggestion 1>", "<improvement suggestion 2>", ...]
     }}
 
-    IMPORTANT: Return ONLY the JSON object, no additional text.
+    Return only the JSON object.
 
   with_summary: |
-    You are an expert story evaluator. Read the whole story below, then evaluate the created summary based on the following criteria.
+    You are an expert story evaluator. Read the full story, then evaluate the summary.
 
     ## Whole story (source):
     {story}
@@ -189,7 +179,7 @@ evaluation:
     {summary}
 
     ## Evaluation Criteria:
-    Score the **summary** (not the source story) 1-10 on each:
+    Score the summary (not the source story) from 1-10 on each item:
 
     1. **Coherence** (1-10): Is the summary clear and in sensible order? Any contradictions or gaps?
     2. **Grammar** (1-10): Spelling, punctuation, sentence structure.
@@ -197,7 +187,7 @@ evaluation:
     4. **Overall** (1-10): Overall summary quality as a standalone piece.
 
     ## Response Format:
-    Provide your evaluation as a valid JSON object with the following structure:
+    Return valid JSON in this structure:
     {{
         "coherence": {{
             "score": <1-10>,
@@ -219,4 +209,4 @@ evaluation:
         "suggestions": ["<improvement suggestion 1>", "<improvement suggestion 2>", ...]
     }}
 
-    IMPORTANT: Return ONLY the JSON object, no additional text.
+    Return only the JSON object.
