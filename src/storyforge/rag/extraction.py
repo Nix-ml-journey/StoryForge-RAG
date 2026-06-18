@@ -13,7 +13,11 @@ from huggingface_hub import InferenceClient
 
 from storyforge.config.config import load_prompts
 from storyforge.rag.attribution import ParsedFacts, parse_grounded_facts_json
-from storyforge.rag.generation_backend import load_ollama_llm, use_ollama_for_generation
+from storyforge.rag.generation_backend import (
+    generation_provider,
+    load_ollama_llm,
+    load_vllm_llm,
+)
 from storyforge.rag.retrieval import _format_chunks_for_prompt
 
 LOG = logging.getLogger(__name__)
@@ -130,7 +134,11 @@ def _load_facts_llm(cfg: dict[str, Any]) -> Any:
     temperature = float(cfg.get("HF_grounded_facts_temperature") or cfg.get("Layer1_temperature") or 0.1)
     top_p = float(cfg.get("Generation_fast_top_p") or 0.8)
 
-    if use_ollama_for_generation(cfg):
+    provider = generation_provider(cfg)
+    if provider == "vllm":
+        LOG.info("Using vLLM for grounded-facts fallback")
+        return load_vllm_llm(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p)
+    if provider == "ollama":
         LOG.info("Using Ollama for grounded-facts fallback")
         return load_ollama_llm(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p, thinking=False)
 

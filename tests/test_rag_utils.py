@@ -11,6 +11,8 @@ from storyforge.rag.generation_backend import (
     ollama_base_url,
     ollama_model_id,
     use_ollama_for_generation,
+    vllm_base_url,
+    vllm_model_id,
 )
 from storyforge.rag.generative_ai import clean_story_output
 
@@ -37,6 +39,26 @@ def test_ollama_model_and_base_url_from_config():
     }
     assert ollama_model_id(cfg) == "qwen3.5:9b"
     assert ollama_base_url(cfg) == "http://127.0.0.1:11434"
+
+
+def test_generation_provider_vllm():
+    cfg = {"Generation_provider": "vllm"}
+    assert generation_provider(cfg) == "vllm"
+    assert use_ollama_for_generation(cfg) is False
+
+
+def test_vllm_model_and_base_url_from_config():
+    cfg = {
+        "vLLM_model": "Qwen/Qwen2.5-7B-Instruct",
+        "vLLM_base_url": "http://127.0.0.1:8001/v1/",
+    }
+    assert vllm_model_id(cfg) == "Qwen/Qwen2.5-7B-Instruct"
+    assert vllm_base_url(cfg) == "http://127.0.0.1:8001/v1"
+
+
+def test_vllm_model_id_falls_back_to_generative_model():
+    cfg = {"Generative_model": "Qwen/Qwen3-8B"}
+    assert vllm_model_id(cfg) == "Qwen/Qwen3-8B"
 
 
 def test_ollama_model_id_falls_back_to_default():

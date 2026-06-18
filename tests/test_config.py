@@ -88,6 +88,12 @@ def test_example_config_exposes_ollama_generation_settings():
     assert config.get("Ollama_base_url") == "http://localhost:11434"
 
 
+def test_example_config_exposes_vllm_generation_settings():
+    config = load_config("setup.example.yaml", overlay_keys=False)
+    assert config.get("vLLM_base_url") == "http://localhost:8001/v1"
+    assert config.get("vLLM_model") == "Qwen/Qwen2.5-7B-Instruct"
+
+
 def test_example_config_exposes_hf_grounded_facts_json_mode_flag():
     config = load_config("setup.example.yaml", overlay_keys=False)
     assert "HF_grounded_facts_json_mode" in config

@@ -329,7 +329,7 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
         return
     yield _sse({"step": "extract", "status": "done"})
 
-    # Step 3 — stream story generation via Ollama
+    # Step 3 — stream story generation (Ollama, vLLM, or Transformers)
     yield _sse({"step": "generate", "status": "start"})
     try:
         from storyforge.rag.attribution import format_facts_for_prompt
@@ -340,12 +340,14 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
             _mode_generation_params,
         )
         from storyforge.rag.generation_backend import (
+            generation_provider,
             ollama_base_url,
             ollama_model_id,
             strip_thinking_tags,
+            vllm_base_url,
+            vllm_model_id,
         )
         from langchain_core.messages import HumanMessage
-        from langchain_ollama import ChatOllama  # type: ignore
 
         prompts = _get_generation_prompts()
         formatted_facts = format_facts_for_prompt(parsed)
@@ -364,15 +366,35 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
 
         max_new, temperature, top_p = _mode_generation_params(cfg, mode=mode)
         repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
-        llm = ChatOllama(
-            model=ollama_model_id(cfg),
-            base_url=ollama_base_url(cfg),
-            temperature=temperature,
-            top_p=top_p,
-            num_predict=max_new,
-            options={"repeat_penalty": repeat_penalty},
-            think=_is_thinking_mode(mode),
-        )
+
+        provider = generation_provider(cfg)
+        if provider == "vllm":
+            from langchain_openai import ChatOpenAI  # type: ignore
+            llm = ChatOpenAI(
+                model=vllm_model_id(cfg),
+                base_url=vllm_base_url(cfg),
+                api_key="EMPTY",
+                max_tokens=max_new,
+                temperature=temperature,
+                top_p=top_p,
+                model_kwargs={"frequency_penalty": max(0.0, min(2.0, repeat_penalty - 1.0))},
+            )
+        elif provider == "ollama":
+            from langchain_ollama import ChatOllama  # type: ignore
+            llm = ChatOllama(
+                model=ollama_model_id(cfg),
+                base_url=ollama_base_url(cfg),
+                temperature=temperature,
+                top_p=top_p,
+                num_predict=max_new,
+                options={"repeat_penalty": repeat_penalty},
+                think=_is_thinking_mode(mode),
+            )
+        else:
+            raise ValueError(
+                "generate_stream requires Generation_provider: ollama or vllm "
+                "(transformers does not support SSE token streaming yet)."
+            )
 
         async for chunk in llm.astream([HumanMessage(content=story_prompt)]):
             token = strip_thinking_tags(str(getattr(chunk, "content", "") or ""))

@@ -1,4 +1,4 @@
-"""Local story generation via Ollama or Hugging Face Transformers."""
+"""Local story generation via Ollama, vLLM, or Hugging Face Transformers."""
 
 from __future__ import annotations
 
@@ -23,10 +23,12 @@ class _PromptLLM:
 
 
 def generation_provider(cfg: dict[str, Any]) -> str:
-    """Return ``ollama`` or ``transformers``."""
+    """Return ``ollama``, ``vllm``, or ``transformers``."""
     raw = str(cfg.get("Generation_provider") or "ollama").strip().lower()
     if raw in {"hf", "huggingface", "transformers", "local"}:
         return "transformers"
+    if raw == "vllm":
+        return "vllm"
     return "ollama"
 
 
@@ -102,3 +104,53 @@ def invoke_combined_prompt(llm: Any, prompt: str) -> str:
     response = inner.invoke([HumanMessage(content=text)])
     result = str(getattr(response, "content", response) or "").strip()
     return strip_thinking_tags(result)
+
+
+# ---------------------------------------------------------------------------
+# vLLM backend (OpenAI-compatible REST API at localhost:8001/v1)
+# ---------------------------------------------------------------------------
+
+def vllm_base_url(cfg: dict) -> str:
+    """Base URL for the vLLM OpenAI-compatible endpoint."""
+    return str(cfg.get("vLLM_base_url") or "http://localhost:8001/v1").strip().rstrip("/")
+
+
+def vllm_model_id(cfg: dict) -> str:
+    """Model name to pass to the vLLM server (must match --model at launch)."""
+    return str(
+        cfg.get("vLLM_model") or cfg.get("Generative_model") or "Qwen/Qwen2.5-7B-Instruct"
+    ).strip()
+
+
+def load_vllm_llm(
+    cfg: dict,
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> GenerationLLM:
+    """ChatOpenAI pointed at a local vLLM server (OpenAI-compatible API).
+
+    vLLM must be running separately::
+
+        python -m vllm.entrypoints.openai.api_server \\
+            --model Qwen/Qwen2.5-7B-Instruct \\
+            --dtype bfloat16 --max-model-len 8192 --port 8001
+
+    ``langchain_openai`` is used as the client; install it with::
+
+        pip install langchain-openai
+    """
+    from langchain_openai import ChatOpenAI  # type: ignore
+
+    repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
+    llm = ChatOpenAI(
+        model=vllm_model_id(cfg),
+        base_url=vllm_base_url(cfg),
+        api_key="EMPTY",          # vLLM ignores the key; non-empty string required
+        max_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        model_kwargs={"frequency_penalty": max(0.0, min(2.0, repeat_penalty - 1.0))},
+    )
+    return _PromptLLM(llm)

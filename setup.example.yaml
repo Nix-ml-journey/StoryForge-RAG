@@ -44,12 +44,21 @@ HF_grounded_facts_temperature: 0.1
 # Try strict JSON mode for grounded-facts extraction (falls back if unsupported).
 HF_grounded_facts_json_mode: true
 
-# --- Step 3: story generation (Ollama in Docker, or local Transformers GPU) ---
-# Provider: ollama | transformers
+# --- Step 3: story generation ---
+# Provider: ollama | vllm | transformers
+#   ollama       — Ollama Docker container (default, easiest to run)
+#   vllm         — vLLM OpenAI-compatible server (higher throughput, run alongside FastAPI):
+#                    python -m vllm.entrypoints.openai.api_server \
+#                      --model Qwen/Qwen2.5-7B-Instruct \
+#                      --dtype bfloat16 --max-model-len 8192 --port 8001
+#   transformers — local HuggingFace pipeline (single-process, lower throughput)
 Generation_provider: ollama
 Generative_model: "qwen3.5:9b"
 Ollama_base_url: "http://localhost:11434"
-# Precision for Transformers only (ignored when Generation_provider: ollama)
+# vLLM settings (only used when Generation_provider: vllm)
+vLLM_base_url: "http://localhost:8001/v1"
+vLLM_model: "Qwen/Qwen2.5-7B-Instruct"
+# Precision for Transformers only (ignored when Generation_provider: ollama or vllm)
 Generation_precision: "auto"
 Model_max_prompt_tokens: 12288
 Generation_fast_temperature: 0.4

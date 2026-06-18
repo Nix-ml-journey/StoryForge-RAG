@@ -14,7 +14,12 @@ from storyforge.rag.attribution import (
     extract_named_entities_heuristic,
     format_facts_for_prompt,
 )
-from storyforge.rag.generation_backend import load_ollama_llm, use_ollama_for_generation
+from storyforge.rag.generation_backend import (
+    generation_provider,
+    load_ollama_llm,
+    load_vllm_llm,
+    use_ollama_for_generation,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -141,10 +146,22 @@ def _load_generation_llm(
     default_max_new, temperature, top_p = _mode_generation_params(
         cfg, mode=mode, max_new_tokens=max_new_tokens
     )
-    if use_ollama_for_generation(cfg):
+    provider = generation_provider(cfg)
+
+    if provider == "vllm":
+        from storyforge.rag.generation_backend import vllm_model_id
+        LOG.info("Using vLLM for story generation (model=%s)", vllm_model_id(cfg))
+        return load_vllm_llm(
+            cfg,
+            max_new_tokens=default_max_new,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    if provider == "ollama":
         LOG.info(
             "Using Ollama for story generation (model=%s)",
-            cfg.get("Generative_model") or cfg.get("Ollama_model") or "qwen3.5:9b",  # Ollama tag
+            cfg.get("Generative_model") or cfg.get("Ollama_model") or "qwen3.5:9b",
         )
         return load_ollama_llm(
             cfg,

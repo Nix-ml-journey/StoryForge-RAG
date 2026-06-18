@@ -169,7 +169,7 @@ To switch model: `docker exec -it ollama ollama pull <model>` then update `Gener
 
 ---
 
-### 3.1 ⬜ Add vLLM as an alternative high-throughput backend
+### 3.1 ✅ Add vLLM as an alternative high-throughput backend
 
 **What it does:** vLLM uses PagedAttention for dramatically higher throughput and
 can serve multiple requests concurrently without OOM. It also exposes an
@@ -197,8 +197,13 @@ python -m vllm.entrypoints.openai.api_server \
 - Continuous batching — multiple API calls don't OOM
 - `--dtype bfloat16` is the right choice for Blackwell
 
-**Change needed in `langchain_rag.py`:** Replace the `pipeline` / `AutoModelForCausalLM`
-block with a `langchain_openai.ChatOpenAI` call pointing to `localhost:8001`.
+**Implementation (done):**
+- `generation_backend.py`: added `vllm_base_url()`, `vllm_model_id()`, `load_vllm_llm()` (uses `langchain_openai.ChatOpenAI`)
+- `generation.py` `_load_generation_llm()`: vLLM branch dispatches before ollama/transformers
+- `orchestration_routes.py` `_stream_story_sse()`: vLLM streaming path via `ChatOpenAI.astream`
+- `setup.example.yaml`: `Generation_provider: vllm` + `vLLM_base_url` / `vLLM_model` keys
+
+**To use:** set `Generation_provider: vllm` in `setup.yaml` and start the server above.
 
 ---
 
@@ -280,7 +285,7 @@ Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
 | SSE streaming endpoint | ✅ Done | ⭐⭐⭐ | None |
 | Context window expansion | ✅ Done | ⭐⭐⭐ | +~1 GB |
 | Structured JSON output (HF json_mode) | ✅ Done | ⭐⭐⭐ | None |
-| vLLM as high-throughput backend | ⬜ Later | ⭐⭐⭐⭐ | Same |
+| vLLM as high-throughput backend | ✅ Done | ⭐⭐⭐⭐ | Same |
 | INT4 quantization path | ⬜ Later | ⭐⭐ | −7 GB |
 | Local evaluation model | ⬜ Later | ⭐⭐ | +6 GB (post-gen) |
 
