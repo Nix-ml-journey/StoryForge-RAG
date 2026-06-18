@@ -21,14 +21,15 @@ generation:
           "type": "who|where|when|what|why|how|event|setting|detail",
           "fact": "<short, specific statement>",
           "source_chunk_ids": ["<chunk_id>", "..."],
-          "quote": "<optional short verbatim quote from the chunk supporting the fact>"
+          "quote": "<short verbatim phrase copied exactly from the chunk; use empty string only when no verbatim match exists>"
         }}
       ]
     }}
 
     Rules:
     - Target 10 to 30 facts when possible.
-    - Use short direct quotes for important facts.
+    - Always populate "quote" with a verbatim phrase from the chunk when one exists; leave it "" only if the chunk has no close match.
+    - Keep quotes short (under 15 words) and copy them character-for-character from the chunk.
     - Do not add keys other than "facts".
 
   grounded_story_system: |

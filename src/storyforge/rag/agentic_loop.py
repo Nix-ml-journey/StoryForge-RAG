@@ -24,6 +24,26 @@ from storyforge.rag.generative_ai import Gen_mode, StoryType
 
 LOG = logging.getLogger(__name__)
 
+__all__ = [
+    # Action constants
+    "ACCEPT",
+    "REFINE",
+    "RE_RETRIEVE",
+    # Data classes
+    "CompletenessReport",
+    "Decision",
+    "AgenticLoopResult",
+    # Pure decision helpers (unit-testable without GPU)
+    "completeness_report",
+    "average_score",
+    "criterion_score",
+    "decide_action",
+    "build_feedback",
+    "reformulate_query",
+    # Main entry point
+    "run_agentic_story_loop",
+]
+
 ACCEPT = "accept"
 RE_RETRIEVE = "re_retrieve"
 REFINE = "refine"
@@ -41,7 +61,10 @@ _NON_CRITERION_KEYS = {
     "model",
 }
 
-_TERMINAL_CHARS = '.!?"\u201d\u2019\')'
+# Sentence-ending punctuation only.  Closing quotes (" ' ") are included
+# because stories often end with dialogue (e.g. "...done," she said.).
+# Parenthesis ) is intentionally excluded \u2014 it is structural, not terminal.
+_TERMINAL_CHARS = frozenset('.!?"\u201d\u2019\'')
 _EXPECTED_SECTIONS = 5
 
 _SECTION_HEADER_RE = re.compile(r"^\[SECTION\s+(\d+).*?\]\s*$", re.IGNORECASE | re.MULTILINE)
@@ -292,6 +315,24 @@ def run_agentic_story_loop(
     debug: bool = False,
     show_progress: bool = True,
 ) -> AgenticLoopResult:
+    """Run the full agentic story loop: retrieve → generate → evaluate → decide → repeat.
+
+    Iterates up to ``Agentic_loop_max_iterations`` times.  Each iteration calls
+    ``decide_action`` to choose ACCEPT (done), REFINE (re-generate with same
+    retrieval + evaluator feedback), or RE_RETRIEVE (wider search + regenerate).
+
+    Args:
+        query: The story generation query.
+        cfg: Loaded config dict; loaded from ``setup.yaml`` if not provided.
+        mode: Generation mode (FAST or THINKING).
+        story_type: Hint for diversity selection (SINGLE, SERIES, MIX).
+        debug: Attach attribution debug payload to each iteration record.
+        show_progress: Display a tqdm progress bar when available.
+
+    Returns:
+        :class:`AgenticLoopResult` with the accepted draft, acceptance flag,
+        per-iteration history, and final evaluation scores.
+    """
     from storyforge.rag.langchain_rag import (
         _docs_to_chunks,
         _docs_to_context,
@@ -479,20 +520,3 @@ def run_agentic_story_loop(
         grounded_facts=tuple(f.__dict__ for f in parsed.facts),
         retrieval_chunks=tuple(chunks),
     )
-
-
-__all__ = [
-    "ACCEPT",
-    "RE_RETRIEVE",
-    "REFINE",
-    "CompletenessReport",
-    "Decision",
-    "AgenticLoopResult",
-    "completeness_report",
-    "average_score",
-    "criterion_score",
-    "decide_action",
-    "build_feedback",
-    "reformulate_query",
-    "run_agentic_story_loop",
-]

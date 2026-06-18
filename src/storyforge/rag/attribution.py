@@ -12,6 +12,18 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
+__all__ = [
+    "GroundedFact",
+    "ParsedFacts",
+    "repair_json",
+    "parse_grounded_facts_json",
+    "extract_named_entities_heuristic",
+    "attribution_violations",
+    "build_debug_attribution_stub",
+    "format_facts_for_prompt",
+]
+
+
 
 @dataclass(frozen=True)
 class GroundedFact:

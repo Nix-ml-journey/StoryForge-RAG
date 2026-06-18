@@ -92,8 +92,15 @@ def _hf_chat_extract_json(
     }
 
     # Optional strict JSON mode (falls back for backends that do not accept response_format).
-    json_mode_raw = str(cfg.get("HF_grounded_facts_json_mode") or "true").strip().lower()
-    if json_mode_raw not in ("false", "0", "no"):
+    # Must handle bool False correctly — `False or "true"` would give "true".
+    _jm_val = cfg.get("HF_grounded_facts_json_mode")
+    if _jm_val is None:
+        _json_mode_enabled = True  # default on
+    elif isinstance(_jm_val, bool):
+        _json_mode_enabled = _jm_val
+    else:
+        _json_mode_enabled = str(_jm_val).strip().lower() not in ("false", "0", "no")
+    if _json_mode_enabled:
         request_kwargs["response_format"] = {"type": "json_object"}
 
     try:
@@ -181,7 +188,7 @@ def extract_grounded_facts(
             + prompts["facts_user"].format(
                 query=query,
                 retrieval_chunks=_format_chunks_for_prompt(chunks),
-            ).strip()
+                        ).strip()
         )
         grounded_raw = str(facts_llm.invoke(facts_prompt) or "").strip()
 

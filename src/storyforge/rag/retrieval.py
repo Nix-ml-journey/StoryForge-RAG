@@ -101,6 +101,7 @@ def _build_vectorstore(cfg: dict[str, Any]) -> Chroma:
 
         class _BGEEmbeddings(HuggingFaceEmbeddings):
             def embed_query(self, text: str) -> list[float]:
+                """Prepend BGE query prefix before encoding so retrieval scores match ingest."""
                 return super().embed_query(_BGE_QUERY_PREFIX + text)
 
         embeddings: HuggingFaceEmbeddings = _BGEEmbeddings(

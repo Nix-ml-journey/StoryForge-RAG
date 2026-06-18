@@ -142,21 +142,15 @@ Then update `setup.yaml: Generative_model: "qwen3.5:14b"`.
 
 ---
 
-### 2.4 ⬜ Switch to structured output / JSON mode for Step 2
+### 2.4 ✅ Switch to structured output / JSON mode for Step 2
 
-The current Step 2 prompt asks the model to return JSON but the model can deviate,
-requiring `repair_json()`. Structured generation forces valid JSON every time by
-constraining the token sampling to the grammar.
+`HF_grounded_facts_json_mode: true` in `setup.yaml` / `setup.example.yaml`.
 
-**Option A — Use `outlines` library (best, works with local Transformers):**
-```
-pip install outlines
-```
-Constrains the grounded-facts extraction to a valid JSON schema at the token level.
-No hallucinated keys, no trailing commas, no markdown fences ever.
+`_hf_chat_extract_json` in `rag/extraction.py` passes `response_format={"type": "json_object"}` to the HF `InferenceClient.chat_completion` call when this flag is on. If the backend raises `TypeError` (older API versions), it retries without the flag and logs a warning — no user action required.
 
-**Option B — Use `response_format={"type": "json_object"}` (if you switch to vLLM):**
-See section 3.2 below.
+With JSON mode active, the Step 2 model (Qwen3-8B via HF API) is constrained to valid JSON at the token level, eliminating markdown fences, trailing commas, and hallucinated keys. The `repair_json()` call in `parse_grounded_facts_json` remains as a safety net for the local-fallback path.
+
+Contract tests in `tests/test_extraction.py` cover: json_mode adds `response_format`, disabled-by-config path, TypeError fallback, and the full `extract_grounded_facts` public API.
 
 ---
 
@@ -285,7 +279,7 @@ Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
 | Hybrid BM25+dense (RRF) | ✅ Done | ⭐⭐⭐ | None |
 | SSE streaming endpoint | ✅ Done | ⭐⭐⭐ | None |
 | Context window expansion | ✅ Done | ⭐⭐⭐ | +~1 GB |
-| Structured JSON output (outlines) | ⬜ Next | ⭐⭐⭐ | None |
+| Structured JSON output (HF json_mode) | ✅ Done | ⭐⭐⭐ | None |
 | vLLM as high-throughput backend | ⬜ Later | ⭐⭐⭐⭐ | Same |
 | INT4 quantization path | ⬜ Later | ⭐⭐ | −7 GB |
 | Local evaluation model | ⬜ Later | ⭐⭐ | +6 GB (post-gen) |
@@ -295,9 +289,8 @@ Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
 ## Recommended next steps
 
 1. **Try `qwen3.5:14b`** — `docker exec -it ollama ollama pull qwen3.5:14b` then swap `Generative_model` — immediate story quality lift if VRAM allows.
-2. **Structured JSON output (2.4)** — `outlines` library eliminates `repair_json()` calls entirely.
-3. **Re-evaluate vLLM (3.1)** — relevant if you add concurrent users or want batch evaluation.
-4. **Local evaluation model (3.5)** — useful if HF API rate limits become a bottleneck.
+2. **Re-evaluate vLLM (3.1)** — relevant if you add concurrent users or want batch evaluation.
+3. **Local evaluation model (3.5)** — useful if HF API rate limits become a bottleneck.
 
 > **Before any upgrade:** run `python -m pytest -q` as a regression check.
 > The attribution gate, evaluation, and agentic loop tests confirm the RAG pipeline is still correct.

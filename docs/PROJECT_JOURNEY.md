@@ -180,6 +180,10 @@ Ollama in Docker solves all three: model stays warm, Ollama manages GPU memory o
 
 **Step 2 model upgrade:** `HF_grounded_facts_model: "Qwen/Qwen3-8B"` — better JSON extraction than the previous 7B instruct model, still API-only (no VRAM cost).
 
+**Structured JSON output for Step 2:** `HF_grounded_facts_json_mode: true` in `setup.yaml`. `_hf_chat_extract_json` passes `response_format={"type": "json_object"}` to the HF `InferenceClient`, constraining Qwen3-8B to valid JSON at the token level. Falls back gracefully (retry without flag + warning) if the backend doesn't support it. The `repair_json()` call in `attribution.py` is kept as a safety net for the local-fallback path. Tests in `tests/test_extraction.py`.
+
+**Test suite consolidation:** three micro-files absorbed into larger homes — `test_prompt_contracts.py` → `test_config.py`; `test_generation_backend.py` + `test_story_cleanup.py` → `test_rag_utils.py`. Old files left as empty stubs (Windows mount prevents deletion).
+
 ### Architecture modules (updated)
 
 | Module | Role |
@@ -203,9 +207,8 @@ Ollama in Docker solves all three: model stays warm, Ollama manages GPU memory o
 
 1. More ingest diversity and chunk-quality checks (retrieval is the ceiling).
 2. Tune long-form prompts and refine loop until Level B accepts consistently.
-3. Structured JSON output for Step 2 (`outlines` library — eliminate `repair_json` calls).
-4. Stronger retrieval eval harness (precision@k on fixed query set).
-5. Optional Level C only after stable VRAM/token budgeting.
+3. Stronger retrieval eval harness (precision@k on fixed query set).
+4. Optional Level C only after stable VRAM/token budgeting.
 
 ---
 

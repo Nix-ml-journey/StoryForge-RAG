@@ -190,6 +190,7 @@ class StatusResponse(BaseModel):
 
 @orchestration_router.post("/run_pipeline", response_model=RunPipelineResponse)
 async def run_pipeline(request: RunPipelineRequest):
+    """Run one or more orchestration pipeline steps and return their combined result."""
     try:
         result = await asyncio.to_thread(
             orchestrator.run_pipeline,
@@ -252,6 +253,7 @@ async def run_step(request: RunStepRequest):
 
 @orchestration_router.get("/status", response_model=StatusResponse)
 async def orchestration_status():
+    """Health-check endpoint — returns 200 with success=True when the API is ready."""
     return StatusResponse(success=True, message="API is running", type="orchestration")
 
 
@@ -263,13 +265,29 @@ class GenerateStreamRequest(BaseModel):
     query: str = Field(..., min_length=1, description="The story generation query")
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
     n_stories: int = Field(default=3, ge=1, le=10, description="Number of source stories to retrieve")
+    filter_metadata: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional Chroma 'where' filter passed to retrieve_docs, e.g. "
+            '{"Series": "Narnia"} to scope retrieval to a specific series.'
+        ),
+    )
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
                 {
                     "summary": "Stream a fast story",
                     "value": {"query": "A warrior monk's journey through the desert", "mode": "fast", "n_stories": 3},
-                }
+                },
+                {
+                    "summary": "Stream with series filter",
+                    "value": {
+                        "query": "A warrior monk's journey",
+                        "mode": "fast",
+                        "n_stories": 3,
+                        "filter_metadata": {"Series": "My Series"},
+                    },
+                },
             ]
         }
     )
@@ -288,7 +306,11 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
     yield _sse({"step": "retrieve", "status": "start"})
     try:
         docs = await asyncio.to_thread(
-            retrieve_docs, request.query, cfg, n_stories=request.n_stories
+            retrieve_docs,
+            request.query,
+            cfg,
+            n_stories=request.n_stories,
+            filter_metadata=request.filter_metadata or None,
         )
         chunks = _docs_to_chunks(docs)
     except Exception as exc:
