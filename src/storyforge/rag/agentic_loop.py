@@ -333,13 +333,9 @@ def run_agentic_story_loop(
         :class:`AgenticLoopResult` with the accepted draft, acceptance flag,
         per-iteration history, and final evaluation scores.
     """
-    from storyforge.rag.langchain_rag import (
-        _docs_to_chunks,
-        _docs_to_context,
-        extract_grounded_facts,
-        generate_from_facts,
-        retrieve_docs,
-    )
+    from storyforge.rag.extraction import extract_grounded_facts
+    from storyforge.rag.generation import generate_from_facts
+    from storyforge.rag.retrieval import _docs_to_chunks, _docs_to_context, retrieve_docs
 
     cfg = cfg or load_config()
 

@@ -29,7 +29,7 @@ Three goals, in order. Do not skip step 1 to jump to refactors.
 Before editing:
 
 - Read **`README.md`** (layout, 3-step RAG, main flow, tests).
-- Read **`docs/README.md`** and, when relevant, **`docs/PROJECT_JOURNEY.md`**, **`docs/PROJECT_UPDATE_ROADMAP.md`**, or **`docs/QUICK_DEMO.md`**.
+- Read **`docs/README.md`** and, when relevant, **`docs/PROJECT_JOURNEY.md`**, **`docs/UPGRADE_ROADMAP_5060Ti.md`**, or **`docs/QUICK_DEMO.md`**. (`docs/PROJECT_UPDATE_ROADMAP.md` is a historical hiring snapshot.)
 - Read **`setup.yaml`** (or **`setup.example.yaml`** when keys/paths are not needed) and **`prompts.yaml`** for the area you will touch.
 - Open only the code and config files you will actually change under **`src/storyforge/`**, **`scripts/`**, or repo-root config.
 
@@ -86,7 +86,7 @@ When CUDA is available and config expects GPU:
 
 Code must run on **Windows, Linux, and Ubuntu**.
 
-- Use **`storyforge_config.py`**, **`BASE_PATH`** in **`setup.yaml`**, and **`pathlib`** — no hard-coded OS-specific paths without guards.
+- Use **`storyforge.config.config`**, **`BASE_PATH`** in **`setup.yaml`**, and **`pathlib`** — no hard-coded OS-specific paths without guards.
 - Scripts should work with `python` / `py` as documented in **`README.md`** and **`scripts/README.md`**.
 
 ### File size (1,500 lines per file)
@@ -106,7 +106,7 @@ YAML, JSON story records, Chroma data, and generated output under **`data/`** ar
 
 ### Spec and feedback first
 
-**`docs/PROJECT_UPDATE_ROADMAP.md`**, journey notes, and the human's stated goals define success. Your changes should map to retrieval quality, grounding, generation completeness, evaluation, or ingest — not drive-by refactors.
+**`docs/PROJECT_JOURNEY.md`**, **`docs/UPGRADE_ROADMAP_5060Ti.md`**, and the human's stated goals define success. Your changes should map to retrieval quality, grounding, generation completeness, evaluation, or ingest — not drive-by refactors.
 
 When fixing story quality, use concrete examples (query, retrieved chunks, generated output, evaluation JSON) from **`data/outputs/`** or the human's notes — do not guess what "better" means.
 
@@ -181,7 +181,7 @@ python -m pytest tests/test_evaluation.py -q
 | Overview, architecture, main flow, tests | `README.md`, `docs/README.md` |
 | Fast reviewer path (no GPU/API) | `docs/QUICK_DEMO.md` |
 | Design trade-offs and failures | `docs/PROJECT_JOURNEY.md` |
-| Improvement plan / hiring readiness | `docs/PROJECT_UPDATE_ROADMAP.md` |
+| Improvement plan (historical hiring snapshot) | `docs/PROJECT_UPDATE_ROADMAP.md` |
 | Completed + upcoming upgrades | `docs/UPGRADE_ROADMAP_5060Ti.md` |
 | Runtime knobs (models, Chroma, tokens) | `setup.yaml`, `setup.example.yaml` |
 | Grounded extraction and story prompts | `prompts.yaml` |

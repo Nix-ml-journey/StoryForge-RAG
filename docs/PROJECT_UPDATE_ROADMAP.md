@@ -1,6 +1,15 @@
-# StoryForge-RAG Project Update Roadmap
+# StoryForge-RAG Project Update Roadmap (historical snapshot)
 
-This document is an honest review of the current project as a job-search portfolio piece. The project has real technical value: it is not just a prompt demo. It covers data ingestion, metadata preparation, vector search, local generation, orchestration, FastAPI routes, and LLM-based evaluation.
+> **Status: historical.** This roadmap reflects an earlier repo layout and hiring-readiness
+> review. For the current architecture and flow, prefer:
+> - [`README.md`](../README.md) / [`docs/README.md`](./README.md)
+> - [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md)
+> - [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md)
+>
+> Keep this file for portfolio narrative context; do not treat folder names or “missing tests”
+> claims below as current truth.
+
+This document is an honest review of the project as a job-search portfolio piece from an earlier phase. The project has real technical value: it is not just a prompt demo. It covers data ingestion, metadata preparation, vector search, local generation, orchestration, FastAPI routes, and LLM-based evaluation.
 
 The reason it may not be helping you get interviews or offers yet is not that the idea is bad. The issue is that the repository does not yet make the project easy to trust, easy to run, easy to review, or easy to connect to a hiring manager's expectations.
 

@@ -1,14 +1,13 @@
 """
 Three-step RAG for story generation — orchestrator.
 
-This module was split in v2; heavy logic now lives in focused sub-modules:
+Heavy logic lives in focused sub-modules:
 
   rag/retrieval.py   — Step 1: Chroma vector + hybrid BM25 retrieval
   rag/extraction.py  — Step 2: grounded facts extraction (HF API / local fallback)
   rag/generation.py  — Step 3: 5-section story generation / refinement
 
-All original public symbols are re-exported here so that agentic_loop.py
-and any other callers continue to work without source changes.
+Public entrypoint: ``generate_story_3step_langchain`` / ``RAG3StepResult``.
 """
 from __future__ import annotations
 
@@ -23,6 +22,11 @@ from storyforge.rag.generation import _sections_below_min_sentences, generate_fr
 from storyforge.rag.retrieval import _docs_to_chunks, _docs_to_context, retrieve_docs
 
 LOG = logging.getLogger(__name__)
+
+__all__ = [
+    "RAG3StepResult",
+    "generate_story_3step_langchain",
+]
 
 
 @dataclass(frozen=True)
@@ -100,17 +104,3 @@ def generate_story_3step_langchain(
         retrieval_chunks=tuple(chunks),
         debug_attribution=debug_payload,
     )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compat re-exports (agentic_loop.py imports these by name)
-# ---------------------------------------------------------------------------
-__all__ = [
-    "RAG3StepResult",
-    "generate_story_3step_langchain",
-    "_docs_to_chunks",
-    "_docs_to_context",
-    "extract_grounded_facts",
-    "generate_from_facts",
-    "retrieve_docs",
-]

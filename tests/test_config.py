@@ -1,8 +1,7 @@
 """Tests for config loading and prompt YAML contracts."""
 from __future__ import annotations
 
-from storyforge.config.config import load_prompts
-from storyforge_config import load_config, resolve_config_path
+from storyforge.config.config import load_prompts, load_config, resolve_config_path
 
 
 # ---------------------------------------------------------------------------

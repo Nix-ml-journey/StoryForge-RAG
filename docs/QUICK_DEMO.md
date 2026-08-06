@@ -42,7 +42,8 @@ Start with:
 
 - `README.md` for the project overview and main flow.
 - `PROJECT_JOURNEY.md` for trade-offs, failures, and lessons learned.
-- `PROJECT_UPDATE_ROADMAP.md` for the current job-readiness improvement plan.
+- `UPGRADE_ROADMAP_5060Ti.md` for hardware / backend upgrade notes.
+- `PROJECT_UPDATE_ROADMAP.md` for a historical hiring-readiness snapshot (not current architecture).
 - `PRODUCTION_NOTES.md` for production boundaries and next steps.
 
 The main system shape is:

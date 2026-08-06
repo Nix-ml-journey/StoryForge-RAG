@@ -74,12 +74,11 @@ def _hf_chat_extract_json(
     """
     model_id = (
         cfg.get("HF_grounded_facts_model")
-        or cfg.get("HF_structured_profile_model")
         or cfg.get("HF_evaluation_model")
         or "Qwen/Qwen2.5-7B-Instruct"
     )
-    temperature = float(cfg.get("HF_grounded_facts_temperature") or cfg.get("Layer1_temperature") or 0.1)
-    max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or cfg.get("Layer1_max_tokens") or 300)
+    temperature = float(cfg.get("HF_grounded_facts_temperature") or 0.1)
+    max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or 300)
     token = _hf_token(cfg)
     if not token:
         raise ValueError("Missing Hugging Face token for grounded facts extraction (facehugging_api / env).")
@@ -130,8 +129,8 @@ def _hf_chat_extract_json(
 
 def _load_facts_llm(cfg: dict[str, Any]) -> Any:
     """Step 2 local fallback when the HF API is unavailable."""
-    max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or cfg.get("Layer1_max_tokens") or 300)
-    temperature = float(cfg.get("HF_grounded_facts_temperature") or cfg.get("Layer1_temperature") or 0.1)
+    max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or 300)
+    temperature = float(cfg.get("HF_grounded_facts_temperature") or 0.1)
     top_p = float(cfg.get("Generation_fast_top_p") or 0.8)
 
     provider = generation_provider(cfg)

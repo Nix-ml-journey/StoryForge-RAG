@@ -26,8 +26,8 @@ If you are reviewing this project quickly, start here:
 1. Read [`QUICK_DEMO.md`](./QUICK_DEMO.md) for the no-GPU/no-API-key validation path.
 2. Run the lightweight tests:
    - `python -m pytest`
-3. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for the design decisions and trade-offs.
-4. Read [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) for the current improvement plan.
+3. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for design decisions and trade-offs.
+4. Optionally skim [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) (historical hiring snapshot).
 5. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries and next steps.
 
 The lightweight tests focus on deterministic project logic and do not require Gemini, Hugging Face, Google Books, Chroma data, or a local generation model.
@@ -46,7 +46,8 @@ Most AI demos stop at generation. This project covers the full workflow:
 For the full development story, architecture decisions, trade-offs, and lessons learned, read:
 
 - [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md)
-- [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md)
+- [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md)
+- [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) (historical hiring snapshot)
 
 ## Highlights
 
@@ -99,22 +100,20 @@ Related prompt templates live in `prompts.yaml` under `generation`:
 
 ## What It Does
 
-- Fetches public-domain books (Google Books + Archive.org)
-- Downloads selected source formats (`pdf` / `epub`) from Archive when available
-- Extracts text from PDF/EPUB sources
-- Builds metadata + merged records for retrieval
-- Creates/updates merged summaries with Hugging Face (`/data/summaries_create` and `/data/summaries_create_and_check`)
-- Normalizes merged `metadatas.Summary` formatting after summarization (apostrophes/quotes/punctuation spacing, minor OCR noise cleanup)
-- Ingests records into Chroma vector store
-- Generates stories from retrieved context (retrieval single-pass or grounded extraction + single-pass generation)
-- Evaluates generated outputs with rubric-based scoring
+- Fetches public-domain books (Google Books + Archive.org) when needed
+- Extracts text from PDF/EPUB sources into `data/stories/`
+- Builds `story_json` records and ingest manifests for retrieval
+- Ingests chunks into Chroma (`BAAI/bge-base-en-v1.5` embeddings)
+- Generates grounded stories (retrieve → facts → Ollama/vLLM/Transformers)
+- Evaluates drafts with HF-first scoring and Gemini fallback
+- Optional agentic loop: evaluate → refine / re-retrieve / accept
 
 ## Tech Stack
 
 - Python, FastAPI, Pydantic
 - ChromaDB, sentence-transformers
-- Transformers (local generation model)
-- Hugging Face Inference API (summarization + primary evaluation) + Gemini API fallback (evaluation)
+- Ollama / vLLM / Transformers (Step 3 generation)
+- Hugging Face Inference API (grounded facts + primary evaluation) + Gemini fallback
 
 ## Project Structure
 
@@ -178,7 +177,7 @@ CI:
 
 ## Configuration
 
-Runtime configuration is loaded through `storyforge_config.py`.
+Runtime configuration is loaded through `storyforge.config.config` (`setup.yaml` / `setup.example.yaml`).
 
 - Day-to-day runs should still use local `setup.yaml` for machine-specific paths and keys.
 - If `setup.yaml` is missing, import-time configuration falls back to `setup.example.yaml` so lightweight tests and fresh-clone review do not fail immediately.

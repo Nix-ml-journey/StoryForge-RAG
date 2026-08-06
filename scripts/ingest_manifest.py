@@ -17,7 +17,7 @@ def main() -> None:
     base = Path(cfg.get("BASE_PATH") or ".").resolve()
     manifest = (base / "data" / "ingest" / "ingest_manifest.jsonl").resolve()
     if not manifest.exists():
-        raise SystemExit(f"Manifest not found: {manifest} (run scripts/prepare_ingest_manifest.py first)")
+        raise SystemExit(f"Manifest not found: {manifest} (run scripts/records_to_ingest_manifest.py first)")
 
     collection_name = cfg.get("Chroma_collection_name") or "StoryForgeRag_v1"
     collection = get_or_create_collection(collection_name)

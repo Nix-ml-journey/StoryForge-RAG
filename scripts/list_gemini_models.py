@@ -7,8 +7,16 @@ Run:
   py scripts/list_gemini_models.py
 """
 
-from storyforge_config import load_config
-from storyforge.scripts.list_gemini_models import list_gemini_models
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from storyforge.config.config import load_config  # noqa: E402
+from storyforge.scripts.list_gemini_models import list_gemini_models  # noqa: E402
 
 
 def main() -> None:
