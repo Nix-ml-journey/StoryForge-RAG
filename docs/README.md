@@ -70,7 +70,6 @@ For the full development story, architecture decisions, trade-offs, and lessons 
 - Duplicate-download protection by identifier to avoid redundant fetches
 - Evaluation with Hugging Face first and Gemini fallback, with retry handling for transient API errors
 - API groups: `/orchestration` (pipeline steps), `/create-eval` (generate/evaluate stories and summaries)
-- `debug_layers/` scripts to run Layer 1–3 in isolation for debugging (see `debug_layers/README.md`)
 - Lightweight pytest coverage for config, evaluation, retrieval metrics, and story-json workflow
 
 ## Grounded Story Generation
@@ -83,20 +82,20 @@ The generation path now keeps retrieval grounding while avoiding the old lossy m
 
 If grounded extraction returns empty output, generation falls back to retrieval single-pass mode.
 
-Enable/configure in `setup.yaml` (see `setup.example.yaml` for commented defaults):
+Enable/configure in `setup.yaml` (see `setup.example.yaml` for defaults):
 
-- `Three_layer_generation` (legacy key name; now enables the grounded pipeline)
-- `Story_generation_n_results`
-- `Generation_mode_fast` / `Generation_mode_thinking` / `Generation_mode_short`
-- `Generation_*_temperature` / `Generation_*_top_p` and optional `Layer1_*`, `Layer2_*`, `Layer3_*` overrides
-- Single-pass and extraction token budgets (`Single_pass_*`, `Layer1_max_tokens`)
-- `Min_generation_ratio`, penalties, `Model_max_prompt_tokens`
+- `Generation_provider` (`ollama` | `vllm` | `transformers`)
+- `Story_generation_n_results`, reranker / hybrid search knobs
+- `Generation_fast_*` / `Generation_thinking_*` sampling + token budgets
+- `Agentic_loop_*` accept / refine / re-retrieve thresholds
+- `Attribution_gate_truncate` / `Attribution_violation_threshold`
+- `Model_max_prompt_tokens`, `Min_sentences_per_section`
 
 Related prompt templates live in `prompts.yaml` under `generation`:
 
-- `full_story_system` / `full_story_user`
-- `layer1_5w1h_system` / `layer1_5w1h_user`
-- legacy/debug layer2/layer3 templates are still present for isolated debugging scripts
+- `grounded_facts_system` / `grounded_facts_user`
+- `grounded_story_system` / `grounded_story_user`
+- `grounded_story_refine_system` / `grounded_story_refine_user`
 
 ## What It Does
 
@@ -190,21 +189,18 @@ Runtime configuration is loaded through `storyforge_config.py`.
 
 ## Main Flow
 
-1. Search/download book files
-2. Extract text from book files
-3. Create metadata templates
-4. Merge metadata + documents
-5. Create missing merged summaries with Hugging Face (`/data/summaries_create`)
-6. Ingest into Chroma
-7. Generate story (retrieval → grounded extraction → single-pass generation)
-8. Evaluate generated story/summary
+1. Add / extract story `.txt` files under `data/stories/`
+2. Prepare + enrich → `data/story_json/*.json`
+3. Build ingest manifest → upsert into Chroma
+4. Generate story (retrieve → grounded facts → single-pass / agentic)
+5. Evaluate generated story
 
-For local validation after data updates, run the data path in this order:
+For local validation after data updates, run:
 
-1. `POST /data/merged`
-2. `POST /data/summaries_create` (or `POST /data/summaries_create_and_check`)
-   - After summaries are created, the pipeline runs a formatting cleanup pass to keep `Data_Merged/*.json` summaries consistent.
-3. `POST /orchestration/run_step` with `{"step":"4_ingest","title":"manual_step"}`
+1. `py scripts/step1_prepare_and_enrich.py` (or prepare + enrich separately)
+2. `py scripts/records_to_ingest_manifest.py`
+3. `py scripts/reset_and_ingest.py` (or `ingest_manifest.py` to upsert)
+4. `POST /orchestration/run_step` with `{"step":"4_generate_story_3step","title":"..."}`
 
 ## Retrieval Evaluation
 

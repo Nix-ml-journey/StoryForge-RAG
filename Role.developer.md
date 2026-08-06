@@ -196,5 +196,4 @@ python -m pytest tests/test_evaluation.py -q
 | Ingest and story JSON workflow | `scripts/README.md`, `scripts/prepare_story_records.py`, `scripts/ingest_manifest.py` |
 | Evaluation provider logic | `src/storyforge/evaluation/evaluation.py` |
 | API entrypoint | `main.py`, `http://localhost:8000/docs` |
-| Narrative structure presets | `flow_structure.yaml` |
 | Lightweight test suite | `tests/`, `python -m pytest` |

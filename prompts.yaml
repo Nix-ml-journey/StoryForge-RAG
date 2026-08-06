@@ -121,8 +121,6 @@ ingest:
 
     Output one tag from the allowed set.
 
-legacy_generation: {}
-
 # evaluation prompts
 evaluation:
   with_story: |

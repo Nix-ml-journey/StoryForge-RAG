@@ -9,7 +9,6 @@
 BASE_PATH: "C:/path/to/your/project"
 Port: 8000
 Prompts_file: "prompts.yaml"
-Flow_structure_file: "flow_structure.yaml"
 
 # --- API keys (leave blank; use env vars) ---
 facehugging_api: ""

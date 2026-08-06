@@ -22,12 +22,6 @@ Optional CLI helpers. Run from the **repo root** unless noted.
 | `retrieval_eval.py` | Measure retrieval top-k accuracy against fixture cases |
 | `test_generation.py` | HTTP smoke tests (server must be running) |
 
-## Legacy book pipeline
-
-| Script | Purpose |
-|--------|---------|
-| `check_merged_data.py` | Validate `Stories/`, `Metadata/`, `Data_Merged/` alignment |
-
 ## Text prep
 
 | Script | Purpose |
