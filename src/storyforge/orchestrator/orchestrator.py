@@ -6,7 +6,7 @@ from storyforge.config.config import CONFIG_FILE, load_config
 from storyforge.rag.generative_ai import Gen_mode, StoryType
 from . import response_parameter as parameters
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Root logging is configured once in storyforge/__init__.py.
 
 
 class Orchestrator:
@@ -17,9 +17,7 @@ class Orchestrator:
         self.downloaded_rawbook_dir = c.get("Downloaded_rawbook_dir")
         self.downloaded_data_meta = c.get("Downloaded_data_meta")
         self.story_input = c.get("Story_input")
-        self.chroma_collection_name = (
-            c.get("Chroma_collection_name_2") or c.get("Chroma_collection_name") or "English_Stories"
-        )
+        self.chroma_collection_name = c.get("Chroma_collection_name") or "StoryForgeRag_v1"
         self.generated_story_output = c.get("Generated_story_output")
 
     def search_book(self, query: str, n_results: int = 20) -> dict:

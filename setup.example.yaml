@@ -7,6 +7,7 @@
 
 # --- Paths ---
 BASE_PATH: "C:/path/to/your/project"
+Host: "127.0.0.1"   # set to "0.0.0.0" to accept connections from other devices/containers
 Port: 8000
 Prompts_file: "prompts.yaml"
 
@@ -22,8 +23,8 @@ Evaluation_provider_priority:
 HF_evaluation_model: "Qwen/Qwen2.5-7B-Instruct"
 HF_evaluation_max_new_tokens: 700
 HF_evaluation_temperature: 0.1
-Gemini_evaluation_model: "gemini-2.0-flash"
-Gemini_evaluation_fallback_model: "gemini-2.5-flash"
+Gemini_evaluation_model: "gemini-3.7-flash"
+Gemini_evaluation_fallback_model: "gemini-3.1-flash-lite"
 
 # --- Data ---
 Raw_extracted_dir: "data/raw_extracted"

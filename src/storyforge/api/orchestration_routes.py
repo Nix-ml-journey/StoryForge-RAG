@@ -13,7 +13,7 @@ from storyforge.rag.generative_ai import parse_gen_mode, parse_story_type
 from storyforge.rag.retrieval import _docs_to_chunks, retrieve_docs
 from storyforge.orchestrator.orchestrator import Orchestrator
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Root logging is configured once in storyforge/__init__.py.
 
 orchestration_router = APIRouter(prefix="/orchestration", tags=["Orchestration"])
 orchestrator = Orchestrator()

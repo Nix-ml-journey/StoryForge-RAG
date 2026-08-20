@@ -49,6 +49,20 @@ def strip_thinking_tags(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
+def ollama_num_ctx(cfg: dict[str, Any]) -> int:
+    """Context window (input + output tokens) to request from Ollama.
+
+    Ollama defaults to a small context window (often 2048-4096 depending on
+    version) unless num_ctx is explicitly set, regardless of how large a
+    context the underlying model actually supports. Without this, retrieved
+    chunks / facts that push a prompt past that default get silently
+    truncated by Ollama before the model ever sees them.
+    """
+    configured = int(cfg.get("Model_max_prompt_tokens") or 8192)
+    # Leave room for the model's own output on top of the input prompt.
+    return max(configured, 2048)
+
+
 def load_ollama_llm(
     cfg: dict[str, Any],
     *,
@@ -63,7 +77,8 @@ def load_ollama_llm(
     model = ollama_model_id(cfg)
     base_url = ollama_base_url(cfg)
     repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
-    cache_key = (model, base_url, max_new_tokens, temperature, top_p, repeat_penalty, thinking)
+    num_ctx = ollama_num_ctx(cfg)
+    cache_key = (model, base_url, max_new_tokens, temperature, top_p, repeat_penalty, thinking, num_ctx)
     if cache_key not in _OLLAMA_LLM_CACHE:
         _OLLAMA_LLM_CACHE[cache_key] = ChatOllama(
             model=model,
@@ -71,7 +86,7 @@ def load_ollama_llm(
             temperature=temperature,
             top_p=top_p,
             num_predict=max_new_tokens,
-            options={"repeat_penalty": repeat_penalty},
+            options={"repeat_penalty": repeat_penalty, "num_ctx": num_ctx},
             think=thinking,
         )
     return _PromptLLM(_OLLAMA_LLM_CACHE[cache_key])

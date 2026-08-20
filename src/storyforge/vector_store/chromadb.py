@@ -9,7 +9,7 @@ import chromadb
 
 from storyforge.config.config import load_config
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Root logging is configured once in storyforge/__init__.py.
 
 ROOT_DIR = Path(__file__).resolve().parents[3]  # repo root
 

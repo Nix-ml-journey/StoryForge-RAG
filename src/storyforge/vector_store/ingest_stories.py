@@ -194,7 +194,7 @@ def ingest_stories_dir(
             )
 
         # Same embedding model as langchain_rag (required for BGE / non-default models).
-        embed_model_name = str(cfg.get("Vector_store_model") or "all-MiniLM-L6-v2")
+        embed_model_name = str(cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5")
         is_bge = "bge" in embed_model_name.lower()
         embed_model = _get_embed_model(embed_model_name)
         if embed_model is not None:

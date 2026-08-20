@@ -56,6 +56,7 @@ if __name__ == "__main__":
     import uvicorn
 
     cfg = load_config()
+    host = str(cfg.get("Host") or "127.0.0.1").strip()
     port = int(cfg.get("Port") or 8000)
-    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=False)
+    uvicorn.run("main:app", host=host, port=port, reload=False)
 

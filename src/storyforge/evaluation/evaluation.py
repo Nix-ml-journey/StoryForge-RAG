@@ -12,7 +12,7 @@ except ImportError:
 
 from storyforge.config.config import load_config, load_prompts
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Root logging is configured once in storyforge/__init__.py.
 
 
 def _cfg() -> dict[str, Any]:

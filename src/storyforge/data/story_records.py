@@ -60,7 +60,6 @@ def create_story_records(
         chunks = _chunk_text_impl(raw, max_chars=max_chars, overlap_chars=overlap_chars)
 
         record: dict[str, Any] = dict(series_tpl)
-        record.setdefault("Is_series", True)
         # Templates may include empty placeholder values; ensure required ids are populated.
         if not str(record.get("id") or "").strip():
             record["id"] = title
@@ -69,6 +68,11 @@ def create_story_records(
         record.setdefault("meta", {"author": "", "title": ""})
         record.setdefault("chapter", {"chapter_id": "", "chapter_number": 1, "chapter_name": ""})
         record.setdefault("summary", "")
+
+        # A record is only "part of a series" if it actually names one. Standalone
+        # works (most single-file ingests) should default to False, not True.
+        series_name = str((record.get("series") or {}).get("series_name") or "").strip()
+        record.setdefault("Is_series", bool(series_name))
 
         record["raw_text"] = raw
         record["chunks"] = [

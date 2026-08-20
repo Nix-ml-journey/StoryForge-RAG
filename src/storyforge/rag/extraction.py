@@ -7,7 +7,8 @@ Public API:
 from __future__ import annotations
 
 import logging
-from typing import Any
+import time
+from typing import Any, Optional
 
 from huggingface_hub import InferenceClient
 
@@ -21,6 +22,27 @@ from storyforge.rag.generation_backend import (
 from storyforge.rag.retrieval import _format_chunks_for_prompt
 
 LOG = logging.getLogger(__name__)
+
+# Retry knobs for transient HF API errors (mirrors storyforge.evaluation.evaluation),
+# so a single rate-limit/503 blip doesn't immediately trigger the expensive local-model
+# fallback in _load_facts_llm.
+_EXTRACTION_RETRY_MAX_ATTEMPTS = 3
+_EXTRACTION_RETRY_BASE_DELAY_SEC = 2
+_EXTRACTION_RETRY_BACKOFF_FACTOR = 2
+
+
+def _is_retryable_api_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        "503" in msg
+        or "unavailable" in msg
+        or "high demand" in msg
+        or "429" in msg
+        or "rate limit" in msg
+        or "resource exhausted" in msg
+        or "timeout" in msg
+        or "timed out" in msg
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +149,36 @@ def _hf_chat_extract_json(
         return str(resp).strip()
 
 
+def _hf_chat_extract_json_with_retry(
+    *,
+    cfg: dict[str, Any],
+    system: str,
+    user: str,
+) -> str:
+    """Retry _hf_chat_extract_json on transient errors before giving up.
+
+    Non-retryable errors (missing token, bad request, etc.) raise immediately so the
+    caller's fallback-to-local-model path still triggers without unnecessary delay.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(_EXTRACTION_RETRY_MAX_ATTEMPTS):
+        try:
+            return _hf_chat_extract_json(cfg=cfg, system=system, user=user)
+        except Exception as e:
+            last_exc = e
+            if not _is_retryable_api_error(e) or attempt == _EXTRACTION_RETRY_MAX_ATTEMPTS - 1:
+                raise
+            delay = _EXTRACTION_RETRY_BASE_DELAY_SEC * (_EXTRACTION_RETRY_BACKOFF_FACTOR**attempt)
+            LOG.warning(
+                "HF grounded-facts transient error (attempt %s/%s), retrying in %.1fs: %s",
+                attempt + 1, _EXTRACTION_RETRY_MAX_ATTEMPTS, delay, e,
+            )
+            time.sleep(delay)
+    if last_exc is not None:
+        raise last_exc
+    return ""
+
+
 def _load_facts_llm(cfg: dict[str, Any]) -> Any:
     """Step 2 local fallback when the HF API is unavailable."""
     max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or 300)
@@ -179,7 +231,7 @@ def extract_grounded_facts(
     """
     prompts = _get_generation_prompts()
     try:
-        grounded_raw = _hf_chat_extract_json(
+        grounded_raw = _hf_chat_extract_json_with_retry(
             cfg=cfg,
             system=prompts["facts_system"],
             user=prompts["facts_user"].format(

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from storyforge.orchestrator.orchestrator import Orchestrator
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Root logging is configured once in storyforge/__init__.py.
 
 _orchestrator = Orchestrator()
 

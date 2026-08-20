@@ -9,7 +9,7 @@ from storyforge.rag.generative_ai import parse_gen_mode, parse_story_type
 from storyforge.orchestrator.orchestrator import Orchestrator
 from storyforge.config.config import load_config
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Root logging is configured once in storyforge/__init__.py.
 
 
 def _default_n_results() -> int:

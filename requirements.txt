@@ -20,57 +20,61 @@
 #
 # ============================================================
 
+# NOTE: pins below cap the major version (e.g. ">=0.115.0,<1") so a fresh
+# `pip install -r requirements.txt` months from now can't silently pull a
+# breaking major release. Bump the upper bound deliberately when you upgrade.
+
 # --- Web framework ---
-fastapi>=0.115.0
-uvicorn>=0.32.0
-pydantic>=2.0.0
+fastapi>=0.115.0,<1
+uvicorn>=0.32.0,<1
+pydantic>=2.0.0,<3
 
 # --- Configuration ---
-pyyaml>=6.0.2
-python-dotenv>=1.0.0
+pyyaml>=6.0.2,<7
+python-dotenv>=1.0.0,<2
 
 # --- HTTP / networking ---
-requests>=2.31.0
-urllib3>=2.0.0
+requests>=2.31.0,<3
+urllib3>=2.0.0,<3
 
 # --- Progress bars ---
-tqdm>=4.66.0
+tqdm>=4.66.0,<5
 
 # --- Text extraction ---
-pymupdf>=1.24.0          # PDF extraction (import fitz)
-epub-to-text>=0.1.0      # EPUB extraction
+pymupdf>=1.24.0,<2       # PDF extraction (import fitz)
+epub-to-text>=2.0.0,<3   # EPUB extraction (PyPI only publishes 2.0.0+; pre-2.0 versions are gone)
 
 # --- Vector database ---
-chromadb>=1.4.1
+chromadb>=1.4.1,<2
 
 # --- LangChain core + integrations ---
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-community>=0.3.0
-langchain-text-splitters>=0.3.0
-langchain-chroma>=0.2.0
-langchain-huggingface>=0.1.2
-langchain-google-genai>=2.0.0   # Gemini via LangChain (evaluation step)
-langchain-ollama>=0.3.0         # Ollama for Step 3 story generation (qwen3.5:9b)
-langchain-openai>=0.3.0         # vLLM OpenAI-compatible client (Generation_provider: vllm)
+langchain>=0.3.0,<0.4
+langchain-core>=0.3.0,<0.4
+langchain-community>=0.3.0,<0.4
+langchain-text-splitters>=0.3.0,<0.4
+langchain-chroma>=0.2.0,<0.3
+langchain-huggingface>=0.1.2,<0.2
+langchain-google-genai>=2.0.0,<3   # Gemini via LangChain (evaluation step)
+langchain-ollama>=0.3.0,<0.4       # Ollama for Step 3 story generation (qwen3.5:9b)
+langchain-openai>=0.3.0,<0.4       # vLLM OpenAI-compatible client (Generation_provider: vllm)
 
 # --- HuggingFace ---
-huggingface-hub>=0.26.0          # InferenceClient (Step 2 grounded-facts API)
-transformers>=4.57.6             # AutoModelForCausalLM, AutoTokenizer, pipeline (Step 3)
-sentence-transformers>=3.0.0     # SentenceTransformer (BGE ingest) + CrossEncoder (reranker)
-accelerate>=0.33.0               # device_map="auto" for model loading
+huggingface-hub>=0.26.0,<1        # InferenceClient (Step 2 grounded-facts API)
+transformers>=4.57.6,<5           # AutoModelForCausalLM, AutoTokenizer, pipeline (Step 3)
+sentence-transformers>=3.0.0,<4   # SentenceTransformer (BGE ingest) + CrossEncoder (reranker)
+accelerate>=0.33.0,<1             # device_map="auto" for model loading
 
 # --- Google Gemini (evaluation fallback) ---
-google-genai>=1.0.0              # from google import genai
+google-genai>=1.0.0,<2            # from google import genai
 
 # --- PyTorch (CUDA build installed separately — see note at top) ---
 # torch is listed here so pip freeze / dependency checks work correctly.
 # The version installed via --index-url above takes precedence.
-torch>=2.0.0
+torch>=2.0.0,<3
 
 # --- Testing / linting ---
-pytest>=8.0.0
-ruff>=0.8.0
+pytest>=8.0.0,<9
+ruff>=0.8.0,<1
 
 # ============================================================
 # OPTIONAL — uncomment only if needed

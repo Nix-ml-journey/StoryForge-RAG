@@ -13,7 +13,7 @@ from storyforge.vector_store.chromadb import (
 )
 from storyforge.vector_store.ingest_stories import ingest_stories_dir
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Root logging is configured once in storyforge/__init__.py.
 
 vector_store_inspect_router = APIRouter(tags=["Vector Store"])
 vector_store_router = APIRouter(prefix="/vector_store", tags=["Vector Store"])
