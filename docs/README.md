@@ -1,247 +1,190 @@
 # StoryForge-RAG
 
-StoryForge-RAG is an end-to-end AI pipeline for book ingestion, metadata enrichment, vector search (Chroma), story generation, and automated quality evaluation via FastAPI.
+StoryForge-RAG is an end-to-end AI pipeline for story ingestion, vector search (Chroma), grounded story generation, and automated evaluation via FastAPI.
 
-Built as a practical AI/data engineering project to demonstrate system design, model trade-offs, and real-world reliability handling (rate limits, OOM, unstable generations).
+Built as a practical AI/data engineering project: system design, model trade-offs, and real-world reliability (rate limits, OOM, bad retrieval, incomplete generations).
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    bookSearch["Book Search and Download"] --> textExtract["PDF or EPUB Text Extraction"]
-    textExtract --> metadataMerge["Metadata and Story Merge"]
-    metadataMerge --> summaryCreate["HF Summary Creation"]
-    summaryCreate --> vectorStore["Chroma Vector Store"]
-    vectorStore --> retrieval["Step 1: Retrieval"]
-    retrieval --> extraction["Step 2: Grounded Extraction"]
-    extraction --> generation["Step 3: Single-Pass Generation"]
-    generation --> evaluation["HF-first Evaluation"]
-    evaluation --> outputs["Generated and Evaluated Outputs"]
+    stories["Story .txt files"] --> storyJson["story_json records"]
+    storyJson --> manifest["ingest manifest"]
+    manifest --> vectorStore["Chroma Vector Store"]
+    vectorStore --> retrieval["Step 1: Retrieval + rerank"]
+    retrieval --> extraction["Step 2: Grounded facts (HF API)"]
+    extraction --> generation["Step 3: Story generation (Ollama/vLLM/Transformers)"]
+    generation --> evaluation["HF-first evaluation"]
+    evaluation --> agentic{"Agentic loop?"}
+    agentic -->|refine / re-retrieve| generation
+    agentic -->|accept| outputs["Saved story output"]
 ```
 
-## Reviewer Quick Path
-
-If you are reviewing this project quickly, start here:
+## Reviewer quick path
 
 1. Read [`QUICK_DEMO.md`](./QUICK_DEMO.md) for the no-GPU/no-API-key validation path.
-2. Run the lightweight tests:
-   - `python -m pytest`
+2. Run `python -m pytest`
 3. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for design decisions and trade-offs.
-4. Optionally skim [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) (historical hiring snapshot).
-5. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries and next steps.
+4. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries.
 
-The lightweight tests focus on deterministic project logic and do not require Gemini, Hugging Face, Google Books, Chroma data, or a local generation model.
+Tests use temporary directories and do not require GPU, Chroma data, or live API calls.
 
-## Why It Matters
+## Current model stack
 
-Most AI demos stop at generation. This project covers the full workflow:
+| Stage | Default | Notes |
+|-------|---------|-------|
+| Embeddings | `BAAI/bge-base-en-v1.5` | 768-dim, local GPU |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | After Chroma, before Step 2 |
+| Hybrid search | BM25 + dense (RRF) | Optional via `Hybrid_search_enabled` |
+| Step 2 facts | `Qwen/Qwen3-8B` (HF API) | Retry + optional JSON mode |
+| Step 3 story | `qwen3.5:9b` (Ollama) | Also supports vLLM or Transformers |
+| Evaluation | HF 7B → Gemini fallback | Used by agentic loop |
 
-- source intake and text extraction,
-- data/metadata preparation,
-- retrieval + generation,
-- and automated evaluation.
+## Grounded story generation
 
-## Project Journey
+1. **Step 1 — Retrieval:** Chroma search (+ hybrid BM25 + reranker). Diverse story titles when multiple sources match.
+2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors.
+3. **Step 3 — Generation:** One pass from grounded facts into a 5-section story. Optional refine pass if sections are too short.
 
-For the full development story, architecture decisions, trade-offs, and lessons learned, read:
+If extraction returns no usable facts, generation falls back to retrieval-only mode.
 
-- [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md)
-- [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md)
-- [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) (historical hiring snapshot)
+### Story format
 
-## Highlights
+- 5 section headers in order (see `prompts.yaml`)
+- **At least 3 complete sentences per section** (`Min_sentences_per_section`)
+- Grounded in extracted facts — no invented named characters/places
+- `mode: "fast"` for shorter output; `mode: "thinking"` / `"medium"` for longer output
 
-- End-to-end pipeline from raw books to evaluated generated stories
-- Mermaid architecture diagram and production notes for fast reviewer understanding
-- Retrieval-first architecture with Chroma + embeddings
-- Model selection based on quality/speed constraints (`Qwen2.5-7B` as practical local trade-off)
-- Grounded generation pipeline: retrieval → grounded extraction → single-pass generation
-- Prompt-split generation design in `prompts.yaml` (single-pass + grounded extraction templates)
-- Generation modes: `FAST`, `THINKING`, and `SHORT`
-- Optional per-layer temperature/top-p overrides in `setup.yaml`
-- Prompt-budget-aware context truncation before generation
-- Repetition controls (repetition/frequency/presence penalties + no-repeat ngram)
-- Advanced decoding via repetition/frequency/presence penalties in the RAG generation path
-- Post-generation cleanup safeguards to trim malformed tails and degeneration artifacts
-- Query–context alignment guardrails: if retrieved context does not match the query, Layer 1 fails closed with a structured "insufficient context" signal instead of extracting the wrong story
-- Multi-story retrieval filtering: when retrieval returns multiple story blocks, context is sorted/filtered to the best matching story by query keyword overlap
-- Grounding improvements: generation uses extracted facts as the source of truth instead of passing through a lossy summary-and-expansion chain
-- Reliability work for real failures (API rate limits, GPU OOM, malformed outputs)
-- Format-aware Archive download handling (`pdf` / `epub`) with cleaner file selection
-- Duplicate-download protection by identifier to avoid redundant fetches
-- Evaluation with Hugging Face first and Gemini fallback, with retry handling for transient API errors
-- API groups: `/orchestration` (pipeline steps), `/create-eval` (generate/evaluate stories and summaries)
-- Lightweight pytest coverage for config, evaluation, retrieval metrics, and story-json workflow
+### Agentic loop (optional)
 
-## Grounded Story Generation
+When `Agentic_loop_enabled: true`:
 
-The generation path now keeps retrieval grounding while avoiding the old lossy middle stages:
+- **ACCEPT** when scores + completeness pass
+- **REFINE** when draft is incomplete but grounding is good
+- **RE_RETRIEVE** when faithfulness is low or facts are thin
 
-1. **Step 1 — Retrieval:** Chroma retrieves the most relevant story context for the request.
-2. **Step 2 — Grounded Extraction:** the model extracts concrete `Who/What/When/Where/Why/How` facts from retrieved context. If retrieved context has **zero keyword overlap** with the query, extraction fails closed with a structured **"insufficient context"** signal instead of guessing.
-3. **Step 3 — Single-Pass Generation:** the final story is generated once from the grounded extraction, avoiding the extra summary compression and expansion pass that could drop facts or hallucinate.
+## Key config (`setup.example.yaml`)
 
-If grounded extraction returns empty output, generation falls back to retrieval single-pass mode.
+| Setting | Purpose |
+|---------|---------|
+| `Generation_provider` | `ollama` (default), `vllm`, or `transformers` |
+| `Vector_store_model` | Embedding model (default BGE-base) |
+| `Hybrid_search_enabled` | BM25 + dense fusion |
+| `HF_grounded_facts_json_mode` | Strict JSON for Step 2 |
+| `Min_sentences_per_section` | Minimum sentences per section (default 3) |
+| `Generation_fast_*` / `Generation_thinking_*` | Token budgets and sampling |
+| `Agentic_loop_*` | Loop thresholds |
+| `Host` / `Port` | API bind address |
 
-Enable/configure in `setup.yaml` (see `setup.example.yaml` for defaults):
+Copy `setup.example.yaml` → `setup.yaml` for local runs. Secrets stay out of git.
 
-- `Generation_provider` (`ollama` | `vllm` | `transformers`)
-- `Story_generation_n_results`, reranker / hybrid search knobs
-- `Generation_fast_*` / `Generation_thinking_*` sampling + token budgets
-- `Agentic_loop_*` accept / refine / re-retrieve thresholds
-- `Attribution_gate_truncate` / `Attribution_violation_threshold`
-- `Model_max_prompt_tokens`, `Min_sentences_per_section`
+Prompt templates live in `prompts.yaml` under `generation`.
 
-Related prompt templates live in `prompts.yaml` under `generation`:
+## What it does
 
-- `grounded_facts_system` / `grounded_facts_user`
-- `grounded_story_system` / `grounded_story_user`
-- `grounded_story_refine_system` / `grounded_story_refine_user`
+- Prepares story records from `.txt` files under `data/stories/`
+- Ingests chunks into Chroma with explicit BGE embeddings
+- Retrieves relevant context, extracts grounded facts, generates stories
+- Evaluates output with rubric scoring (HF first, Gemini fallback)
+- Optional book search / PDF-EPUB extraction for public-domain sources
 
-## What It Does
-
-- Fetches public-domain books (Google Books + Archive.org) when needed
-- Extracts text from PDF/EPUB sources into `data/stories/`
-- Builds `story_json` records and ingest manifests for retrieval
-- Ingests chunks into Chroma (`BAAI/bge-base-en-v1.5` embeddings)
-- Generates grounded stories (retrieve → facts → Ollama/vLLM/Transformers)
-- Evaluates drafts with HF-first scoring and Gemini fallback
-- Optional agentic loop: evaluate → refine / re-retrieve / accept
-
-## Tech Stack
+## Tech stack
 
 - Python, FastAPI, Pydantic
 - ChromaDB, sentence-transformers
-- Ollama / vLLM / Transformers (Step 3 generation)
-- Hugging Face Inference API (grounded facts + primary evaluation) + Gemini fallback
+- Ollama / vLLM / Transformers (Step 3)
+- Hugging Face Inference API + Gemini fallback
 
-## Project Structure
+## Project structure
 
 **Public (this repo)**
 
 - `main.py` — FastAPI entry point
 - `src/storyforge/` — application package
-  - `api/` — routes (`/orchestration`, `/create-eval`, book search)
+  - `api/` — `/orchestration`, `/create-eval`, vector store routes
   - `orchestrator/` — pipeline step control
-  - `rag/` — LangChain RAG, grounded extraction, agentic loop
+  - `rag/` — retrieval, extraction, generation, agentic loop
   - `vector_store/` — Chroma ingest and query
-  - `data/` — story_json workflow (Step 1, manifest builder)
+  - `data/` — story_json workflow
   - `evaluation/` — rubric scoring + retrieval eval
-  - `book_search/` — Archive.org / Google Books helpers
   - `config/` — YAML config + env secret overlay
-- `scripts/` — CLI wrappers (ingest, CUDA check, smoke tests)
+- `scripts/` — CLI helpers (see [`../scripts/README.md`](../scripts/README.md))
 - `tests/` — pytest suite
-- `data/*/sample/` — public demo corpus only (see `data/README.md`)
+- `data/*/sample/` — public demo corpus only
 - `docs/` — architecture, demo path, roadmaps
 
-**Personal / local only (gitignored)**
+**Local only (gitignored)**
 
 - Full corpus: `data/stories/`, `data/story_json/`, `data/ingest/ingest_manifest.jsonl`
 - Runtime: `data/chroma_db/`, `data/outputs/`, `setup.yaml`, `.env`
-- Portfolio: `../StoryForge-portfolio/` (sibling folder outside this repo)
-- Legacy book folders: `Downloaded_Books/`, `Metadata/`, `Data_Merged/`, etc.
 
-## Quick Start
+## Quick start
 
-1. Install dependencies:
-   - `pip install -r requirements.txt`
-2. Create local config:
-   - copy `setup.example.yaml` to `setup.yaml`
-   - use **`setup.yaml` for day-to-day runs** (local paths and keys; this file is gitignored)
-   - keep **`setup.example.yaml` in sync when you add or rename config keys** you want in the repo for collaborators and fresh clones
-3. Start API:
-   - `python main.py`
-4. Open docs:
-   - `http://localhost:8000/docs`
+```powershell
+docker compose up -d
+docker exec -it ollama ollama pull qwen3.5:9b
+pip install -r requirements.txt
+copy setup.example.yaml setup.yaml   # edit BASE_PATH and keys
+python -m pytest
+python main.py
+```
+
+Open `http://localhost:8000/docs`.
+
+## Main data flow
+
+1. Put story `.txt` files in `data/stories/`
+2. `py scripts/step1_prepare_and_enrich.py`
+3. `py scripts/records_to_ingest_manifest.py`
+4. `py scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe)
+5. Generate via API:
+   - `POST /create-eval/story_generate` with `query` and optional `mode`
+   - or `POST /orchestration/run_step` with `4_generate_story_3step`
+
+### Chroma maintenance
+
+| Task | Script |
+|------|--------|
+| Re-embed after editing chunk text | `refresh_chunk_embeddings.py --glob "Author__*"` |
+| Push section metadata only | `push_section_metadata.py --glob "Author__*"` |
 
 ## Tests
 
-Run:
-
-- `python -m pytest`
-
-The current lightweight suite covers:
-
-- Config loading with `setup.example.yaml` fallback (`storyforge.config`)
-- Hugging Face-first evaluation provider selection and Gemini fallback (`storyforge.evaluation`)
-- Retrieval evaluation metrics for top-k accuracy and fact coverage (`storyforge.evaluation.retrieval_eval`)
-- Story-json → ingest manifest workflow (`tests/test_story_json_workflow.py`)
-- Agentic loop, attribution gate, and API route contracts
-
-These tests use temporary directories and avoid external services, local model loading, and runtime data folders.
-
-CI:
-
-- Run tests locally: `python -m pytest` (see `tests/`).
-- The workflow installs only lightweight test dependencies because the current tests intentionally avoid GPU/model/API dependencies.
-
-## Configuration
-
-Runtime configuration is loaded through `storyforge.config.config` (`setup.yaml` / `setup.example.yaml`).
-
-- Day-to-day runs should still use local `setup.yaml` for machine-specific paths and keys.
-- If `setup.yaml` is missing, import-time configuration falls back to `setup.example.yaml` so lightweight tests and fresh-clone review do not fail immediately.
-- API keys can be supplied through environment variables or `.env` / `.env.local`; local secret files remain gitignored.
-- Evaluation provider priority is controlled by `Evaluation_provider_priority` in `setup.yaml`; the default template tries `huggingface` before `gemini`.
-- Hugging Face evaluation uses `HF_evaluation_model` and the same HF token settings as summarization (`STORYFORGE_HF_API_KEY`, `HUGGINGFACE_API_KEY`, `HF_TOKEN`, or `facehugging_api`).
-- The main HF evaluation knobs are `HF_evaluation_model`, `HF_evaluation_max_new_tokens`, and `HF_evaluation_temperature`.
-
-## Main Flow
-
-1. Add / extract story `.txt` files under `data/stories/`
-2. Prepare + enrich → `data/story_json/*.json`
-3. Build ingest manifest → upsert into Chroma
-4. Generate story (retrieve → grounded facts → single-pass / agentic)
-5. Evaluate generated story
-
-For local validation after data updates, run:
-
-1. `py scripts/step1_prepare_and_enrich.py` (or prepare + enrich separately)
-2. `py scripts/records_to_ingest_manifest.py`
-3. `py scripts/reset_and_ingest.py` (or `ingest_manifest.py` to upsert)
-4. `POST /orchestration/run_step` with `{"step":"4_generate_story_3step","title":"..."}`
-
-## Retrieval Evaluation
-
-`python -m storyforge.evaluation.retrieval_eval` measures whether vector search returns the expected story for a query.
-
-It reports:
-
-- top-1 accuracy
-- top-k accuracy, default `k=3`
-- expected title rank
-- expected fact coverage across retrieved context
-
-Example:
-
 ```bash
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --output Evaluation/retrieval_eval_report.json --k 3
+python -m pytest
 ```
 
-The included `tests/fixtures/retrieval_eval_cases.example.json` is a small template. Replace or extend it with project-specific queries and expected facts after ingesting your real corpus locally.
+Covers: config loading, evaluation provider selection, retrieval metrics, agentic loop decisions, prompt contracts, story cleanup, API route contracts.
 
-## Who This Is For
+## Retrieval evaluation
 
-- Recruiters and hiring managers reviewing applied AI/data engineering projects
-- Engineers who want a concrete reference for retrieval + generation + evaluation pipelines
+```bash
+py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+```
+
+Reports top-1 / top-k accuracy and expected fact coverage.
 
 ## Current status
 
-With the current setup, generated stories can still be **incomplete** (cut short or thin in places), and I am actively debugging and tuning that. Recent reliability upgrades added **fail-closed query–context alignment**, **multi-story context filtering**, and a grounded extraction step before final generation, replacing the older summary-and-expansion chain that could lose plot beats or drift. My main working hypothesis remains **retrieval coverage**: the Chroma index built from what I have ingested so far only exposes **about 47 records** to RAG, which is small for diverse long-form conditioning—so weak or repetitive context upstream may be part of the problem, alongside token limits and generation settings. I am expanding ingestion and revisiting chunking/metadata to improve what retrieval returns.
+The pipeline is functional end-to-end. Active tuning areas:
 
-## Generation mode and data reset update
+- Long-form completeness in thinking/medium mode
+- Retrieval quality as corpus size grows
+- Reducing repetitive phrasing in generated prose
 
-I added a new generation mode to control whether output should be based on a **single** story source or a **series** source:
+Recent upgrades: BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), section sentence guardrails, and Chroma maintenance scripts.
 
-- if the request is `single`, retrieval only pulls records tagged as single from the vector store,
-- if the request is `series`, retrieval only pulls records tagged as series from the vector store.
+## Related docs
 
-Because older indexed data did not consistently store this single/series field, I removed the existing vector-store data and re-ingested it after validation. I also performed a double-check pass to make sure the saved data is now correct and consistent for this filter behavior.
+- [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) — development story and trade-offs
+- [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md) — hardware-focused upgrade plan
+- [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) — production boundaries
+- [`QUICK_DEMO.md`](./QUICK_DEMO.md) — fast reviewer path
 
-## Security Notes
+## Security
 
-- Do not commit `setup.yaml` (local secrets and machine-specific paths).
-- Commit `setup.example.yaml` as the safe template: when you ship new settings, mirror them there so others can copy it to `setup.yaml`.
+- Do not commit `setup.yaml`, API keys, Chroma DB, or generated outputs.
+- Keep `setup.example.yaml` in sync when adding new config keys.
 
 ## License
 
