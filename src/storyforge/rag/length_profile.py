@@ -1,14 +1,7 @@
-"""Target story length — one number drives the prompt, tokens, and accept gates.
+"""Resolve a story length target into prompt guidance, tokens, and accept gates.
 
-Story length used to be controlled in three places that could silently
-disagree: the prompt's "prefer 3-6 sentences per section" wording, the
-``Single_pass_*_max_tokens`` budget, and the agentic loop's word-count accept
-gate.  Raising only the token budget changed nothing, because the prompt still
-asked for five short sections and the loop still accepted the short result.
-
-A :class:`LengthProfile` derives all three from a single target word count so
-they cannot drift apart.  A target may be a preset name (``"long"``), a
-narration duration (``"12min"``), or an explicit word count (``1800``).
+One word target keeps those three in sync. Accepts a preset (``"long"``),
+narration duration (``"12min"``), or word count (``1800``).
 """
 from __future__ import annotations
 
@@ -26,33 +19,22 @@ __all__ = [
     "resolve_length_profile",
 ]
 
-# The story skeleton is a fixed 5-section outline (generation._flow_section_headers).
 _SECTIONS = 5
-
-# Narrative-prose averages used to turn a word target into sentence guidance.
 _WORDS_PER_SENTENCE = 18
 _SENTENCE_LOW_RATIO = 0.85
 _SENTENCE_HIGH_RATIO = 1.2
-
-# The accept gate sits just under the target: a good draft that lands a little
-# short still passes, but a half-length draft is sent back for a refine pass.
-_MIN_WORDS_RATIO = 0.85
-# A section must reach most of its sentence range, and never fewer than 3.
+_MIN_WORDS_RATIO = 0.85  # accept gate sits just under the target
 _MIN_SENTENCE_RATIO = 0.7
 _ABSOLUTE_MIN_SENTENCES = 3
-
-# English prose under Qwen-style BPE, plus headroom for headers and dialogue.
 _TOKENS_PER_WORD = 1.35
 _TOKEN_HEADROOM = 1.35
-
 _DEFAULT_WORDS_PER_MINUTE = 140
 _DEFAULT_TOKEN_CAP = 6000
 _MIN_TOKEN_CAP = 256
 _MIN_TARGET_WORDS = 100
 
-# Preset name -> target word count. Overridable via Story_length_presets.
 BUILTIN_LENGTH_PRESETS: dict[str, int] = {
-    "short": 450,     # ~3 min narration
+    "short": 450,     # ~3 min
     "medium": 900,    # ~6 min
     "long": 1500,     # ~11 min
     "epic": 2200,     # ~16 min
@@ -72,21 +54,14 @@ _PRESET_ALIASES = {
     "very_long": "epic",
 }
 
-# "12min", "12 minutes", "12m" -> minutes of narration.
 _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)$")
 
-# Note: "medium" is a *mode* alias here and also a *length* preset name. They are
-# separate request fields, so mode="medium" means thinking mode while
-# length="medium" means the ~900-word target.
+# mode="medium" means thinking; length="medium" means the ~900-word preset.
 _THINKING_MODE_NAMES = frozenset({"thinking", "think", "slow", "medium"})
 
 
 def is_thinking_mode(mode: Any) -> bool:
-    """True for the slower, higher-effort mode.
-
-    Accepts a ``Gen_mode`` enum, its ``.value``, or a raw string, so callers do
-    not have to normalise the mode themselves.
-    """
+    """True for thinking / medium / slow mode values."""
     return str(getattr(mode, "value", mode) or "").strip().lower() in _THINKING_MODE_NAMES
 
 
@@ -154,11 +129,7 @@ def length_presets(cfg: Optional[dict[str, Any]]) -> dict[str, int]:
 
 
 def length_token_cap(cfg: Optional[dict[str, Any]]) -> int:
-    """Hard ceiling on ``max_new_tokens`` for any single generation call.
-
-    Also clamps the agentic loop's refine boost, so a large boost can never push
-    a request past what the model's context window can serve.
-    """
+    """Hard ceiling on max_new_tokens (including refine boosts)."""
     try:
         cap = int((cfg or {}).get("Story_length_max_new_tokens_cap") or _DEFAULT_TOKEN_CAP)
     except (TypeError, ValueError):
@@ -180,12 +151,7 @@ def _parse_target(
     presets: dict[str, int],
     words_per_minute: int,
 ) -> Optional[tuple[str, int]]:
-    """Turn one candidate target into ``(display_name, target_words)``.
-
-    Accepts a preset name, a narration duration (``"12min"``), or a word count
-    given as an int or a numeric string.  Returns ``None`` when the value is
-    empty or unrecognised, so the caller can fall through to the next candidate.
-    """
+    """Parse preset / ``12min`` / word count into ``(name, words)``, or None."""
     if value is None or isinstance(value, bool):
         return None
 
@@ -229,8 +195,7 @@ def _build_profile(
     high = max(low + 2, math.ceil(sentences * _SENTENCE_HIGH_RATIO))
     min_sentences = max(_ABSOLUTE_MIN_SENTENCES, round(low * _MIN_SENTENCE_RATIO))
 
-    # token_floor keeps a manually tuned Single_pass_*_max_tokens from being
-    # lowered: the budget is a ceiling, so a generous one is never harmful.
+    # Prefer the higher of derived budget vs configured floor.
     derived_tokens = math.ceil(target * _TOKENS_PER_WORD * _TOKEN_HEADROOM)
     tokens = min(max(derived_tokens, max(0, int(token_floor))), token_cap)
 
@@ -253,15 +218,7 @@ def resolve_length_profile(
     length: Any = None,
     mode: Any = None,
 ) -> LengthProfile:
-    """Resolve the length target for one request.
-
-    Candidates are tried in order until one parses:
-
-    1. ``length`` — the per-request target (preset name, ``"12min"``, or words)
-    2. ``Story_length_default_thinking`` / ``Story_length_default_fast`` for the mode
-    3. ``Story_length_default`` — a mode-independent default
-    4. a built-in preset, so an incomplete config still produces a usable target
-    """
+    """Resolve length → mode default → Story_length_default → built-in preset."""
     cfg = cfg or {}
     presets = length_presets(cfg)
     words_per_minute = _words_per_minute(cfg)

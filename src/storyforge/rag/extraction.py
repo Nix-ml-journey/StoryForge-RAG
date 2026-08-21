@@ -24,26 +24,14 @@ from storyforge.rag.retrieval import _format_chunks_for_prompt
 
 LOG = logging.getLogger(__name__)
 
-# Retry knobs for transient HF API errors (shares its error classification with
-# storyforge.evaluation.evaluation via storyforge.api_errors), so a single
-# rate-limit / 502 / 503 blip doesn't immediately trigger the expensive
-# local-model fallback in _load_facts_llm.
 _EXTRACTION_RETRY_MAX_ATTEMPTS = 3
 _EXTRACTION_RETRY_BASE_DELAY_SEC = 2
 _EXTRACTION_RETRY_BACKOFF_FACTOR = 2
 
-
-# Shared with evaluation.py so the two HF call sites classify errors identically.
-# Aliased rather than imported under its own name to keep existing call sites intact.
 _is_retryable_api_error = is_retryable_api_error
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _hf_token(cfg: dict[str, Any]) -> str:
-    # secrets.py already overlays all HF env vars into facehugging_api at load time.
     return (cfg.get("facehugging_api") or "").strip()
 
 
@@ -109,11 +97,10 @@ def _hf_chat_extract_json(
         "temperature": temperature,
     }
 
-    # Optional strict JSON mode (falls back for backends that do not accept response_format).
-    # Must handle bool False correctly — `False or "true"` would give "true".
+    # Treat False as off — `False or "true"` would wrongly enable JSON mode.
     _jm_val = cfg.get("HF_grounded_facts_json_mode")
     if _jm_val is None:
-        _json_mode_enabled = True  # default on
+        _json_mode_enabled = True
     elif isinstance(_jm_val, bool):
         _json_mode_enabled = _jm_val
     else:
@@ -148,11 +135,7 @@ def _hf_chat_extract_json_with_retry(
     system: str,
     user: str,
 ) -> str:
-    """Retry _hf_chat_extract_json on transient errors before giving up.
-
-    Non-retryable errors (missing token, bad request, etc.) raise immediately so the
-    caller's fallback-to-local-model path still triggers without unnecessary delay.
-    """
+    """Retry HF extraction on transient errors; raise non-retryable immediately."""
     last_exc: Optional[Exception] = None
     for attempt in range(_EXTRACTION_RETRY_MAX_ATTEMPTS):
         try:
@@ -173,7 +156,7 @@ def _hf_chat_extract_json_with_retry(
 
 
 def _load_facts_llm(cfg: dict[str, Any]) -> Any:
-    """Step 2 local fallback when the HF API is unavailable."""
+    """Local Ollama / vLLM / Transformers fallback when HF is unavailable."""
     max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or 300)
     temperature = float(cfg.get("HF_grounded_facts_temperature") or 0.1)
     top_p = float(cfg.get("Generation_fast_top_p") or 0.8)
@@ -186,9 +169,7 @@ def _load_facts_llm(cfg: dict[str, Any]) -> Any:
         LOG.info("Using Ollama for grounded-facts fallback")
         return load_ollama_llm(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p, thinking=False)
 
-    # Transformers path — lazy import to avoid loading heavy deps at module import time.
-    # Uses the shared model cache from generation.py so GPU weights aren't loaded twice.
-    from storyforge.rag.generation import _load_or_get_cached_local_model  # lazy: breaks circular
+    from storyforge.rag.generation import _load_or_get_cached_local_model
     from transformers import pipeline  # type: ignore
     from langchain_huggingface import HuggingFacePipeline
 
@@ -208,20 +189,12 @@ def _load_facts_llm(cfg: dict[str, Any]) -> Any:
     return HuggingFacePipeline(pipeline=fact_pipe)
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 def extract_grounded_facts(
     query: str,
     chunks: list[dict[str, Any]],
     cfg: dict[str, Any],
 ) -> tuple[str, ParsedFacts]:
-    """Step 2: turn retrieved chunks into grounded facts (JSON).
-
-    Tries the HF Inference API first; falls back to a local Ollama / Transformers
-    model if the API call fails.  Returns (raw_text, parsed_facts).
-    """
+    """Step 2: extract grounded facts JSON (HF first, local fallback)."""
     prompts = _get_generation_prompts()
     try:
         grounded_raw = _hf_chat_extract_json_with_retry(

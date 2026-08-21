@@ -194,18 +194,7 @@ def query_vector_result(
     query_type: str = "content",
     collection_name: Optional[str] = None,
 ) -> dict:
-    """Query the vector store and return normalised hits.
-
-    Each hit carries the FULL stored metadata, not a fixed projection. The old
-    projection hardcoded eight series/chapter keys, none of which the ingest
-    paths actually write (they write Title/Author/chunk_id/section/*_json), so
-    every hit came back with eight empty strings and the real metadata was
-    dropped. `retrieval_eval` reads Title/Author/Summary and so scored 0.0 on
-    everything.
-
-    `document` is the canonical text key (what retrieval_eval reads); `text` is
-    kept as an alias so existing callers/response models keep working.
-    """
+    """Query the vector store; return hits with full stored metadata."""
     try:
         res = query_data(
             query, n_results=n_results, query_type=query_type, collection_name=collection_name
@@ -244,9 +233,7 @@ def vector_insert_result(ids: list[str], metadata: dict) -> dict:
             "Author": metadata.get("Author", ""),
             "Title": metadata.get("Title", ""),
             "Summary": metadata.get("Summary", ""),
-            # Must be "content": every read path filters where={"query_type": "content"}
-            # (chromadb.query_data, vector_store_check). Writing anything else stores the
-            # row successfully but makes it permanently invisible to every query.
+            # Must be "content" or rows are invisible to every read path.
             "query_type": "content",
         }
         Collection.add(ids=ids, metadatas=[meta] * len(ids), documents=[doc] * len(ids))
@@ -294,9 +281,6 @@ def generate_story_result(
     try:
         cfg = load_config()
         cfg["Story_generation_n_results"] = int(n_results)
-        # Report the sampling values generation actually uses (resolved from
-        # setup.yaml by _mode_generation_params) rather than the hardcoded
-        # get_mode_sampling defaults, which do not drive generation at all.
         profile = resolve_length_profile(cfg, length=length, mode=mode)
         max_new_tokens, temperature, top_p = _mode_generation_params(cfg, mode=mode, profile=profile)
         gen_params = {
@@ -308,7 +292,6 @@ def generate_story_result(
             "n_results": int(n_results),
             "length": profile.as_dict(),
         }
-        # 3-step RAG: Chroma retrieve → HF facts → local story generation
         out = generate_story_3step_langchain(
             query,
             cfg=cfg,
@@ -356,15 +339,8 @@ def generate_story_agentic_result(
     debug: bool = False,
     length: Any = None,
 ) -> dict:
-    """
-    Agentic generation: loop until accept or max iterations.
-
-    See agentic_loop.run_agentic_story_loop. Returns content, scores, and iteration log.
-    """
+    """Agentic generation until accept or max iterations."""
     try:
-        # Base sampling values as resolved from setup.yaml. The agentic loop may
-        # raise the token budget on refine passes (Agentic_loop_refine_token_boost),
-        # so max_new_tokens here is the starting budget, not a per-iteration value.
         cfg = load_config()
         profile = resolve_length_profile(cfg, length=length, mode=mode)
         max_new_tokens, temperature, top_p = _mode_generation_params(cfg, mode=mode, profile=profile)

@@ -32,13 +32,8 @@ LOG = logging.getLogger(__name__)
 _LOCAL_MODEL_CACHE: dict = {}     # (model_id, precision, use_cuda) -> (tokenizer, model)
 _SECTION_HEADER_RE = re.compile(r"^\[SECTION\s+(\d+).*?\]\s*$", re.IGNORECASE | re.MULTILINE)
 
-# Lives in attribution.py for unit tests; alias keeps imports local.
 _format_facts_for_prompt = format_facts_for_prompt
 
-
-# ---------------------------------------------------------------------------
-# Local model loader (shared cache with extraction.py's fallback path)
-# ---------------------------------------------------------------------------
 
 def _resolve_generation_dtype(*, cfg: dict[str, Any], use_cuda: bool):
     """Resolve torch dtype from Generation_precision with safe fallbacks."""
@@ -61,10 +56,7 @@ def _resolve_generation_dtype(*, cfg: dict[str, Any], use_cuda: bool):
 
 
 def _load_or_get_cached_local_model(model_id: str, cfg: dict[str, Any]):
-    """Load the local causal LM once per (model_id, precision, device) tuple.
-
-    Called by extraction.py's fallback path as well, so weights are never loaded twice.
-    """
+    """Load the local causal LM once per (model_id, precision, device)."""
     import torch
     use_cuda = torch.cuda.is_available()
     precision = str(cfg.get("Generation_precision") or "auto").strip().lower() or "auto"
@@ -99,12 +91,6 @@ def _load_or_get_cached_local_model(model_id: str, cfg: dict[str, Any]):
     return tok, model
 
 
-# ---------------------------------------------------------------------------
-# Generation params
-# ---------------------------------------------------------------------------
-
-# Canonical predicate now lives in length_profile (which needs it too, and must
-# not import this module). Alias keeps the existing private import path working.
 _is_thinking_mode = is_thinking_mode
 
 
@@ -116,12 +102,7 @@ def _mode_generation_params(
     length: Any = None,
     profile: Optional[LengthProfile] = None,
 ) -> tuple[int, float, float]:
-    """Resolve (max_new_tokens, temperature, top_p) for one generation call.
-
-    The token budget comes from the length target; ``mode`` only selects the
-    sampling pair. An explicit ``max_new_tokens`` (the agentic loop's refine
-    boost) wins, but is still clamped to the configured token cap.
-    """
+    """Resolve (max_new_tokens, temperature, top_p). Tokens from length; mode picks sampling."""
     is_thinking = is_thinking_mode(mode)
     token_cap = length_token_cap(cfg)
     if max_new_tokens is not None:
@@ -206,10 +187,6 @@ def _load_generation_llm(
     return HuggingFacePipeline(pipeline=gen_pipe)
 
 
-# ---------------------------------------------------------------------------
-# Story structure helpers
-# ---------------------------------------------------------------------------
-
 def _flow_section_headers(cfg: dict[str, Any]) -> str:
     """Fixed 5-section outline used by every generation and refine pass."""
     return "\n".join(
@@ -254,11 +231,7 @@ def build_story_prompt(
     facts_for_prompt: str,
     profile: LengthProfile,
 ) -> str:
-    """Assemble the Step 3 first-draft prompt.
-
-    Shared with the SSE streaming route so the streamed draft is built from the
-    same template and length target as the non-streaming path.
-    """
+    """Build the Step 3 first-draft prompt (shared with SSE streaming)."""
     from storyforge.rag.extraction import _get_generation_prompts
 
     prompts = _get_generation_prompts()
@@ -284,7 +257,7 @@ def build_refine_prompt(
     feedback: str,
     profile: LengthProfile,
 ) -> str:
-    """Assemble the Step 3 refine prompt used by the agentic loop and guards."""
+    """Build the Step 3 refine prompt."""
     from storyforge.rag.extraction import _get_generation_prompts
 
     prompts = _get_generation_prompts()
@@ -315,16 +288,8 @@ def _sections_below_min_sentences(story: str, *, min_sentences: int) -> dict[int
     return short
 
 
-# ---------------------------------------------------------------------------
-# Attribution gate
-# ---------------------------------------------------------------------------
-
 def _apply_attribution_gate(story: str, facts: tuple, cfg: dict[str, Any]) -> str:
-    """Post-check for names not present in grounded facts.
-
-    Default: log only (Attribution_gate_truncate: false).
-    Set Attribution_gate_truncate: true to restore hard truncation.
-    """
+    """Log (or optionally truncate) names not present in grounded facts."""
     story_body_for_check = re.sub(r"^\[SECTION \d+:.*?\]\s*", "", story, flags=re.MULTILINE)
     violations = attribution_violations(story=story_body_for_check, facts=facts)
     if not violations:
@@ -352,10 +317,6 @@ def _apply_attribution_gate(story: str, facts: tuple, cfg: dict[str, Any]) -> st
     return story
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 def generate_from_facts(
     query: str,
     parsed: Any,
@@ -369,14 +330,7 @@ def generate_from_facts(
     length: Any = None,
     profile: Optional[LengthProfile] = None,
 ) -> str:
-    """Step 3: write or refine a 5-section story from grounded facts.
-
-    With refine_feedback + prior_draft, runs the refine prompt instead of a fresh draft.
-
-    ``profile`` is the resolved length target; callers that already resolved one
-    (the 3-step pipeline, the agentic loop) pass it so every pass in a request
-    writes to the same target. Otherwise it is resolved from ``length``/``mode``.
-    """
+    """Step 3: write or refine a 5-section story from grounded facts."""
     profile = profile or resolve_length_profile(cfg, length=length, mode=mode)
     formatted_facts = _format_facts_for_prompt(parsed)
     facts_for_prompt = formatted_facts if formatted_facts else grounded_raw

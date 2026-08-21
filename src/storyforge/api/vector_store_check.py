@@ -19,12 +19,7 @@ from storyforge.vector_store.ingest_stories import ingest_stories_dir
 
 
 def _configured_collection() -> str:
-    """Resolve Chroma_collection_name at request time.
-
-    Read live rather than captured at import so it always matches what
-    rag/retrieval.py resolves; hardcoding the literal here previously meant the
-    reset/ingest endpoints wrote to a different collection than the one queried.
-    """
+    """Resolve Chroma_collection_name at request time (must match retrieval)."""
     try:
         return str(load_config().get("Chroma_collection_name") or "StoryForgeRag_v1")
     except Exception:
@@ -34,8 +29,6 @@ def _configured_collection() -> str:
 
 vector_store_inspect_router = APIRouter(tags=["Vector Store"])
 vector_store_router = APIRouter(prefix="/vector_store", tags=["Vector Store"])
-# Inspection routes call chromadb helpers directly (not the ingest wrapper).
-
 vector_store_check_router = APIRouter(prefix="/check_vector_store", tags=["Vector Store"])
 
 

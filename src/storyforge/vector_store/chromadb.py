@@ -54,18 +54,7 @@ def query_data(
     query_type: str = "content",
     collection_name: str | None = None,
 ):
-    """Query the collection using the SAME embedding model the corpus was ingested with.
-
-    This previously passed ``query_texts=[query]``. Because the collection is
-    created without an ``embedding_function``, that made Chroma embed the query
-    with its own built-in default (all-MiniLM-L6-v2, 384-dim). The stored
-    vectors are 768-dim BGE, so every call raised a dimension mismatch that was
-    swallowed below and returned as ``None`` -- a silent, total failure.
-
-    We now embed the query explicitly with ``Vector_store_model`` (plus the BGE
-    query prefix) and pass ``query_embeddings``, mirroring what the ingest path
-    and ``rag/retrieval.py`` already do.
-    """
+    """Query with the same embed model as ingest (never Chroma's default 384-dim)."""
     try:
         cfg = load_config()
         embed_model_name = str(cfg.get("Vector_store_model") or DEFAULT_EMBED_MODEL)

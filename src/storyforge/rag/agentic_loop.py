@@ -1,12 +1,7 @@
-"""
-Agentic story loop: retrieve → generate → evaluate → decide → repeat.
+"""Agentic story loop: retrieve → generate → evaluate → decide → repeat.
 
-Each iteration may ACCEPT the draft, REFINE it (same retrieval, better prompt),
-or RE_RETRIEVE (wider search + new facts). Stops when quality and completeness
-pass, or after Agentic_loop_max_iterations.
-
-Functions like completeness_report and decide_action are pure (no API calls)
-so they can be unit-tested without LangChain or GPU dependencies.
+ACCEPT / REFINE / RE_RETRIEVE until quality + completeness pass, or max iterations.
+Pure helpers (completeness_report, decide_action) are unit-testable without GPU.
 """
 
 from __future__ import annotations
@@ -19,28 +14,21 @@ from typing import Any, Optional
 from storyforge.config.config import load_config
 from storyforge.rag.generative_ai import Gen_mode, StoryType
 
-# langchain_rag and evaluation are imported inside run_agentic_story_loop only,
-# so tests can import decide_action without heavy dependencies.
-
 LOG = logging.getLogger(__name__)
 
 __all__ = [
-    # Action constants
     "ACCEPT",
     "REFINE",
     "RE_RETRIEVE",
-    # Data classes
     "CompletenessReport",
     "Decision",
     "AgenticLoopResult",
-    # Pure decision helpers (unit-testable without GPU)
     "completeness_report",
     "average_score",
     "criterion_score",
     "decide_action",
     "build_feedback",
     "reformulate_query",
-    # Main entry point
     "run_agentic_story_loop",
 ]
 
@@ -48,7 +36,6 @@ ACCEPT = "accept"
 RE_RETRIEVE = "re_retrieve"
 REFINE = "refine"
 
-# Evaluation JSON keys that are not numeric criteria.
 _NON_CRITERION_KEYS = {
     "conclusion",
     "suggestions",
@@ -61,9 +48,7 @@ _NON_CRITERION_KEYS = {
     "model",
 }
 
-# Sentence-ending punctuation only.  Closing quotes (" ' ") are included
-# because stories often end with dialogue (e.g. "...done," she said.).
-# Parenthesis ) is intentionally excluded \u2014 it is structural, not terminal.
+# Include closing quotes so dialogue endings count as terminal.
 _TERMINAL_CHARS = frozenset('.!?"\u201d\u2019\'')
 _EXPECTED_SECTIONS = 5
 
@@ -106,10 +91,7 @@ def completeness_report(
     expected_sections: int = _EXPECTED_SECTIONS,
     min_sentences_per_section: int = 0,
 ) -> CompletenessReport:
-    """
-    Rule-based check: all [SECTION n] headers present, ends with . ! or ?,
-    and at least min_words. No LLM involved.
-    """
+    """Rule check: all sections present, terminal ending, min words / sentences."""
     text = (story or "").strip()
     word_count = len(text.split())
 
@@ -204,14 +186,7 @@ def decide_action(
     *,
     has_eval: bool = True,
 ) -> Decision:
-    """
-    Next loop action: ACCEPT, REFINE, or RE_RETRIEVE.
-
-    Policy (simplified):
-      - Bad grounding (low faithfulness or zero facts) → RE_RETRIEVE
-      - Incomplete but grounded → REFINE (finish the draft, don't restart)
-      - Good scores + complete → ACCEPT
-    """
+    """Choose ACCEPT, REFINE, or RE_RETRIEVE from scores + completeness."""
     accept_score = float(cfg.get("Agentic_loop_accept_score") or 7.0)
     min_faith = float(cfg.get("Agentic_loop_min_faithfulness") or 6)
     min_facts = int(cfg.get("Agentic_loop_min_facts") or 3)
@@ -316,27 +291,7 @@ def run_agentic_story_loop(
     debug: bool = False,
     show_progress: bool = True,
 ) -> AgenticLoopResult:
-    """Run the full agentic story loop: retrieve → generate → evaluate → decide → repeat.
-
-    Iterates up to ``Agentic_loop_max_iterations`` times.  Each iteration calls
-    ``decide_action`` to choose ACCEPT (done), REFINE (re-generate with same
-    retrieval + evaluator feedback), or RE_RETRIEVE (wider search + regenerate).
-
-    Args:
-        query: The story generation query.
-        cfg: Loaded config dict; loaded from ``setup.yaml`` if not provided.
-        mode: Generation mode (FAST or THINKING).
-        length: Target story length -- a preset name, a narration duration
-            ("12min"), or a word count. Falls back to the configured default for
-            ``mode``. Drives the prompt, token budget, and accept gate together.
-        story_type: Hint for diversity selection (SINGLE, SERIES, MIX).
-        debug: Attach attribution debug payload to each iteration record.
-        show_progress: Display a tqdm progress bar when available.
-
-    Returns:
-        :class:`AgenticLoopResult` with the accepted draft, acceptance flag,
-        per-iteration history, and final evaluation scores.
-    """
+    """Retrieve → generate → evaluate → ACCEPT / REFINE / RE_RETRIEVE."""
     from storyforge.rag.extraction import extract_grounded_facts
     from storyforge.rag.generation import generate_from_facts
     from storyforge.rag.length_profile import is_thinking_mode, resolve_length_profile
@@ -347,8 +302,6 @@ def run_agentic_story_loop(
     max_iter = max(1, int(cfg.get("Agentic_loop_max_iterations") or 3))
     is_thinking = is_thinking_mode(mode)
 
-    # One length target drives the prompt, the token budget, and the accept gate,
-    # so the loop can no longer accept a draft the prompt was never told to write.
     profile = resolve_length_profile(cfg, length=length, mode=mode)
     min_words = profile.min_words
     min_sentences_per_section = profile.min_sentences_per_section

@@ -20,13 +20,7 @@ LOG = logging.getLogger(__name__)
 _RERANKER_CACHE: dict = {}    # (model_id, device) -> CrossEncoder
 _VECTORSTORE_CACHE: dict = {} # (chroma_dir, collection, embed_model, device) -> Chroma
 
-# Default placement for the reranker and the retriever's own embedding model
-# when setup.yaml does not override it. CPU by default: both do a handful of
-# encodes per request (well under a second), and keeping them off the GPU
-# avoids fighting Ollama's own CUDA context for VRAM -- on a 16GB card that
-# contention has been observed to crash Ollama's llama-server on init ("CUDA
-# error: shared object initialization failed") rather than just run slower.
-# Set Reranker_device / Embedding_device to "cuda" if you have VRAM to spare.
+# CPU default avoids competing with Ollama for GPU VRAM.
 _DEFAULT_DEVICE = "cpu"
 
 
@@ -42,10 +36,6 @@ def _resolve_device(requested: str) -> str:
             return "cpu"
     return device
 
-
-# ---------------------------------------------------------------------------
-# Reranker
-# ---------------------------------------------------------------------------
 
 def _get_reranker(model_id: str, device: str = _DEFAULT_DEVICE):
     """Load (or return cached) a cross-encoder reranker on `device` (default cpu)."""
@@ -88,10 +78,6 @@ def _rerank_docs(
     LOG.debug("Reranker kept %d/%d chunks (top_n=%d)", len(result), len(docs), top_n)
     return result
 
-
-# ---------------------------------------------------------------------------
-# Vectorstore
-# ---------------------------------------------------------------------------
 
 def _get_paths_and_names(cfg: dict[str, Any]):
     from pathlib import Path
@@ -190,13 +176,7 @@ def _select_diverse_stories(
     chunks_per_story: int = 2,
     target: Optional[int] = None,
 ) -> list[Document]:
-    """Pick chunks from up to `n_stories` different titles so one book does not dominate.
-
-    `chunks_per_story` caps how many chunks each title contributes on the first
-    pass (the diversity guarantee). `target` is the total number of chunks to
-    return; when it exceeds what the first pass produced, the backfill loop tops
-    up from the remaining ranked docs. Defaults to n_stories * chunks_per_story.
-    """
+    """Pick chunks from up to ``n_stories`` titles so one book does not dominate."""
     by_title: dict[str, list[Document]] = {}
     for d in docs:
         md = d.metadata or {}
@@ -226,12 +206,8 @@ def _select_diverse_stories(
     return picked
 
 
-# ---------------------------------------------------------------------------
-# BM25 hybrid fusion (RRF)
-# ---------------------------------------------------------------------------
-
 def _bm25_rank_docs(query: str, docs: list[Document]) -> list[Document]:
-    """Re-rank docs by BM25 score over the candidate pool (requires rank-bm25)."""
+    """Re-rank docs by BM25 over the candidate pool (requires rank-bm25)."""
     try:
         from rank_bm25 import BM25Okapi  # type: ignore
     except ImportError:
@@ -255,13 +231,7 @@ def _rrf_fuse(
     bm25_weight: float = 0.3,
     rrf_k: int = 60,
 ) -> list[Document]:
-    """Reciprocal Rank Fusion of dense-vector and BM25 ranked lists.
-
-    Score = (1 - bm25_weight) / (dense_rank + rrf_k)
-            + bm25_weight       / (bm25_rank  + rrf_k)
-
-    A bm25_weight of 0.3 gives the dense signal 70 % of the influence.
-    """
+    """Reciprocal Rank Fusion of dense and BM25 ranked lists."""
     all_docs: dict[str, Document] = {}
     for d in dense_docs + bm25_docs:
         key = d.page_content
@@ -283,10 +253,6 @@ def _rrf_fuse(
     return [all_docs[k] for k in ranked]
 
 
-# ---------------------------------------------------------------------------
-# Main retrieval entrypoint
-# ---------------------------------------------------------------------------
-
 def retrieve_docs(
     query: str,
     cfg: dict[str, Any],
@@ -297,27 +263,15 @@ def retrieve_docs(
     use_reranker: Optional[bool] = None,
     filter_metadata: Optional[dict[str, Any]] = None,
 ) -> list[Document]:
-    """Step 1: Chroma vector search, optionally fused with BM25 (hybrid).
+    """Step 1: Chroma search, optional BM25 hybrid + rerank.
 
-    k_boost         — widen retrieval pool (agentic re-retrieve uses > 1.0).
-    use_reranker    — override Reranker_enabled in setup.yaml when provided.
-    filter_metadata — Chroma ``where`` filter, e.g. {"series_id": "series_01"}.
-                      Enables targeted retrieval within a series or story type.
+    ``k_boost`` widens the pool (agentic re-retrieve). ``filter_metadata`` is a
+    Chroma ``where`` filter.
     """
     vectorstore = _build_vectorstore(cfg)
 
-    # Story_generation_n_results is the number of chunks actually handed to the
-    # fact-extraction step. It used to be computed as
-    #     k = max(base_k, n_stories * chunks_per_story * 4)
-    # which -- since every caller passes n_stories=3, chunks_per_story=2 -- was
-    # always max(base_k, 24), and the API caps n_results at 20. So the knob could
-    # never win the max() and was completely inert: n_results=1 and n_results=20
-    # returned an identical 6 chunks.
     target_chunks = max(1, int(cfg.get("Story_generation_n_results") or 3))
-
-    # Candidate pool: retrieve several times the target so diversity selection and
-    # the reranker have room to choose. Floored at the historical 24 so behaviour
-    # never gets *narrower* than before.
+    # Over-fetch so diversity + rerank have room to choose.
     k = max(target_chunks * 4, n_stories * max(1, chunks_per_story) * 4)
     k = int(round(k * max(1.0, float(k_boost))))
 
@@ -327,7 +281,6 @@ def retrieve_docs(
 
     docs = vectorstore.as_retriever(search_kwargs=search_kwargs).invoke(query)
 
-    # Hybrid BM25 + dense fusion (RRF) when enabled.
     hybrid_on = str(cfg.get("Hybrid_search_enabled") or "").strip().lower() not in ("false", "0", "no", "")
     if hybrid_on and docs:
         bm25_weight = float(cfg.get("Hybrid_bm25_weight") or 0.3)
@@ -342,17 +295,12 @@ def retrieve_docs(
         target=target_chunks,
     )
 
-    # Optional cross-encoder rerank (see Reranker_enabled / Reranker_model in setup.yaml).
     if use_reranker is None:
         reranker_on = str(cfg.get("Reranker_enabled") or "").strip().lower() not in ("false", "0", "no", "")
     else:
         reranker_on = bool(use_reranker)
     if reranker_on:
         reranker_model_id = str(cfg.get("Reranker_model") or "cross-encoder/ms-marco-MiniLM-L-6-v2")
-        # Defaults to target_chunks rather than a hardcoded 6, so raising
-        # Story_generation_n_results is not silently undone by the rerank cap.
-        # An explicit Story_generation_rerank_top_n still wins (set it below
-        # n_results to deliberately trim after reranking).
         top_n = int(cfg.get("Story_generation_rerank_top_n") or target_chunks)
         reranker_device = str(cfg.get("Reranker_device") or _DEFAULT_DEVICE)
         docs = _rerank_docs(
