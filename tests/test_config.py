@@ -20,10 +20,26 @@ def test_grounded_story_prompt_requires_full_five_section_completion():
     story_user = str(generation.get("grounded_story_user") or "")
 
     assert "You MUST write all five sections." in story_user
-    assert "EACH section MUST contain at least 3 complete sentences" in story_user
     assert "Do not end the story until SECTION 5 reaches a" in story_user
     assert "finished, resolved final sentence." in story_user
     assert "Do NOT introduce new named characters, places, or events not in the facts above." in story_user
+
+
+def test_story_prompts_take_length_guidance_from_the_length_profile():
+    """Per-section length must come from the resolved target, never be hardcoded.
+
+    A literal "3-6 sentences per section" in the prompt caps output regardless of
+    the token budget, which is the bug the length profile exists to prevent.
+    """
+    generation = _generation_prompts()
+
+    for key in ("grounded_story_user", "grounded_story_refine_user"):
+        template = str(generation.get(key) or "")
+        assert "{length_guidance}" in template, f"{key} must accept length guidance"
+        assert "3-6 sentences" not in template, f"{key} must not hardcode a sentence range"
+        assert "at least 3 complete sentences" not in template, (
+            f"{key} must not hardcode a sentence minimum"
+        )
 
 
 def test_refine_prompt_prefers_continuation_over_restart():
@@ -107,9 +123,37 @@ def test_example_config_exposes_thinking_mode_generation_flags():
         "Single_pass_thinking_max_tokens",
         "Generation_repetition_penalty",
         "Generation_no_repeat_ngram_size",
-        "Min_sentences_per_section",
         "Single_pass_refine_max_tokens",
         "Agentic_loop_refine_token_boost_thinking",
-        "Agentic_loop_min_words_thinking",
     ):
         assert key in config
+
+
+def test_example_config_exposes_story_length_target_settings():
+    config = load_config("setup.example.yaml", overlay_keys=False)
+    for key in (
+        "Story_length_presets",
+        "Story_length_default_fast",
+        "Story_length_default_thinking",
+        "Story_length_words_per_minute",
+        "Story_length_max_new_tokens_cap",
+    ):
+        assert key in config
+
+    presets = config["Story_length_presets"]
+    assert isinstance(presets, dict)
+    # Defaults must be resolvable preset names, or every request falls back.
+    assert config["Story_length_default_fast"] in presets
+    assert config["Story_length_default_thinking"] in presets
+
+
+def test_example_config_no_longer_hardcodes_length_gates():
+    """Word/sentence minimums are derived from the length target.
+
+    Leaving them in config would let them contradict the target, which is how
+    the loop used to demand 1100 words from a prompt asking for ~450.
+    """
+    config = load_config("setup.example.yaml", overlay_keys=False)
+    assert "Min_sentences_per_section" not in config
+    assert "Agentic_loop_min_words" not in config
+    assert "Agentic_loop_min_words_thinking" not in config

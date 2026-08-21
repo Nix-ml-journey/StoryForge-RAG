@@ -311,6 +311,7 @@ def run_agentic_story_loop(
     *,
     cfg: Optional[dict[str, Any]] = None,
     mode: Gen_mode = Gen_mode.FAST,
+    length: Any = None,
     story_type: StoryType = StoryType.MIX,
     debug: bool = False,
     show_progress: bool = True,
@@ -325,6 +326,9 @@ def run_agentic_story_loop(
         query: The story generation query.
         cfg: Loaded config dict; loaded from ``setup.yaml`` if not provided.
         mode: Generation mode (FAST or THINKING).
+        length: Target story length -- a preset name, a narration duration
+            ("12min"), or a word count. Falls back to the configured default for
+            ``mode``. Drives the prompt, token budget, and accept gate together.
         story_type: Hint for diversity selection (SINGLE, SERIES, MIX).
         debug: Attach attribution debug payload to each iteration record.
         show_progress: Display a tqdm progress bar when available.
@@ -335,31 +339,33 @@ def run_agentic_story_loop(
     """
     from storyforge.rag.extraction import extract_grounded_facts
     from storyforge.rag.generation import generate_from_facts
+    from storyforge.rag.length_profile import is_thinking_mode, resolve_length_profile
     from storyforge.rag.retrieval import _docs_to_chunks, _docs_to_context, retrieve_docs
 
     cfg = cfg or load_config()
 
     max_iter = max(1, int(cfg.get("Agentic_loop_max_iterations") or 3))
-    mode_name = mode.value if isinstance(mode, Gen_mode) else str(mode or "").strip().lower()
-    is_thinking = mode_name in {Gen_mode.THINKING.value, "thinking", "think", "slow", "medium"}
+    is_thinking = is_thinking_mode(mode)
 
-    min_words = int(
-        cfg.get("Agentic_loop_min_words_thinking" if is_thinking else "Agentic_loop_min_words")
-        or cfg.get("Agentic_loop_min_words")
-        or 250
+    # One length target drives the prompt, the token budget, and the accept gate,
+    # so the loop can no longer accept a draft the prompt was never told to write.
+    profile = resolve_length_profile(cfg, length=length, mode=mode)
+    min_words = profile.min_words
+    min_sentences_per_section = profile.min_sentences_per_section
+    base_max_tokens = profile.max_new_tokens
+    LOG.info(
+        "Agentic loop length target '%s': %d words (~%s min), min %d words, "
+        "min %d sentences/section, %d max new tokens.",
+        profile.name, profile.target_words, profile.estimated_minutes,
+        min_words, min_sentences_per_section, base_max_tokens,
     )
-    min_sentences_per_section = int(cfg.get("Min_sentences_per_section") or 3)
+
     k_boost_step = float(cfg.get("Agentic_loop_reretrieve_k_boost") or 2.0)
     reretrieve_n = int(cfg.get("Agentic_loop_reretrieve_n_results") or 5)
     refine_token_boost = int(
         cfg.get("Agentic_loop_refine_token_boost_thinking" if is_thinking else "Agentic_loop_refine_token_boost")
         or cfg.get("Agentic_loop_refine_token_boost")
         or 600
-    )
-    base_max_tokens = int(
-        cfg.get("Single_pass_thinking_max_tokens" if is_thinking else "Single_pass_fast_max_tokens")
-        or cfg.get("Single_pass_fast_max_tokens")
-        or 768
     )
 
     eval_model = None
@@ -418,6 +424,7 @@ def run_agentic_story_loop(
             grounded_raw,
             cfg,
             mode=mode,
+            profile=profile,
             refine_feedback=refine_feedback,
             prior_draft=prior_draft,
             max_new_tokens=refine_max_new,

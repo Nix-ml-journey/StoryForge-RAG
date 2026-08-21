@@ -10,6 +10,7 @@ try:
 except ImportError:
     ChatGoogleGenerativeAI = None
 
+from storyforge.api_errors import is_retryable_api_error
 from storyforge.config.config import load_config, load_prompts
 
 # Root logging is configured once in storyforge/__init__.py.
@@ -33,16 +34,9 @@ EVAL_RETRY_BASE_DELAY_SEC = 2
 EVAL_RETRY_BACKOFF_FACTOR = 2
 
 
-def _is_retryable_api_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return (
-        "503" in msg
-        or "unavailable" in msg
-        or "high demand" in msg
-        or "429" in msg
-        or "rate limit" in msg
-        or "resource exhausted" in msg
-    )
+# Shared with rag/extraction.py so both HF call sites classify errors identically.
+# Aliased rather than imported under its own name to keep existing call sites intact.
+_is_retryable_api_error = is_retryable_api_error
 
 
 def _normalise_provider_priority(value) -> list[str]:
@@ -192,11 +186,30 @@ def _invoke_with_retry(model, prompt: str):
 
 
 def evaluate_model(
-    temperature: float = 0.3,
+    temperature: Optional[float] = None,
     model_name: Optional[str] = None,
     provider: Optional[str] = None,
 ):
+    """Build an evaluator for the first available provider.
+
+    `temperature=None` (the default) means "use the configured value" --
+    HF_evaluation_temperature for the HF provider. This previously defaulted to
+    a hardcoded 0.3, and since every caller invokes evaluate_model() with no
+    arguments, the configured value was unreachable and evaluation always ran
+    at 0.3. That extra sampling noise feeds straight into the agentic loop's
+    ACCEPT / REFINE / RE_RETRIEVE decisions.
+    """
     cfg = _cfg()
+    # Resolve once here so no provider builder ever receives None (Gemini would
+    # forward it straight into ChatGoogleGenerativeAI). HF_evaluation_temperature
+    # is the only evaluation-temperature knob in the config and applies to
+    # whichever provider ends up serving the request.
+    if temperature is None:
+        try:
+            temperature = float(cfg.get("HF_evaluation_temperature", 0.1))
+        except (TypeError, ValueError):
+            temperature = 0.1
+
     providers = [provider.lower()] if provider else _normalise_provider_priority(
         cfg.get("Evaluation_provider_priority") or ["huggingface", "gemini"]
     )

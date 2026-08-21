@@ -46,6 +46,8 @@ py scripts/push_section_metadata.py --glob "Jekyll_and_Hyde__*"
 | `test_generation.py` | HTTP smoke tests (server must be running) |
 | `debug_hf_grounded_facts_mode.py` | Probe Step 2 HF JSON mode vs fallback |
 
+When smoke-testing generation, pass `length` if you want a specific target (presets / `"12min"` / word count). Defaults follow mode (`fast` → short, `thinking` → long). See `docs/README.md`.
+
 ## Text prep
 
 | Script | Purpose |
@@ -67,3 +69,9 @@ py scripts/debug_hf_grounded_facts_mode.py
 # Retrieval quality report
 py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 ```
+
+## Docs
+
+- Overview + length targets: [`../docs/README.md`](../docs/README.md)
+- Project journey: [`../docs/PROJECT_JOURNEY.md`](../docs/PROJECT_JOURNEY.md)
+- Upgrade roadmap: [`../docs/UPGRADE_ROADMAP_5060Ti.md`](../docs/UPGRADE_ROADMAP_5060Ti.md)

@@ -12,14 +12,15 @@ I used AI assistants for research and debugging speed; architecture and implemen
 
 ## Current system (2026)
 
-The public repo (`src/storyforge/`) runs a **grounded 3-step RAG** pipeline plus an optional **agentic loop**.
+The public repo (`src/storyforge/`) runs a **grounded 3-step RAG** pipeline plus an optional **agentic loop**. Story length is controlled by one request/config target (`length`), not by three independent knobs that used to disagree.
 
 ```mermaid
 flowchart LR
     ingest["Ingest stories → Chroma"] --> s1["Step 1: Retrieve"]
     s1 --> s2["Step 2: Grounded facts JSON"]
     s2 --> s3["Step 3: Local story generation"]
-    s3 --> eval["Evaluate draft"]
+    s3 --> guard["Length guard / refine"]
+    guard --> eval["Evaluate draft"]
     eval --> decide{"Accept / Refine / Re-retrieve"}
     decide -->|refine| s3
     decide -->|re-retrieve| s1
@@ -28,12 +29,15 @@ flowchart LR
 
 | Stage | What it does | Typical model |
 |--------|----------------|----------------|
-| **Step 1** | Chroma search + optional cross-encoder rerank; diverse story titles | `BAAI/bge-base-en-v1.5` embeddings |
-| **Step 2** | Extract grounded facts (JSON with chunk ids) | HF router `Qwen2.5-7B` (API) |
-| **Step 3** | Write a fixed **5-section** story from facts only | Local `Qwen2.5-7B` (GPU) |
+| **Step 1** | Chroma search + hybrid BM25 + optional rerank; diverse story titles | `BAAI/bge-base-en-v1.5` embeddings |
+| **Step 2** | Extract grounded facts (JSON with chunk ids) | HF router `Qwen/Qwen3-8B` (API); Ollama fallback |
+| **Step 3** | Write a fixed **5-section** story from facts only, sized by `length` | Ollama `qwen3.5:9b` (also vLLM / Transformers) |
+| **Length profile** | One target drives prompt guidance, token budget, and accept gate | `src/storyforge/rag/length_profile.py` |
 | **Agentic loop** | Score each draft; refine incomplete stories or widen retrieval | HF eval 7B → Gemini fallback |
 
 **Orchestrator steps:** prepare story JSON → reset/ingest Chroma → `4_generate_story_3step` or `4_generate_story_agentic` (when `Agentic_loop_enabled`).
+
+**Length on generate requests:** pass `length` as a preset (`short` / `medium` / `long` / `epic`), a narration duration (`"13min"`), or a word count (`"1800"`). Omit it and the mode default applies (`fast` → short, `thinking` → long). `mode` selects sampling / thinking; `length` selects how much prose to write.
 
 ---
 
@@ -53,9 +57,9 @@ I replaced that chain with:
 
 Prompt contracts live in `prompts.yaml` (`grounded_facts_*`, `grounded_story_*`, `grounded_story_refine_*`).
 
-### Latest: agentic loop
+### Latest: agentic loop + length target
 
-Short stories were stable; **long-form (~1,200–1,500 words)** exposed new failure modes (early stop at section 3, prompt leakage, broken dialogue quotes, loop choosing re-retrieve instead of refine).
+Short stories were stable; **long-form (~1,200–2,200 words)** exposed new failure modes (early stop at section 3, prompt leakage, broken dialogue quotes, loop choosing re-retrieve instead of refine, and — most importantly — output stuck at ~450 words even when token budgets were large).
 
 I added `agentic_loop.py`:
 
@@ -63,7 +67,9 @@ I added `agentic_loop.py`:
 - **RE_RETRIEVE** only when faithfulness is low or facts are empty/thin.
 - **ACCEPT** when rubric average and completeness heuristics pass.
 
-Post-save cleanup in `generative_ai.clean_story_output()` fixes common formatting artifacts (unclosed quotes, instruction leakage before `[SECTION 1]`).
+Then I fixed the real length ceiling: the prompt still said “prefer 3–6 sentences per section,” so the model did exactly that and stopped. Raising `Single_pass_*_max_tokens` alone changed nothing. The fix was a single **length profile** that keeps prompt guidance, token budget, and accept gate in sync (see session below).
+
+Post-save cleanup in `generative_ai.clean_story_output()` fixes common formatting artifacts (unclosed quotes, instruction leakage before `[SECTION 1]`, duplicate words).
 
 ---
 
@@ -74,9 +80,16 @@ Post-save cleanup in `generative_ai.clean_story_output()` fixes common formattin
 | `storyforge/book_search/` | Archive.org download, text extraction |
 | `storyforge/data/` | `story_json` workflow, HF summarization helpers |
 | `storyforge/vector_store/` | Chroma + ingest with BGE-aligned embeddings |
-| `storyforge/rag/` | `langchain_rag.py` (Steps 1–3), `agentic_loop.py`, `attribution.py` |
+| `storyforge/rag/retrieval.py` | Step 1: Chroma + hybrid BM25 + reranker |
+| `storyforge/rag/extraction.py` | Step 2: HF API grounded facts, local fallback |
+| `storyforge/rag/generation.py` | Step 3: Ollama / vLLM / Transformers story generation |
+| `storyforge/rag/length_profile.py` | Resolve `length` → prompt + tokens + accept gate |
+| `storyforge/rag/langchain_rag.py` | 3-step orchestrator + length guard |
+| `storyforge/rag/agentic_loop.py` | Evaluate → REFINE / RE_RETRIEVE / ACCEPT |
+| `storyforge/rag/attribution.py` | Grounded-facts parsing, attribution gate |
+| `storyforge/rag/generation_backend.py` | Ollama / vLLM loaders, `strip_thinking_tags` |
 | `storyforge/evaluation/` | HF-first rubric JSON; Gemini on failure |
-| `storyforge/orchestrator/` + `api/` | Pipeline steps, FastAPI routes |
+| `storyforge/orchestrator/` + `api/` | Pipeline steps, FastAPI routes, SSE stream |
 
 Lazy imports in `rag/__init__.py` keep unit tests runnable without loading Transformers on import.
 
@@ -101,26 +114,32 @@ Lazy imports in `rag/__init__.py` keep unit tests runnable without loading Trans
 
 ### Long-form generation
 
-- **Symptom:** Incomplete 5-section stories, `accepted: false` despite high scores, dialogue/quote formatting bugs.
-- **Mitigation:** Higher `Single_pass_fast_max_tokens`, `Agentic_loop_min_words`, refine prompts with per-section length targets; `decide_action` prefers REFINE over RE_RETRIEVE for incomplete grounded drafts.
+- **Symptom:** Incomplete 5-section stories, `accepted: false` despite high scores, dialogue/quote formatting bugs, and drafts stuck at ~450 words even with `Single_pass_fast_max_tokens: 3200`.
+- **Root cause (later found):** Prompt wording (`prefer 3–6 sentences per section`) and accept-gate minima lived separately from the token budget. Raising only the budget left the model obeying a short prompt and the loop accepting a short draft.
+- **Mitigation (v1):** Higher token floors, refine prompts, `decide_action` prefers REFINE over RE_RETRIEVE for incomplete grounded drafts.
+- **Mitigation (current):** Unified `LengthProfile` — one `length` target derives prompt `{length_guidance}`, `max_new_tokens`, `min_words`, and `min_sentences_per_section`. Removed hand-tuned `Min_sentences_per_section` / `Agentic_loop_min_words*` from config so they cannot silently contradict the target. Also raised `Story_generation_n_results` (10) and `HF_grounded_facts_max_new_tokens` (1600) so long prose has enough grounded material instead of padding.
 
 ### Honest quality tiers (local GPU)
 
-| Tier | Target | Status |
-|------|--------|--------|
-| **Short** (~250–500 words) | Single-pass or agentic | **Works reliably** |
-| **Long (Level B)** (~1,100–1,500 words) | Agentic + refine | **Improving** — structure and scores OK; prose still needs tuning |
-| **Very long (Level C)** | Higher token budgets | **Not ready** — OOM/latency risk on 16 GB VRAM |
+| Tier | Target | How to request | Status |
+|------|--------|----------------|--------|
+| **Short** (~450 words / ~3 min) | Single-pass | `mode: "fast"` or `length: "short"` | **Works reliably** |
+| **Medium** (~900 words / ~6 min) | Single-pass or agentic | `length: "medium"` | **Usable** |
+| **Long (Level B)** (~1,500 words / ~11 min) | Agentic + refine | `mode: "thinking"` or `length: "long"` / `"13min"` | **Improving** — length gates now agree; empty thinking drafts still need a retry |
+| **Epic (Level C)** (~2,200 words / ~16 min) | Agentic + richer retrieval | `length: "epic"` | **Experimental** — latency grows; thin facts risk repetition |
+
+On consumer 16 GB VRAM with Ollama, the ceiling is less about OOM and more about wall-clock time + empty thinking-mode responses that strip to `0` words before refine.
 
 ---
 
 ## Key technical decisions
 
 - **Embeddings:** `BGE-base-en-v1.5` with query prefix at search time; passage prefix at ingest (must re-ingest after model change).
-- **Generation:** `Qwen2.5-7B-Instruct` local BF16 on RTX 5060 Ti (~14.5 GB VRAM); optional Flash Attention 2 if `flash-attn` is installed.
-- **Facts extraction:** HF API (same router as eval) so Step 2 does not compete with Step 3 for VRAM.
-- **Config:** Secrets in `setup.yaml` (gitignored); template in `setup.example.yaml`.
-- **Tests:** Pure decision tests for agentic loop; lightweight pytest in CI without GPU.
+- **Generation:** Ollama `qwen3.5:9b` by default (warm model outside the Python process); Transformers / vLLM still supported via `Generation_provider`.
+- **Facts extraction:** HF API (`Qwen/Qwen3-8B`) so Step 2 does not compete with Step 3 for VRAM; local Ollama fallback when HF returns 502 / rate limits.
+- **Length:** One derived profile beats three hand-tuned knobs. Presets live in `Story_length_presets`; requests override with `length`.
+- **Config:** Secrets in `setup.yaml` (gitignored); template in `setup.example.yaml`. Config and prompts are cached — restart the API after edits.
+- **Tests:** Pure decision tests for agentic loop + length profile; lightweight pytest without GPU.
 
 ---
 
@@ -176,15 +195,59 @@ Ollama in Docker solves all three: model stays warm, Ollama manages GPU memory o
 
 **Streaming endpoint:** `POST /orchestration/generate_stream` returns Server-Sent Events. Steps 1–2 run in a thread, Step 3 streams tokens from Ollama via `ChatOllama.astream`. Contract tests in `tests/test_api_contracts.py` run with zero external dependencies.
 
-**Context window expansion:** `Model_max_prompt_tokens: 12288`, `Single_pass_fast_max_tokens: 3200`, `Single_pass_thinking_max_tokens: 4000`.
+**Context window expansion:** `Model_max_prompt_tokens: 12288`. Token floors remain (`Single_pass_fast_max_tokens: 3200`, `Single_pass_thinking_max_tokens: 4000`) but the **effective** budget is now max(floor, length-derived) capped by `Story_length_max_new_tokens_cap`.
 
 **Step 2 model upgrade:** `HF_grounded_facts_model: "Qwen/Qwen3-8B"` — better JSON extraction than the previous 7B instruct model, still API-only (no VRAM cost).
 
 **Structured JSON output for Step 2:** `HF_grounded_facts_json_mode: true` in `setup.yaml`. `_hf_chat_extract_json` passes `response_format={"type": "json_object"}` to the HF `InferenceClient`, constraining Qwen3-8B to valid JSON at the token level. Falls back gracefully (retry without flag + warning) if the backend doesn't support it. The `repair_json()` call in `attribution.py` is kept as a safety net for the local-fallback path. Tests in `tests/test_extraction.py`.
 
-**Test suite consolidation:** three micro-files absorbed into larger homes — `test_prompt_contracts.py` → `test_config.py`; `test_generation_backend.py` + `test_story_cleanup.py` → `test_rag_utils.py`. Old files left as empty stubs (Windows mount prevents deletion).
+**Test suite consolidation:** three micro-files absorbed into larger homes — `test_prompt_contracts.py` → `test_config.py`; `test_generation_backend.py` + `test_story_cleanup.py` → `test_rag_utils.py`.
 
-### Architecture modules (updated)
+---
+
+## Session: unified story-length target (2026)
+
+This session fixed the “why won’t my story grow past ~450 words?” failure that token-budget tuning alone could not solve.
+
+### Diagnosis
+
+A ~10–15 minute narration script needs roughly 1,300–2,250 words. Observed drafts were ~450 words even with `Single_pass_fast_max_tokens: 3200` (room for ~2,200+ words of output). The model was obeying the prompt:
+
+- “Prefer 3–6 sentences per section”
+- “EACH section MUST contain at least 3 complete sentences”
+
+Five sections × ~4–5 sentences × ~15–20 words ≈ **400–500 words**, regardless of token headroom. The agentic accept gate (`Agentic_loop_min_words*`) also only required a short story to pass.
+
+### Design
+
+Introduce one `LengthProfile` that derives:
+
+| Derived field | Used by |
+|---------------|---------|
+| `guidance_text()` → `{length_guidance}` | `prompts.yaml` story + refine templates |
+| `max_new_tokens` | Ollama / vLLM / Transformers generation |
+| `min_words` | Agentic completeness gate |
+| `min_sentences_per_section` | Completeness gate + 3-step length guard |
+
+Resolution order for a request: explicit `length` → mode default (`Story_length_default_fast` / `_thinking`) → fallback preset.
+
+Accepted `length` forms: preset name, `"12min"` (words = minutes × `Story_length_words_per_minute`), or an integer / numeric string word count.
+
+### Changes shipped
+
+- New module: `src/storyforge/rag/length_profile.py`
+- Prompts: replace hardcoded sentence ranges with `{length_guidance}`
+- Config: `Story_length_presets`, defaults, WPM, token cap; remove hand-tuned `Min_sentences_per_section` / `Agentic_loop_min_words*`
+- Wire `length` through generation, 3-step orchestrator, agentic loop, orchestrator helpers, and API request models (`/create-eval/story_generate`, `/orchestration/run_step`, `/run_pipeline`, `/generate_stream`)
+- Shared `build_story_prompt` / `build_refine_prompt` so streaming cannot drift from non-streaming
+- Companion knobs for long prose: `Story_generation_n_results: 10`, `HF_grounded_facts_max_new_tokens: 1600`
+- Tests: `tests/test_length_profile.py` + updated prompt/config contracts
+
+### Remaining open issue
+
+Thinking mode can still return an empty body (Ollama spends budget inside `<think>` / strips to zero words). The length guard triggers a refine pass, but a single refine can still land short. Workaround for long targets today: `mode: "fast"` + `length: "13min"` (or `"long"` / `"epic"`). Next hardening: re-check after refine and fail clearly when the target is still unmet.
+
+### Architecture modules (current)
 
 | Module | Role |
 |--------|------|
@@ -193,11 +256,12 @@ Ollama in Docker solves all three: model stays warm, Ollama manages GPU memory o
 | `storyforge/vector_store/` | Chroma + ingest with BGE-aligned embeddings |
 | `storyforge/rag/retrieval.py` | Step 1: Chroma + hybrid BM25 + reranker |
 | `storyforge/rag/extraction.py` | Step 2: HF API grounded facts, local fallback |
-| `storyforge/rag/generation.py` | Step 3: Ollama / Transformers story generation |
-| `storyforge/rag/langchain_rag.py` | 3-step orchestrator + re-exports |
+| `storyforge/rag/generation.py` | Step 3: Ollama / vLLM / Transformers story generation |
+| `storyforge/rag/length_profile.py` | Resolve `length` → prompt + tokens + accept gate |
+| `storyforge/rag/langchain_rag.py` | 3-step orchestrator + length guard |
 | `storyforge/rag/agentic_loop.py` | Evaluate → REFINE / RE_RETRIEVE / ACCEPT |
 | `storyforge/rag/attribution.py` | Grounded-facts parsing, attribution gate |
-| `storyforge/rag/generation_backend.py` | `load_ollama_llm`, `strip_thinking_tags` |
+| `storyforge/rag/generation_backend.py` | `load_ollama_llm`, `strip_thinking_tags`, vLLM |
 | `storyforge/evaluation/` | HF-first rubric JSON; Gemini on failure |
 | `storyforge/orchestrator/` + `api/` | Pipeline steps, FastAPI routes, SSE stream |
 
@@ -205,15 +269,17 @@ Ollama in Docker solves all three: model stays warm, Ollama manages GPU memory o
 
 ## What I am doing next
 
-1. More ingest diversity and chunk-quality checks (retrieval is the ceiling).
-2. Tune long-form prompts and refine loop until Level B accepts consistently.
-3. Stronger retrieval eval harness (precision@k on fixed query set).
-4. Optional Level C only after stable VRAM/token budgeting.
+1. Harden empty-draft recovery after length-guard refine (retry + clearer `success: false`).
+2. More ingest diversity and chunk-quality checks (retrieval is still the ceiling).
+3. Tune long-form (`length: "long"` / `"13min"`) until Level B accepts consistently under agentic loop.
+4. Stronger retrieval eval harness (precision@k on fixed query set).
+5. Optional epic / Level C only after stable wall-clock and non-empty generation under Ollama.
 
 ---
 
 ## Repo and docs
 
 - **Code:** https://github.com/Nix-ml-journey/StoryForge-RAG  
+- **Overview:** `docs/README.md`  
 - **Quick test path:** `docs/QUICK_DEMO.md`  
 - **Roadmap:** `docs/PROJECT_UPDATE_ROADMAP.md`, `docs/UPGRADE_ROADMAP_5060Ti.md`

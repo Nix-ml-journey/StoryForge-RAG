@@ -13,11 +13,17 @@ from storyforge.config.config import load_config
 
 
 def _default_n_results() -> int:
-    """Default n_results from setup.yaml (read at request time, not import time)."""
+    """Default n_results from setup.yaml (read at request time, not import time).
+
+    The fallback is 6, matching retrieval.py's effective default. It was 1, which
+    silently degraded every request to single-chunk retrieval whenever the key was
+    missing or load_config() raised -- while the orchestrator's own default was 3.
+    """
     try:
-        return int(load_config().get("Story_generation_n_results") or 1)
+        return int(load_config().get("Story_generation_n_results") or 6)
     except Exception:
-        return 1
+        logging.warning("Could not read Story_generation_n_results; defaulting n_results=6")
+        return 6
 
 
 create_eval_router = APIRouter(prefix="/create-eval", tags=["Create Eval"])
@@ -38,6 +44,15 @@ class StoryGenerateRequest(BaseModel):
         description="Number of context chunks from vector store (default from setup.yaml)",
     )
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    length: Optional[str] = Field(
+        default=None,
+        description=(
+            "Target story length: a preset name ('short', 'medium', 'long', 'epic'), "
+            "a narration duration ('12min'), or a word count ('1800'). Drives the prompt, "
+            "token budget, and length accept gate together. Omit to use the configured "
+            "default for the chosen mode."
+        ),
+    )
     story_type: Optional[str] = Field(
         default="mix",
         description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both). Defaults to 'mix'.",
@@ -57,9 +72,20 @@ class StoryGenerateRequest(BaseModel):
                         "query": "A lost child finds a magical forest",
                         "generation_type": "full_story",
                         "save": True,
-                        "n_results": 3,  # matches Story_generation_n_results default in setup.example.yaml
+                        "n_results": 10,  # matches Story_generation_n_results default in setup.example.yaml
                         "mode": "thinking",
+                        "length": "long",
                         "story_type": "single",
+                    },
+                },
+                {
+                    "summary": "Video script sized to narration time (~12 minutes)",
+                    "value": {
+                        "query": "A lighthouse keeper and the storm that would not end",
+                        "generation_type": "full_story",
+                        "save": True,
+                        "mode": "thinking",
+                        "length": "12min",
                     },
                 },
                 {
@@ -68,7 +94,7 @@ class StoryGenerateRequest(BaseModel):
                         "query": "Peter Pan adventures in Neverland",
                         "generation_type": "full_story",
                         "save": True,
-                        "n_results": 3,  # matches Story_generation_n_results default in setup.example.yaml
+                        "n_results": 10,  # matches Story_generation_n_results default in setup.example.yaml
                         "mode": "fast",
                         "story_type": "series",
                     },
@@ -207,6 +233,7 @@ async def story_generate(request: StoryGenerateRequest):
             n_results=request.n_results,
             mode=parse_gen_mode(request.mode),
             story_type=parse_story_type(request.story_type),
+            length=request.length,
         )
         return StoryGenerateResponse(
             success=result.get("success", False),

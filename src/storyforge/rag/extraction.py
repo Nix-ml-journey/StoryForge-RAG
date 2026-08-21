@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from huggingface_hub import InferenceClient
 
+from storyforge.api_errors import is_retryable_api_error
 from storyforge.config.config import load_prompts
 from storyforge.rag.attribution import ParsedFacts, parse_grounded_facts_json
 from storyforge.rag.generation_backend import (
@@ -23,26 +24,18 @@ from storyforge.rag.retrieval import _format_chunks_for_prompt
 
 LOG = logging.getLogger(__name__)
 
-# Retry knobs for transient HF API errors (mirrors storyforge.evaluation.evaluation),
-# so a single rate-limit/503 blip doesn't immediately trigger the expensive local-model
-# fallback in _load_facts_llm.
+# Retry knobs for transient HF API errors (shares its error classification with
+# storyforge.evaluation.evaluation via storyforge.api_errors), so a single
+# rate-limit / 502 / 503 blip doesn't immediately trigger the expensive
+# local-model fallback in _load_facts_llm.
 _EXTRACTION_RETRY_MAX_ATTEMPTS = 3
 _EXTRACTION_RETRY_BASE_DELAY_SEC = 2
 _EXTRACTION_RETRY_BACKOFF_FACTOR = 2
 
 
-def _is_retryable_api_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return (
-        "503" in msg
-        or "unavailable" in msg
-        or "high demand" in msg
-        or "429" in msg
-        or "rate limit" in msg
-        or "resource exhausted" in msg
-        or "timeout" in msg
-        or "timed out" in msg
-    )
+# Shared with evaluation.py so the two HF call sites classify errors identically.
+# Aliased rather than imported under its own name to keep existing call sites intact.
+_is_retryable_api_error = is_retryable_api_error
 
 
 # ---------------------------------------------------------------------------

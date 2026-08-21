@@ -53,8 +53,7 @@ generation:
     Rules:
     - Output the first header, then its prose, then the next header, and so on through SECTION 5.
     - Keep it simple: clear prose under each header, not an outline.
-    - EACH section MUST contain at least 3 complete sentences before moving to the next section.
-    - Prefer 3-6 sentences per section.
+    {length_guidance}
     - Expand grounded facts with clear detail, pacing, and dialogue where natural.
     - You MUST write all five sections. Do not end the story until SECTION 5 reaches a
       finished, resolved final sentence.
@@ -95,7 +94,7 @@ generation:
     - Begin with the first section header. Do not print all headers as an outline.
     - Address every point in the reviewer feedback.
     - Keep the format simple: prose under each header.
-    - EACH section MUST contain at least 3 complete sentences; expand any section that is shorter.
+    {length_guidance}
     - If the draft is incomplete, prioritize completing missing/weak sections while preserving valid grounded content from earlier sections.
     - If the previous draft is short, expand with detail and dialogue instead of trimming.
     - Finish every section and complete the final sentence.

@@ -3,11 +3,13 @@
 > **Status: historical.** This roadmap reflects an earlier repo layout and hiring-readiness
 > review. For the current architecture and flow, prefer:
 > - [`README.md`](../README.md) / [`docs/README.md`](./README.md)
-> - [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md)
+> - [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) — includes the unified story-length target session
 > - [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md)
+> - [`QUICK_DEMO.md`](./QUICK_DEMO.md) / [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md)
 >
-> Keep this file for portfolio narrative context; do not treat folder names or “missing tests”
-> claims below as current truth.
+> Keep this file for portfolio narrative context; do not treat folder names, “missing tests”,
+> or old length knobs (`Agentic_loop_min_words`, hardcoded “3–6 sentences”) below as current truth.
+> Length is now a single `length` / `Story_length_*` profile — see `docs/README.md`.
 
 This document is an honest review of the project as a job-search portfolio piece from an earlier phase. The project has real technical value: it is not just a prompt demo. It covers data ingestion, metadata preparation, vector search, local generation, orchestration, FastAPI routes, and LLM-based evaluation.
 

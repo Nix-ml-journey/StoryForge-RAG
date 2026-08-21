@@ -55,7 +55,17 @@ def _heuristic_section_tag(*, chunk_index: int, chunk_total: int) -> str:
 
 def _load_section_labeler(cfg: dict[str, Any], model_id: str) -> tuple[str, Any, Any | None]:
     if use_ollama_for_generation(cfg):
-        llm = load_ollama_llm(cfg, max_new_tokens=24, temperature=0.0, top_p=0.8)
+        # model_override is required: load_ollama_llm otherwise resolves the model
+        # from Generative_model, so Section_label_model was silently ignored on the
+        # (default) Ollama path and every 24-token labelling call ran on the full
+        # story model.
+        llm = load_ollama_llm(
+            cfg,
+            max_new_tokens=24,
+            temperature=0.0,
+            top_p=0.8,
+            model_override=model_id,
+        )
         return ("ollama", llm, None)
     gen, tok = _load_local_section_labeler(model_id)
     return ("transformers", gen, tok)

@@ -24,45 +24,47 @@ source .venv/bin/activate
 python -m pytest
 ```
 
-These tests use temporary folders and do not touch local runtime data such as `Stories/`, `Metadata/`, `Data_Merged/`, `chroma_db/`, or generated outputs.
+These tests use temporary folders and do not touch local runtime data such as `data/stories/`, `data/chroma_db/`, `data/outputs/`, or a private `setup.yaml`.
 
 Current test coverage focuses on:
 
 - Config loading and `setup.example.yaml` fallback (`storyforge.config`)
-- Hugging Face-first evaluation provider selection and Gemini fallback (`storyforge.evaluation`)
+- Story-length profile resolution (`tests/test_length_profile.py`)
+- Prompt contracts (including `{length_guidance}` placeholders)
+- Hugging Face-first evaluation provider selection and Gemini fallback
 - Retrieval metric calculations (`storyforge.evaluation.retrieval_eval`)
-- Story-json → ingest manifest workflow (`tests/test_story_json_workflow.py`)
-- Agentic loop, attribution gate, and API route contracts
+- Story-json → ingest manifest workflow
+- Agentic loop decisions, attribution gate, and API route contracts
 
-Run the same lightweight suite locally with `python -m pytest` (see `tests/`).
+Run the same lightweight suite locally with `python -m pytest` (see `tests/`). Prefer the project venv if you use one (`.\venv\Scripts\python.exe -m pytest`).
 
 ## 3. Review The Architecture
 
 Start with:
 
-- `README.md` for the project overview and main flow.
-- `PROJECT_JOURNEY.md` for trade-offs, failures, and lessons learned.
-- `UPGRADE_ROADMAP_5060Ti.md` for hardware / backend upgrade notes.
-- `PROJECT_UPDATE_ROADMAP.md` for a historical hiring-readiness snapshot (not current architecture).
-- `PRODUCTION_NOTES.md` for production boundaries and next steps.
+- [`../README.md`](../README.md) for a short overview
+- [`README.md`](./README.md) for the current architecture, length targets, and API examples
+- [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for trade-offs, failures, and lessons learned
+- [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md) for hardware / backend upgrade notes
+- [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) for a historical hiring-readiness snapshot (not current architecture)
+- [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries and next steps
 
 The main system shape is:
 
 ```text
-Book Search / Extract
+Stories (.txt) → story_json → ingest manifest
         |
         v
-Metadata + Story Merge
+Chroma Vector Store (BGE + hybrid BM25 + rerank)
         |
         v
-Chroma Vector Store
+Step 1 Retrieve → Step 2 Grounded facts (HF) → Step 3 Story (Ollama)
         |
         v
-Retrieval + Grounded Single-Pass Generation
-        |
-        v
-LLM-Based Evaluation
+Length guard / agentic evaluate → refine / re-retrieve / accept
 ```
+
+Story length is one request field (`length`: preset / `"12min"` / word count). It drives prompt guidance, token budget, and accept gates together. See [`README.md`](./README.md#story-length).
 
 ## Demo Mode Status
 
@@ -72,13 +74,14 @@ What is mocked or lightweight today:
 
 - Evaluation provider selection is tested with mocked Hugging Face/Gemini behavior.
 - Retrieval metrics are tested with mocked retrieval results.
+- Length-profile resolution is pure arithmetic / config parsing (no GPU).
 - Data merge and metadata checks run against temporary folders.
 
 What still requires real local setup:
 
 - End-to-end `/create-eval/story_generate`
 - Chroma-backed retrieval
-- Local generation model inference
+- Ollama (or vLLM / Transformers) generation
 - Live HF/Gemini calls
 
 ## 4. Optional Full API Run
@@ -87,8 +90,9 @@ The API path requires local setup:
 
 1. Copy `setup.example.yaml` to `setup.yaml` for real local runs.
 2. Set `BASE_PATH` to this project folder.
-3. Add API keys only for the features you want to run.
-4. Start the API:
+3. Start Ollama: `docker compose up -d` then `docker exec -it ollama ollama pull qwen3.5:9b`.
+4. Add API keys only for the features you want to run (HF for Step 2 / eval).
+5. Start the API:
 
 ```bash
 python main.py
@@ -100,17 +104,35 @@ Open:
 http://localhost:8000/docs
 ```
 
-Useful docs pages:
+Useful endpoints:
 
-- `http://localhost:8000/docs` - orchestration endpoints
-- `http://localhost:8000/create-eval` - story generation/evaluation endpoints
-- `http://localhost:8000/vector` - vector store inspection/query endpoints
-- `http://localhost:8000/book-docs` - book search/download endpoints
-- `http://localhost:8000/data-docs` - data merge/summarization endpoints
+| Path | Purpose |
+|------|---------|
+| `POST /create-eval/story_generate` | Generate with `mode` + optional `length` |
+| `POST /orchestration/run_step` | Single pipeline step (incl. generate) |
+| `POST /orchestration/generate_stream` | SSE token stream |
+| `/vector_store/*` | Inspect / query Chroma |
+| `/book-docs` | Book search / download |
+| `/data-docs` | Data merge / summarization |
+
+Example generate body:
+
+```json
+{
+  "query": "A scholar discovers something in an old house that he shouldn't have",
+  "generation_type": "full_story",
+  "save": true,
+  "mode": "fast",
+  "length": "long",
+  "story_type": "mix"
+}
+```
+
+After editing `setup.yaml` or `prompts.yaml`, restart the API — config and prompts are cached.
 
 ## What Requires External Resources
 
-- Full local story generation requires the configured Hugging Face model and enough CPU/GPU memory.
+- Full story generation requires Ollama (default) or another configured provider, plus enough GPU memory.
 - Book search/download can use Google Books and Archive.org access.
 - Summary creation uses Hugging Face Inference API.
 - Story/summary evaluation tries Hugging Face first, then Gemini fallback if configured.
@@ -120,7 +142,7 @@ Useful docs pages:
 To run retrieval evaluation after ingesting data:
 
 ```bash
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --output Evaluation/retrieval_eval_report.json --k 3
+py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 ```
 
 HF-first evaluation is configured with:
@@ -137,4 +159,4 @@ The lightweight demo proves the repository has runnable tests and that core data
 
 It also verifies that fresh-clone imports can fall back to `setup.example.yaml` through the shared config loader instead of requiring a private local `setup.yaml` immediately.
 
-The full project demonstrates the larger applied AI system: ingestion, retrieval, generation, orchestration, and evaluation.
+The full project demonstrates the larger applied AI system: ingestion, retrieval, grounded generation with a selectable length target, orchestration, and evaluation.

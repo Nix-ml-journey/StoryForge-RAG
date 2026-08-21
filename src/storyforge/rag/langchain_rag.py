@@ -19,6 +19,7 @@ from storyforge.config.config import load_config
 from storyforge.rag.attribution import build_debug_attribution_stub
 from storyforge.rag.extraction import extract_grounded_facts
 from storyforge.rag.generation import _sections_below_min_sentences, generate_from_facts
+from storyforge.rag.length_profile import resolve_length_profile
 from storyforge.rag.retrieval import _docs_to_chunks, _docs_to_context, retrieve_docs
 
 LOG = logging.getLogger(__name__)
@@ -44,12 +45,14 @@ def generate_story_3step_langchain(
     *,
     cfg: Optional[dict[str, Any]] = None,
     mode: Any = None,
+    length: Any = None,
     n_stories: int = 3,
     chunks_per_story: int = 2,
     show_progress: bool = True,
     debug: bool = False,
 ) -> RAG3StepResult:
     cfg = cfg or load_config()
+    profile = resolve_length_profile(cfg, length=length, mode=mode)
 
     pbar = None
     if show_progress:
@@ -69,23 +72,41 @@ def generate_story_3step_langchain(
     if pbar:
         pbar.update(1)
 
-    story = generate_from_facts(query, parsed, grounded_raw, cfg, mode=mode)
-    min_sentences = int(cfg.get("Min_sentences_per_section") or 3)
+    story = generate_from_facts(query, parsed, grounded_raw, cfg, mode=mode, profile=profile)
+    min_sentences = profile.min_sentences_per_section
     short_sections = _sections_below_min_sentences(story, min_sentences=min_sentences)
-    if short_sections:
+    word_count = len(story.split())
+    if short_sections or word_count < profile.min_words:
         LOG.info(
-            "Section sentence guard triggered (min=%d). Short sections: %s.",
-            min_sentences, short_sections,
+            "Length guard triggered (target=%s, min_words=%d, min_sentences=%d). "
+            "Draft had %d words; short sections: %s.",
+            profile.name, profile.min_words, min_sentences, word_count, short_sections,
         )
-        feedback = (
-            f"Section format fix required: each section must have at least {min_sentences} complete sentences. "
-            f"Sections below minimum: {str(sorted(short_sections.items()))}. "
-            "Expand only the short sections while preserving grounded facts."
+        feedback_parts = [
+            f"Length fix required: the story must reach about {profile.target_words} words "
+            f"with roughly {profile.words_per_section} words per section."
+        ]
+        if short_sections:
+            feedback_parts.append(
+                f"Each section needs at least {min_sentences} complete sentences. "
+                f"Sections below the minimum (section: sentence count): {sorted(short_sections.items())}."
+            )
+        if word_count < profile.min_words:
+            feedback_parts.append(
+                f"The draft is {word_count} words, under the {profile.min_words}-word minimum."
+            )
+        feedback_parts.append(
+            "Expand the thin sections with grounded detail and dialogue; do not trim finished sections."
         )
-        refine_max = int(cfg.get("Single_pass_refine_max_tokens") or 0) or None
+        # Refine has to re-emit the whole story, so it needs at least the draft budget.
+        refine_max = max(
+            int(cfg.get("Single_pass_refine_max_tokens") or 0),
+            profile.max_new_tokens,
+        )
         story = generate_from_facts(
             query, parsed, grounded_raw, cfg,
-            mode=mode, refine_feedback=feedback, prior_draft=story, max_new_tokens=refine_max,
+            mode=mode, profile=profile, refine_feedback=" ".join(feedback_parts),
+            prior_draft=story, max_new_tokens=refine_max,
         )
     if pbar:
         pbar.update(1)

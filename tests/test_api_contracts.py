@@ -98,7 +98,19 @@ def test_run_step_accepts_valid_step(client):
 
 @pytest.fixture()
 def _mock_rag_for_stream(monkeypatch):
-    """Patch retrieve_docs, extract_grounded_facts, and ChatOllama.astream."""
+    """Patch retrieve_docs, extract_grounded_facts, and the streaming LLM.
+
+    The LLM seam is `generation_backend.build_chat_ollama`, patched on its OWN
+    module rather than on orchestration_routes. `_stream_story_sse` imports it
+    inside the function body, so a local `from ... import build_chat_ollama`
+    resolves the attribute from generation_backend at call time — patching
+    orchestration_routes would be shadowed and silently ineffective.
+
+    This previously patched `orchestration_routes.ChatOllama`, which had the same
+    shadowing problem (the old code did a local `from langchain_ollama import
+    ChatOllama`), so these tests were quietly hitting a real Ollama server and
+    only passed on machines where one happened to be running.
+    """
     # Patch retrieve_docs in the orchestration_routes module namespace.
     monkeypatch.setattr(
         "storyforge.api.orchestration_routes.retrieve_docs",
@@ -109,7 +121,7 @@ def _mock_rag_for_stream(monkeypatch):
         "storyforge.api.orchestration_routes.extract_grounded_facts",
         lambda query, chunks, cfg: ('{"facts": []}', _fake_parsed_facts()),
     )
-    # Patch ChatOllama so no Ollama server is needed.
+    # Patch the LLM builder so no Ollama server is needed.
     fake_llm = MagicMock()
 
     async def _fake_astream(messages):
@@ -122,9 +134,8 @@ def _mock_rag_for_stream(monkeypatch):
     fake_llm.astream = _fake_astream
 
     monkeypatch.setattr(
-        "storyforge.api.orchestration_routes.ChatOllama",
-        lambda **_kwargs: fake_llm,
-        raising=False,
+        "storyforge.rag.generation_backend.build_chat_ollama",
+        lambda cfg, **_kwargs: fake_llm,
     )
 
 

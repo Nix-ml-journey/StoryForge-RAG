@@ -56,11 +56,27 @@ Set `Host: "0.0.0.0"` in `setup.yaml` if you need access from other devices or c
 Generated stories use **5 simple sections** with headers like `[SECTION 1: WHO, WHERE, WHEN (The Setup)]`.
 
 Rules enforced by prompts and code:
-- Each section must have **at least 3 complete sentences**
 - All 5 sections must be present
 - Story must stay grounded in retrieved facts (no invented named characters/places)
+- Each section must reach the sentence and word minimums for the requested length
 
-Use `mode: "fast"` for shorter output or `mode: "thinking"` (also accepts `"medium"`) for longer, more detailed stories.
+### Story length
+
+`length` sets one target that drives the prompt's words-per-section
+instruction, the token budget, and the accept gate together — so raising the
+target actually produces a longer story instead of a bigger unused budget.
+
+```bash
+# A ~10-minute narration script for a video
+curl -s -X POST http://localhost:8000/create-eval/story_generate \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Amun Chronicles", "mode": "thinking", "length": "10min"}'
+```
+
+Accepted values: a preset name (`short` 450 words, `medium` 900, `long` 1500,
+`epic` 2200), a narration duration (`"12min"`), or a word count (`"1800"`).
+Omit it to use the default for the mode. `mode` still controls sampling and
+thinking; `length` controls how much prose gets written.
 
 ---
 
@@ -69,23 +85,23 @@ Use `mode: "fast"` for shorter output or `mode: "thinking"` (also accepts `"medi
 After ingesting at least one story (`POST /vector_store/ingest_stories`):
 
 ```bash
-# Single-pass generation
+# Single-pass generation (default short length for fast mode)
 curl -s -X POST http://localhost:8000/orchestration/run_step \
   -H "Content-Type: application/json" \
-  -d '{"step": "4_generate_story_3step", "title": "Amun Chronicles"}' | python -m json.tool
+  -d '{"step": "4_generate_story_3step", "title": "Amun Chronicles", "mode": "fast"}' | python -m json.tool
 
-# Via create-eval API (with mode)
+# Via create-eval API (~13-minute narration target)
 curl -s -X POST http://localhost:8000/create-eval/story_generate \
   -H "Content-Type: application/json" \
-  -d '{"query": "A warrior monk faces his greatest trial", "mode": "thinking", "save": false}' | python -m json.tool
+  -d '{"query": "A warrior monk faces his greatest trial", "mode": "fast", "length": "13min", "save": true}' | python -m json.tool
 
 # Streaming generation (SSE — tokens stream in real-time)
 curl -N http://localhost:8000/orchestration/generate_stream \
   -X POST -H "Content-Type: application/json" \
-  -d '{"query": "A warrior monk faces his greatest trial", "mode": "fast"}'
+  -d '{"query": "A warrior monk faces his greatest trial", "mode": "fast", "length": "medium"}'
 ```
 
-When `Agentic_loop_enabled: true`, step 4 uses evaluate → refine / re-retrieve → accept automatically.
+When `Agentic_loop_enabled: true`, step 4 uses evaluate → refine / re-retrieve → accept automatically. Completeness uses the resolved length target.
 
 ---
 
@@ -119,7 +135,8 @@ py scripts/push_section_metadata.py --glob "Lovecraft__*"
 | `src/storyforge/rag/retrieval.py` | Step 1: Chroma + hybrid BM25 retrieval + reranker |
 | `src/storyforge/rag/extraction.py` | Step 2: HF API grounded facts (retry + JSON mode) |
 | `src/storyforge/rag/generation.py` | Step 3: Ollama / vLLM / Transformers story generation |
-| `src/storyforge/rag/langchain_rag.py` | 3-step orchestrator + backward-compat re-exports |
+| `src/storyforge/rag/length_profile.py` | Resolve `length` → prompt + tokens + accept gate |
+| `src/storyforge/rag/langchain_rag.py` | 3-step orchestrator + length guard |
 | `main.py` | FastAPI entry point |
 | `docker-compose.yml` | Ollama service (GPU passthrough) |
 | `scripts/` | CLI helpers (ingest, eval, diagnostics) |
@@ -136,8 +153,9 @@ py scripts/push_section_metadata.py --glob "Lovecraft__*"
 | `Generation_provider` | `ollama` (default), `vllm`, or `transformers` |
 | `Vector_store_model` | Embedding model (default BGE-base) |
 | `Hybrid_search_enabled` | BM25 + dense fusion |
-| `Min_sentences_per_section` | Minimum sentences per story section (default 3) |
-| `Generation_fast_*` / `Generation_thinking_*` | Token budgets and sampling per mode |
+| `Story_length_presets` | Named length targets (name → target word count) |
+| `Story_length_default_fast` / `_thinking` | Default length target per mode |
+| `Generation_fast_*` / `Generation_thinking_*` | Sampling and token floors per mode |
 | `Agentic_loop_*` | Evaluate/refine/re-retrieve loop thresholds |
 | `HF_grounded_facts_json_mode` | Strict JSON for Step 2 (falls back if unsupported) |
 

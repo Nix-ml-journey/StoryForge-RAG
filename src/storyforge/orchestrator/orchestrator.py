@@ -36,8 +36,14 @@ class Orchestrator:
     def extract_text(self) -> dict:
         return parameters.extract_text_result()
 
-    def reset_vector_store(self, *, new_collection_name: str = "StoryForgeRag_v1") -> dict:
-        return parameters.reset_vector_store_result(new_collection_name=new_collection_name)
+    def reset_vector_store(self, *, new_collection_name: Optional[str] = None) -> dict:
+        # None -> the configured Chroma_collection_name, so this cannot drift from
+        # what retrieval.py reads. Hardcoding a literal here previously meant that
+        # renaming the collection in setup.yaml left ingest and retrieval pointing
+        # at different collections, silently returning zero results.
+        return parameters.reset_vector_store_result(
+            new_collection_name=new_collection_name or self.chroma_collection_name
+        )
 
     def step1_prepare_and_enrich(
         self,
@@ -54,11 +60,17 @@ class Orchestrator:
             dry_run=dry_run,
         )
 
-    def ingest_stories(self, *, collection_name: str = "StoryForgeRag_v1") -> dict:
-        return parameters.ingest_stories_result(collection_name=collection_name)
+    def ingest_stories(self, *, collection_name: Optional[str] = None) -> dict:
+        return parameters.ingest_stories_result(
+            collection_name=collection_name or self.chroma_collection_name
+        )
 
     def query_vector_store(self, query: str, n_results: int = 5, collection: Optional[str] = None) -> dict:
-        return parameters.query_vector_result(query, n_results)
+        # `collection` was previously accepted and then dropped, so vector_store_query's
+        # explicit collection argument silently had no effect.
+        return parameters.query_vector_result(
+            query, n_results, collection_name=collection or self.chroma_collection_name
+        )
 
     def vector_store_query(self, query: str, n_results: int = 5, collection: str = "") -> dict:
         return self.query_vector_store(query, n_results, collection or self.chroma_collection_name)
@@ -81,6 +93,7 @@ class Orchestrator:
         mode: Gen_mode = Gen_mode.FAST,
         story_type: StoryType = StoryType.MIX,
         debug: bool = False,
+        length: Optional[str] = None,
     ) -> dict:
         return parameters.generate_story_result(
             query,
@@ -89,6 +102,7 @@ class Orchestrator:
             mode,
             story_type=story_type,
             debug=debug,
+            length=length,
         )
 
     def generate_story_agentic(
@@ -98,6 +112,7 @@ class Orchestrator:
         mode: Gen_mode = Gen_mode.FAST,
         story_type: StoryType = StoryType.MIX,
         debug: bool = False,
+        length: Optional[str] = None,
     ) -> dict:
         return parameters.generate_story_agentic_result(
             query,
@@ -105,6 +120,7 @@ class Orchestrator:
             mode,
             story_type=story_type,
             debug=debug,
+            length=length,
         )
 
     def generate_summary(self, story_path: str, mode: Gen_mode = Gen_mode.FAST) -> dict:
@@ -127,6 +143,7 @@ class Orchestrator:
         steps: Optional[list[str]] = None,
         gen_mode: Gen_mode = Gen_mode.FAST,
         story_type: StoryType = StoryType.MIX,
+        length: Optional[str] = None,
     ) -> dict:
         # Default pipeline: ingest stories → generate.
         # If Agentic_loop_enabled in setup.yaml, step 4 uses the evaluate/refine loop.
@@ -161,13 +178,13 @@ class Orchestrator:
                     done.append("1_prepare_and_enrich_story_json")
 
                 elif step == "2_reset_vector_store":
-                    res_reset = self.reset_vector_store(new_collection_name="StoryForgeRag_v1")
+                    res_reset = self.reset_vector_store()
                     if not res_reset.get("success"):
                         raise RuntimeError(res_reset.get("error", "vector store reset failed"))
                     done.append("2_reset_vector_store")
 
                 elif step == "3_ingest_stories":
-                    res_ingest = self.ingest_stories(collection_name="StoryForgeRag_v1")
+                    res_ingest = self.ingest_stories()
                     if not res_ingest.get("success"):
                         raise RuntimeError(res_ingest.get("error", "ingest_stories failed"))
                     logging.info("Ingested %s chunk(s) from Stories/*.txt", res_ingest.get("chunks_written", 0))
@@ -184,6 +201,7 @@ class Orchestrator:
                         n_results=n_results,
                         mode=gen_mode,
                         story_type=story_type,
+                        length=length,
                     )
                     if not res.get("success"):
                         raise RuntimeError("generate failed")
@@ -195,6 +213,7 @@ class Orchestrator:
                         save=True,
                         mode=gen_mode,
                         story_type=story_type,
+                        length=length,
                     )
                     if not res.get("success"):
                         raise RuntimeError("agentic generate failed")

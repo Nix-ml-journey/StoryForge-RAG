@@ -13,7 +13,7 @@ from storyforge.rag.generative_ai import parse_gen_mode, parse_story_type
 from storyforge.rag.retrieval import _docs_to_chunks, retrieve_docs
 from storyforge.orchestrator.orchestrator import Orchestrator
 
-# Root logging is configured once in storyforge/__init__.py.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 orchestration_router = APIRouter(prefix="/orchestration", tags=["Orchestration"])
 orchestrator = Orchestrator()
@@ -39,6 +39,13 @@ class RunPipelineRequest(BaseModel):
         ),
     )
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    length: Optional[str] = Field(
+        default=None,
+        description=(
+            "Target story length for the generate step: a preset name ('short', 'medium', "
+            "'long', 'epic'), a narration duration ('12min'), or a word count ('1800')."
+        ),
+    )
     story_type: Optional[str] = Field(
         default="mix",
         description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both).",
@@ -109,6 +116,13 @@ class RunStepRequest(BaseModel):
     )
     title: str = Field(default="manual_step", min_length=1, description="Title/query (required for steps 1 and 5)")
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    length: Optional[str] = Field(
+        default=None,
+        description=(
+            "Target story length for the generate step: a preset name ('short', 'medium', "
+            "'long', 'epic'), a narration duration ('12min'), or a word count ('1800')."
+        ),
+    )
     story_type: Optional[str] = Field(
         default="mix",
         description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both).",
@@ -198,6 +212,7 @@ async def run_pipeline(request: RunPipelineRequest):
             steps=request.steps,
             gen_mode=parse_gen_mode(request.mode),
             story_type=parse_story_type(request.story_type),
+            length=request.length,
         )
         return RunPipelineResponse(
             success=result.get("success", False),
@@ -232,6 +247,7 @@ async def run_step(request: RunStepRequest):
             steps=[request.step],
             gen_mode=parse_gen_mode(request.mode),
             story_type=parse_story_type(request.story_type),
+            length=request.length,
         )
         return RunStepResponse(
             success=result.get("success", False),
@@ -264,6 +280,13 @@ async def orchestration_status():
 class GenerateStreamRequest(BaseModel):
     query: str = Field(..., min_length=1, description="The story generation query")
     mode: Optional[str] = Field(default="fast", description="Generation mode: 'fast' or 'thinking'")
+    length: Optional[str] = Field(
+        default=None,
+        description=(
+            "Target story length: a preset name ('short', 'medium', 'long', 'epic'), "
+            "a narration duration ('12min'), or a word count ('1800')."
+        ),
+    )
     n_stories: int = Field(default=3, ge=1, le=10, description="Number of source stories to retrieve")
     filter_metadata: Optional[dict[str, Any]] = Field(
         default=None,
@@ -278,6 +301,15 @@ class GenerateStreamRequest(BaseModel):
                 {
                     "summary": "Stream a fast story",
                     "value": {"query": "A warrior monk's journey through the desert", "mode": "fast", "n_stories": 3},
+                },
+                {
+                    "summary": "Stream a 10-minute narration script",
+                    "value": {
+                        "query": "A warrior monk's journey through the desert",
+                        "mode": "thinking",
+                        "length": "10min",
+                        "n_stories": 3,
+                    },
                 },
                 {
                     "summary": "Stream with series filter",
@@ -333,38 +365,33 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
     yield _sse({"step": "generate", "status": "start"})
     try:
         from storyforge.rag.attribution import format_facts_for_prompt
-        from storyforge.rag.extraction import _get_generation_prompts
         from storyforge.rag.generation import (
-            _flow_section_headers,
             _is_thinking_mode,
             _mode_generation_params,
+            build_story_prompt,
         )
         from storyforge.rag.generation_backend import (
+            build_chat_ollama,
             generation_provider,
-            ollama_base_url,
-            ollama_model_id,
             strip_thinking_tags,
             vllm_base_url,
             vllm_model_id,
         )
+        from storyforge.rag.length_profile import resolve_length_profile
         from langchain_core.messages import HumanMessage
 
-        prompts = _get_generation_prompts()
         formatted_facts = format_facts_for_prompt(parsed)
         facts_for_prompt = formatted_facts if formatted_facts else grounded_raw
 
-        story_prompt = (
-            f"{(prompts['story_system'] or '').strip()}\n\n"
-            + prompts["story_user"]
-            .format(
-                query=request.query,
-                section_headers=_flow_section_headers(cfg),
-                grounded_facts=facts_for_prompt,
-            )
-            .strip()
+        profile = resolve_length_profile(cfg, length=request.length, mode=mode)
+        story_prompt = build_story_prompt(
+            cfg,
+            query=request.query,
+            facts_for_prompt=facts_for_prompt,
+            profile=profile,
         )
 
-        max_new, temperature, top_p = _mode_generation_params(cfg, mode=mode)
+        max_new, temperature, top_p = _mode_generation_params(cfg, mode=mode, profile=profile)
         repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
 
         provider = generation_provider(cfg)
@@ -380,15 +407,12 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
                 model_kwargs={"frequency_penalty": max(0.0, min(2.0, repeat_penalty - 1.0))},
             )
         elif provider == "ollama":
-            from langchain_ollama import ChatOllama  # type: ignore
-            llm = ChatOllama(
-                model=ollama_model_id(cfg),
-                base_url=ollama_base_url(cfg),
+            llm = build_chat_ollama(
+                cfg,
+                max_new_tokens=max_new,
                 temperature=temperature,
                 top_p=top_p,
-                num_predict=max_new,
-                options={"repeat_penalty": repeat_penalty},
-                think=_is_thinking_mode(mode),
+                thinking=_is_thinking_mode(mode),
             )
         else:
             raise ValueError(

@@ -11,10 +11,11 @@ flowchart TD
     stories["Story .txt files"] --> storyJson["story_json records"]
     storyJson --> manifest["ingest manifest"]
     manifest --> vectorStore["Chroma Vector Store"]
-    vectorStore --> retrieval["Step 1: Retrieval + rerank"]
+    vectorStore --> retrieval["Step 1: Retrieval + hybrid + rerank"]
     retrieval --> extraction["Step 2: Grounded facts (HF API)"]
-    extraction --> generation["Step 3: Story generation (Ollama/vLLM/Transformers)"]
-    generation --> evaluation["HF-first evaluation"]
+    extraction --> generation["Step 3: Story generation (Ollama / vLLM / Transformers)"]
+    generation --> lengthGuard["Length guard / refine"]
+    lengthGuard --> evaluation["HF-first evaluation"]
     evaluation --> agentic{"Agentic loop?"}
     agentic -->|refine / re-retrieve| generation
     agentic -->|accept| outputs["Saved story output"]
@@ -22,8 +23,8 @@ flowchart TD
 
 ## Reviewer quick path
 
-1. Read [`QUICK_DEMO.md`](./QUICK_DEMO.md) for the no-GPU/no-API-key validation path.
-2. Run `python -m pytest`
+1. Read [`QUICK_DEMO.md`](./QUICK_DEMO.md) for the no-GPU / no-API-key validation path.
+2. Run `python -m pytest` (or `.\venv\Scripts\python.exe -m pytest` inside the project venv).
 3. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for design decisions and trade-offs.
 4. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries.
 
@@ -36,32 +37,120 @@ Tests use temporary directories and do not require GPU, Chroma data, or live API
 | Embeddings | `BAAI/bge-base-en-v1.5` | 768-dim, local GPU |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | After Chroma, before Step 2 |
 | Hybrid search | BM25 + dense (RRF) | Optional via `Hybrid_search_enabled` |
-| Step 2 facts | `Qwen/Qwen3-8B` (HF API) | Retry + optional JSON mode |
+| Step 2 facts | `Qwen/Qwen3-8B` (HF API) | Retry + optional JSON mode; local Ollama fallback |
 | Step 3 story | `qwen3.5:9b` (Ollama) | Also supports vLLM or Transformers |
-| Evaluation | HF 7B → Gemini fallback | Used by agentic loop |
+| Evaluation | HF 7B → Gemini fallback | Used by the agentic loop |
 
 ## Grounded story generation
 
-1. **Step 1 — Retrieval:** Chroma search (+ hybrid BM25 + reranker). Diverse story titles when multiple sources match.
-2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors.
-3. **Step 3 — Generation:** One pass from grounded facts into a 5-section story. Optional refine pass if sections are too short.
+1. **Step 1 — Retrieval:** Chroma search (+ hybrid BM25 + reranker). Diverse story titles when multiple sources match. Chunk count is controlled by `Story_generation_n_results` (default 10).
+2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors; falls back to Ollama/Transformers if HF is down. Fact-token budget is `HF_grounded_facts_max_new_tokens` (default 1600).
+3. **Step 3 — Generation:** One pass from grounded facts into a 5-section story. A length guard may run one refine pass when the draft is too short.
 
 If extraction returns no usable facts, generation falls back to retrieval-only mode.
 
 ### Story format
 
 - 5 section headers in order (see `prompts.yaml`)
-- **At least 3 complete sentences per section** (`Min_sentences_per_section`)
-- Grounded in extracted facts — no invented named characters/places
-- `mode: "fast"` for shorter output; `mode: "thinking"` / `"medium"` for longer output
+- Grounded in extracted facts — no invented named characters / places
+- Per-section sentence and word minimums come from the **length target** (below)
+- `mode` selects sampling / thinking; `length` selects how much prose to write
+
+### Story length
+
+One target drives the three things that must agree, or output never grows:
+
+1. the prompt's words / sentences-per-section instruction
+2. the generation token budget
+3. the accept gate (minimum words + minimum sentences per section)
+
+They are all derived in `src/storyforge/rag/length_profile.py` from a single word target, so raising tokens alone can no longer leave the model stuck at ~450 words.
+
+Pass `length` on a generate request as any of:
+
+| `length` | Meaning | Approx. narration |
+|----------|---------|-------------------|
+| `"short"` | 450 words | ~3 min |
+| `"medium"` | 900 words | ~6 min |
+| `"long"` | 1500 words | ~11 min |
+| `"epic"` | 2200 words | ~16 min |
+| `"12min"` | sized at `Story_length_words_per_minute` (default 140) | 12 min |
+| `"1800"` | explicit word count | ~13 min |
+
+Omit `length` and the default for the mode applies:
+
+| `mode` | Default length |
+|--------|----------------|
+| `fast` | `Story_length_default_fast` → `short` |
+| `thinking` / `medium` | `Story_length_default_thinking` → `long` |
+
+`mode` still controls sampling and Ollama thinking; `length` decides how much prose gets written.
 
 ### Agentic loop (optional)
 
 When `Agentic_loop_enabled: true`:
 
-- **ACCEPT** when scores + completeness pass
-- **REFINE** when draft is incomplete but grounding is good
+- **ACCEPT** when scores + completeness pass (completeness uses the resolved length target)
+- **REFINE** when the draft is incomplete but grounding is good
 - **RE_RETRIEVE** when faithfulness is low or facts are thin
+
+Minimum word count and minimum sentences per section are **no longer hardcoded** in config. They come from the length profile.
+
+## Generate API examples
+
+### Create-eval (recommended)
+
+```bash
+# Short / fast draft
+curl -s -X POST http://localhost:8000/create-eval/story_generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "A scholar discovers something in an old house that he shouldn'\''t have",
+    "generation_type": "full_story",
+    "save": true,
+    "mode": "fast",
+    "story_type": "mix"
+  }'
+
+# ~13-minute narration target (thinking mode)
+curl -s -X POST http://localhost:8000/create-eval/story_generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "A scholar discovers something in an old house that he shouldn'\''t have",
+    "generation_type": "full_story",
+    "save": true,
+    "mode": "thinking",
+    "length": "13min",
+    "story_type": "mix"
+  }'
+```
+
+### Orchestration step
+
+```bash
+curl -s -X POST http://localhost:8000/orchestration/run_step \
+  -H "Content-Type: application/json" \
+  -d '{
+    "step": "4_generate_story_3step",
+    "title": "Amun Chronicles",
+    "mode": "thinking",
+    "length": "long"
+  }'
+```
+
+### Streaming (SSE)
+
+```bash
+curl -N http://localhost:8000/orchestration/generate_stream \
+  -X POST -H "Content-Type: application/json" \
+  -d '{
+    "query": "A warrior monk faces his greatest trial",
+    "mode": "fast",
+    "length": "medium"
+  }'
+```
+
+Streaming uses the same length guidance in the prompt. It cannot retry mid-stream, so length enforcement after generation is a non-streaming / agentic-loop concern.
 
 ## Key config (`setup.example.yaml`)
 
@@ -69,22 +158,29 @@ When `Agentic_loop_enabled: true`:
 |---------|---------|
 | `Generation_provider` | `ollama` (default), `vllm`, or `transformers` |
 | `Vector_store_model` | Embedding model (default BGE-base) |
-| `Hybrid_search_enabled` | BM25 + dense fusion |
+| `Story_generation_n_results` | Chunks passed to Step 2 (default 10) |
+| `Story_generation_rerank_top_n` | Keep ≥ `Story_generation_n_results` |
 | `HF_grounded_facts_json_mode` | Strict JSON for Step 2 |
-| `Min_sentences_per_section` | Minimum sentences per section (default 3) |
-| `Generation_fast_*` / `Generation_thinking_*` | Token budgets and sampling |
-| `Agentic_loop_*` | Loop thresholds |
+| `HF_grounded_facts_max_new_tokens` | Fact-list token budget (default 1600) |
+| `Story_length_presets` | Named length targets (name → word count) |
+| `Story_length_default_fast` / `_thinking` | Default target per mode |
+| `Story_length_words_per_minute` | Pace for `"Nmin"` targets (default 140) |
+| `Story_length_max_new_tokens_cap` | Hard ceiling on generation tokens |
+| `Generation_fast_*` / `Generation_thinking_*` | Sampling + token floors |
+| `Generation_repetition_penalty` | Anti-loop decoding |
+| `Agentic_loop_*` | Loop thresholds (scores / re-retrieve / refine boost) |
 | `Host` / `Port` | API bind address |
 
 Copy `setup.example.yaml` → `setup.yaml` for local runs. Secrets stay out of git.
 
-Prompt templates live in `prompts.yaml` under `generation`.
+Prompt templates live in `prompts.yaml` under `generation`. Story / refine prompts inject `{length_guidance}` from the resolved length profile — they do **not** hardcode `"3-6 sentences per section"`.
 
 ## What it does
 
 - Prepares story records from `.txt` files under `data/stories/`
 - Ingests chunks into Chroma with explicit BGE embeddings
 - Retrieves relevant context, extracts grounded facts, generates stories
+- Enforces a configurable length target across prompt, tokens, and accept gate
 - Evaluates output with rubric scoring (HF first, Gemini fallback)
 - Optional book search / PDF-EPUB extraction for public-domain sources
 
@@ -103,13 +199,13 @@ Prompt templates live in `prompts.yaml` under `generation`.
 - `src/storyforge/` — application package
   - `api/` — `/orchestration`, `/create-eval`, vector store routes
   - `orchestrator/` — pipeline step control
-  - `rag/` — retrieval, extraction, generation, agentic loop
+  - `rag/` — retrieval, extraction, generation, length profile, agentic loop
   - `vector_store/` — Chroma ingest and query
   - `data/` — story_json workflow
   - `evaluation/` — rubric scoring + retrieval eval
   - `config/` — YAML config + env secret overlay
 - `scripts/` — CLI helpers (see [`../scripts/README.md`](../scripts/README.md))
-- `tests/` — pytest suite
+- `tests/` — pytest suite (includes `test_length_profile.py`)
 - `data/*/sample/` — public demo corpus only
 - `docs/` — architecture, demo path, roadmaps
 
@@ -131,6 +227,8 @@ python main.py
 
 Open `http://localhost:8000/docs`.
 
+After changing `setup.yaml` or `prompts.yaml`, restart `python main.py` — config and prompts are cached.
+
 ## Main data flow
 
 1. Put story `.txt` files in `data/stories/`
@@ -138,8 +236,8 @@ Open `http://localhost:8000/docs`.
 3. `py scripts/records_to_ingest_manifest.py`
 4. `py scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe)
 5. Generate via API:
-   - `POST /create-eval/story_generate` with `query` and optional `mode`
-   - or `POST /orchestration/run_step` with `4_generate_story_3step`
+   - `POST /create-eval/story_generate` with `query`, optional `mode`, optional `length`
+   - or `POST /orchestration/run_step` with `4_generate_story_3step` / `4_generate_story_agentic`
 
 ### Chroma maintenance
 
@@ -154,7 +252,7 @@ Open `http://localhost:8000/docs`.
 python -m pytest
 ```
 
-Covers: config loading, evaluation provider selection, retrieval metrics, agentic loop decisions, prompt contracts, story cleanup, API route contracts.
+Covers: config loading, length-profile resolution, evaluation provider selection, retrieval metrics, agentic loop decisions, prompt contracts, story cleanup, API route contracts.
 
 ## Retrieval evaluation
 
@@ -168,11 +266,11 @@ Reports top-1 / top-k accuracy and expected fact coverage.
 
 The pipeline is functional end-to-end. Active tuning areas:
 
-- Long-form completeness in thinking/medium mode
+- Long-form reliability when Ollama thinking mode returns an empty body (length guard retries once; prefer `mode: "fast"` + `length: "13min"` if thinking drafts come back empty)
 - Retrieval quality as corpus size grows
 - Reducing repetitive phrasing in generated prose
 
-Recent upgrades: BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), section sentence guardrails, and Chroma maintenance scripts.
+Recent upgrades: BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), unified story-length target (`length` / presets / `Nmin`), shared prompt builders for streaming + non-streaming, section length guardrails, and Chroma maintenance scripts.
 
 ## Related docs
 
@@ -180,6 +278,7 @@ Recent upgrades: BGE explicit ingest, hybrid search, HF extraction retry, Ollama
 - [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md) — hardware-focused upgrade plan
 - [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) — production boundaries
 - [`QUICK_DEMO.md`](./QUICK_DEMO.md) — fast reviewer path
+- Root [`../README.md`](../README.md) — short overview that points here
 
 ## Security
 

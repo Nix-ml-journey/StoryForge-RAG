@@ -20,6 +20,12 @@ from storyforge.rag.generation_backend import (
     load_vllm_llm,
     use_ollama_for_generation,
 )
+from storyforge.rag.length_profile import (
+    LengthProfile,
+    is_thinking_mode,
+    length_token_cap,
+    resolve_length_profile,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -97,9 +103,9 @@ def _load_or_get_cached_local_model(model_id: str, cfg: dict[str, Any]):
 # Generation params
 # ---------------------------------------------------------------------------
 
-def _is_thinking_mode(mode: Any) -> bool:
-    mode_name = str(getattr(mode, "value", mode) or "").strip().lower()
-    return mode_name in {"thinking", "think", "slow", "medium"}
+# Canonical predicate now lives in length_profile (which needs it too, and must
+# not import this module). Alias keeps the existing private import path working.
+_is_thinking_mode = is_thinking_mode
 
 
 def _mode_generation_params(
@@ -107,18 +113,22 @@ def _mode_generation_params(
     *,
     mode: Any = None,
     max_new_tokens: Optional[int] = None,
+    length: Any = None,
+    profile: Optional[LengthProfile] = None,
 ) -> tuple[int, float, float]:
-    is_thinking = _is_thinking_mode(mode)
+    """Resolve (max_new_tokens, temperature, top_p) for one generation call.
+
+    The token budget comes from the length target; ``mode`` only selects the
+    sampling pair. An explicit ``max_new_tokens`` (the agentic loop's refine
+    boost) wins, but is still clamped to the configured token cap.
+    """
+    is_thinking = is_thinking_mode(mode)
+    token_cap = length_token_cap(cfg)
     if max_new_tokens is not None:
-        token_budget = int(max_new_tokens)
-    elif is_thinking:
-        token_budget = int(
-            cfg.get("Single_pass_thinking_max_tokens")
-            or cfg.get("Single_pass_fast_max_tokens")
-            or 768
-        )
+        token_budget = min(int(max_new_tokens), token_cap)
     else:
-        token_budget = int(cfg.get("Single_pass_fast_max_tokens") or 768)
+        profile = profile or resolve_length_profile(cfg, length=length, mode=mode)
+        token_budget = profile.max_new_tokens
 
     if is_thinking:
         temperature = float(
@@ -142,9 +152,10 @@ def _load_generation_llm(
     *,
     mode: Any = None,
     max_new_tokens: Optional[int] = None,
+    profile: Optional[LengthProfile] = None,
 ) -> Any:
     default_max_new, temperature, top_p = _mode_generation_params(
-        cfg, mode=mode, max_new_tokens=max_new_tokens
+        cfg, mode=mode, max_new_tokens=max_new_tokens, profile=profile
     )
     provider = generation_provider(cfg)
 
@@ -236,6 +247,62 @@ def _sentence_count(text: str) -> int:
     return len(re.findall(r"[^.!?]+[.!?]", body))
 
 
+def build_story_prompt(
+    cfg: dict[str, Any],
+    *,
+    query: str,
+    facts_for_prompt: str,
+    profile: LengthProfile,
+) -> str:
+    """Assemble the Step 3 first-draft prompt.
+
+    Shared with the SSE streaming route so the streamed draft is built from the
+    same template and length target as the non-streaming path.
+    """
+    from storyforge.rag.extraction import _get_generation_prompts
+
+    prompts = _get_generation_prompts()
+    return (
+        f"{(prompts['story_system'] or '').strip()}\n\n"
+        + prompts["story_user"]
+        .format(
+            query=query,
+            section_headers=_flow_section_headers(cfg),
+            grounded_facts=facts_for_prompt,
+            length_guidance=profile.guidance_text(),
+        )
+        .strip()
+    )
+
+
+def build_refine_prompt(
+    cfg: dict[str, Any],
+    *,
+    query: str,
+    facts_for_prompt: str,
+    prior_draft: str,
+    feedback: str,
+    profile: LengthProfile,
+) -> str:
+    """Assemble the Step 3 refine prompt used by the agentic loop and guards."""
+    from storyforge.rag.extraction import _get_generation_prompts
+
+    prompts = _get_generation_prompts()
+    return (
+        f"{(prompts['refine_system'] or '').strip()}\n\n"
+        + prompts["refine_user"]
+        .format(
+            query=query,
+            section_headers=_flow_section_headers(cfg),
+            grounded_facts=facts_for_prompt,
+            prior_draft=prior_draft.strip(),
+            feedback=feedback.strip(),
+            length_guidance=profile.guidance_text(),
+        )
+        .strip()
+    )
+
+
 def _sections_below_min_sentences(story: str, *, min_sentences: int) -> dict[int, int]:
     if min_sentences <= 0:
         return {}
@@ -299,43 +366,40 @@ def generate_from_facts(
     refine_feedback: Optional[str] = None,
     prior_draft: Optional[str] = None,
     max_new_tokens: Optional[int] = None,
+    length: Any = None,
+    profile: Optional[LengthProfile] = None,
 ) -> str:
     """Step 3: write or refine a 5-section story from grounded facts.
 
     With refine_feedback + prior_draft, runs the refine prompt instead of a fresh draft.
-    """
-    # Lazy import breaks the extraction ↔ generation circular dependency at module level.
-    from storyforge.rag.extraction import _get_generation_prompts
 
-    prompts = _get_generation_prompts()
+    ``profile`` is the resolved length target; callers that already resolved one
+    (the 3-step pipeline, the agentic loop) pass it so every pass in a request
+    writes to the same target. Otherwise it is resolved from ``length``/``mode``.
+    """
+    profile = profile or resolve_length_profile(cfg, length=length, mode=mode)
     formatted_facts = _format_facts_for_prompt(parsed)
     facts_for_prompt = formatted_facts if formatted_facts else grounded_raw
 
-    gen_llm = _load_generation_llm(cfg, mode=mode, max_new_tokens=max_new_tokens)
+    gen_llm = _load_generation_llm(
+        cfg, mode=mode, max_new_tokens=max_new_tokens, profile=profile
+    )
 
     if refine_feedback and prior_draft:
-        story_prompt = (
-            f"{(prompts['refine_system'] or '').strip()}\n\n"
-            + prompts["refine_user"]
-            .format(
-                query=query,
-                section_headers=_flow_section_headers(cfg),
-                grounded_facts=facts_for_prompt,
-                prior_draft=prior_draft.strip(),
-                feedback=refine_feedback.strip(),
-            )
-            .strip()
+        story_prompt = build_refine_prompt(
+            cfg,
+            query=query,
+            facts_for_prompt=facts_for_prompt,
+            prior_draft=prior_draft,
+            feedback=refine_feedback,
+            profile=profile,
         )
     else:
-        story_prompt = (
-            f"{(prompts['story_system'] or '').strip()}\n\n"
-            + prompts["story_user"]
-            .format(
-                query=query,
-                section_headers=_flow_section_headers(cfg),
-                grounded_facts=facts_for_prompt,
-            )
-            .strip()
+        story_prompt = build_story_prompt(
+            cfg,
+            query=query,
+            facts_for_prompt=facts_for_prompt,
+            profile=profile,
         )
 
     story = str(gen_llm.invoke(story_prompt) or "").strip()

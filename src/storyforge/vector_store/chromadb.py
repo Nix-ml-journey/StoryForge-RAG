@@ -8,6 +8,7 @@ from typing import Any, Optional
 import chromadb
 
 from storyforge.config.config import load_config
+from storyforge.vector_store.embeddings import DEFAULT_EMBED_MODEL, embed_query
 
 # Root logging is configured once in storyforge/__init__.py.
 
@@ -47,10 +48,40 @@ def set_active_collection(collection_name: str):
     return Collection
 
 
-def query_data(query: str, n_results: int = 5, query_type: str = "content"):
+def query_data(
+    query: str,
+    n_results: int = 5,
+    query_type: str = "content",
+    collection_name: str | None = None,
+):
+    """Query the collection using the SAME embedding model the corpus was ingested with.
+
+    This previously passed ``query_texts=[query]``. Because the collection is
+    created without an ``embedding_function``, that made Chroma embed the query
+    with its own built-in default (all-MiniLM-L6-v2, 384-dim). The stored
+    vectors are 768-dim BGE, so every call raised a dimension mismatch that was
+    swallowed below and returned as ``None`` -- a silent, total failure.
+
+    We now embed the query explicitly with ``Vector_store_model`` (plus the BGE
+    query prefix) and pass ``query_embeddings``, mirroring what the ingest path
+    and ``rag/retrieval.py`` already do.
+    """
     try:
-        results = Collection.query(
-            query_texts=[query],
+        cfg = load_config()
+        embed_model_name = str(cfg.get("Vector_store_model") or DEFAULT_EMBED_MODEL)
+        embed_device = str(cfg.get("Embedding_device") or "cpu").strip().lower() or "cpu"
+        vector = embed_query(query, embed_model_name, device=embed_device)
+        if vector is None:
+            logging.error(
+                "query_data: could not embed query with %r — refusing to fall back to "
+                "Chroma's default embedder, which would not match the stored vectors.",
+                embed_model_name,
+            )
+            return None
+
+        collection = get_or_create_collection(collection_name) if collection_name else Collection
+        results = collection.query(
+            query_embeddings=[vector],
             n_results=n_results,
             where={"query_type": query_type},
             include=["distances", "documents", "metadatas"],

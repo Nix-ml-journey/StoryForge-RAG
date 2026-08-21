@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 _OLLAMA_LLM_CACHE: dict[tuple, Any] = {}
 
@@ -63,6 +63,48 @@ def ollama_num_ctx(cfg: dict[str, Any]) -> int:
     return max(configured, 2048)
 
 
+def build_chat_ollama(
+    cfg: dict[str, Any],
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    thinking: bool = False,
+    model_override: Optional[str] = None,
+) -> Any:
+    """Construct a raw ChatOllama instance (not cached, not wrapped).
+
+    Shared by load_ollama_llm (cached, .invoke()-style callers) and any caller
+    that needs the raw LangChain object directly, e.g. for .astream(). Keeping
+    this in one place avoids the constructor args (especially num_ctx and
+    reasoning) drifting out of sync between call sites.
+
+    ``model_override`` lets a caller run a DIFFERENT Ollama model than
+    ``Generative_model`` (e.g. Section_label_model for cheap 24-token labelling
+    calls) without having to rebuild the client by hand.
+
+    Note: ChatOllama's actual field for thinking control is ``reasoning``, not
+    ``think`` — passing ``think=`` is silently accepted as an unknown extra
+    kwarg and does nothing, leaving the model to fall back to its own default
+    (which for reasoning-capable models like qwen3.5 is often "on"). That
+    previously caused generations to come back empty: the model spent its
+    whole token budget inside <think>...</think> with nothing left over for
+    the actual answer, which strip_thinking_tags then stripped down to "".
+    """
+    from langchain_ollama import ChatOllama
+
+    repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
+    return ChatOllama(
+        model=str(model_override or "").strip() or ollama_model_id(cfg),
+        base_url=ollama_base_url(cfg),
+        temperature=temperature,
+        top_p=top_p,
+        num_predict=max_new_tokens,
+        options={"repeat_penalty": repeat_penalty, "num_ctx": ollama_num_ctx(cfg)},
+        reasoning=thinking,
+    )
+
+
 def load_ollama_llm(
     cfg: dict[str, Any],
     *,
@@ -70,24 +112,22 @@ def load_ollama_llm(
     temperature: float,
     top_p: float,
     thinking: bool = False,
+    model_override: Optional[str] = None,
 ) -> GenerationLLM:
     """Cached ChatOllama instance for repeated pipeline calls."""
-    from langchain_ollama import ChatOllama
-
-    model = ollama_model_id(cfg)
+    model = str(model_override or "").strip() or ollama_model_id(cfg)
     base_url = ollama_base_url(cfg)
     repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
     num_ctx = ollama_num_ctx(cfg)
     cache_key = (model, base_url, max_new_tokens, temperature, top_p, repeat_penalty, thinking, num_ctx)
     if cache_key not in _OLLAMA_LLM_CACHE:
-        _OLLAMA_LLM_CACHE[cache_key] = ChatOllama(
-            model=model,
-            base_url=base_url,
+        _OLLAMA_LLM_CACHE[cache_key] = build_chat_ollama(
+            cfg,
+            max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
-            num_predict=max_new_tokens,
-            options={"repeat_penalty": repeat_penalty, "num_ctx": num_ctx},
-            think=thinking,
+            thinking=thinking,
+            model_override=model_override,
         )
     return _PromptLLM(_OLLAMA_LLM_CACHE[cache_key])
 

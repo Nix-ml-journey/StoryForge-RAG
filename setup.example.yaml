@@ -35,11 +35,16 @@ Chroma_path: "data/chroma_db"
 Chroma_collection_name: "StoryForgeRag_v1"
 # After changing Vector_store_model, reset chroma_db and re-ingest.
 Vector_store_model: "BAAI/bge-base-en-v1.5"
-Story_generation_n_results: 3
+# Number of chunks actually passed to the fact-extraction step. Long story
+# targets need more source material, or the model pads the extra words with
+# repetition instead of grounded detail.
+Story_generation_n_results: 10
 
 # --- Step 2: grounded facts (HF API, no local VRAM) ---
 HF_grounded_facts_model: "Qwen/Qwen3-8B"
-HF_grounded_facts_max_new_tokens: 700
+# Must fit the 10-30 facts (with quotes) that prompts.yaml asks for; too low
+# truncates the fact list and starves long stories of material.
+HF_grounded_facts_max_new_tokens: 1600
 HF_grounded_facts_temperature: 0.1
 # Try strict JSON mode for grounded-facts extraction (falls back if unsupported).
 HF_grounded_facts_json_mode: true
@@ -63,7 +68,9 @@ Generation_precision: "auto"
 Model_max_prompt_tokens: 12288
 Generation_fast_temperature: 0.4
 Generation_fast_top_p: 0.8
-Single_pass_fast_max_tokens: 3200   # ~short stories; raise for long (e.g. 3200)
+# Token FLOOR for the generation budget. The length target below raises this
+# when it needs more room; it is a ceiling on output, so a generous value is safe.
+Single_pass_fast_max_tokens: 3200
 # Thinking/medium mode knobs (used when request mode is "thinking"/"medium")
 Generation_thinking_temperature: 0.35
 Generation_thinking_top_p: 0.85
@@ -71,9 +78,26 @@ Single_pass_thinking_max_tokens: 4000
 # Anti-loop decoding controls (applies to both fast and thinking modes)
 Generation_repetition_penalty: 1.08
 Generation_no_repeat_ngram_size: 4
-# Story format guardrails
-Min_sentences_per_section: 3
 Single_pass_refine_max_tokens: 2800
+
+## Story length target
+# A single target drives three things that must agree, or output never grows:
+# the prompt's words/sentences-per-section instruction, the token budget, and
+# the accept gate (minimum words + minimum sentences per section). Because they
+# are all derived from one number, Min_sentences_per_section and
+# Agentic_loop_min_words are no longer set by hand.
+#
+# A target may be a preset name, a narration duration ("12min"), or a word
+# count (1800). Requests may override it per call with the `length` field.
+Story_length_presets:
+  short: 450      # ~3 min narration
+  medium: 900     # ~6 min
+  long: 1500      # ~11 min
+  epic: 2200      # ~16 min
+Story_length_default_fast: "short"
+Story_length_default_thinking: "long"
+Story_length_words_per_minute: 140     # narration pace for "Nmin" targets
+Story_length_max_new_tokens_cap: 6000  # hard ceiling, incl. refine boosts
 
 # Post-check for unknown names. false = log only; true = may truncate.
 Attribution_gate_truncate: false
@@ -82,7 +106,15 @@ Attribution_violation_threshold: 8
 # --- Reranker (after Chroma, before Step 2) ---
 Reranker_enabled: true
 Reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-Story_generation_rerank_top_n: 6
+Story_generation_rerank_top_n: 10   # keep >= Story_generation_n_results
+
+# --- GPU placement for the small helper models (reranker + retrieval embedder) ---
+# Both do a handful of encodes per request -- well under a second on CPU -- so
+# "cpu" is the default. Putting them on "cuda" alongside Ollama's own CUDA
+# context can starve the generation LLM of VRAM. Set to "cuda" only if you have
+# VRAM to spare.
+Reranker_device: "cpu"
+Embedding_device: "cpu"
 
 # --- Hybrid search (BM25 + dense, fused via RRF) ---
 # false = pure dense vector (original behaviour)
@@ -98,9 +130,10 @@ Agentic_loop_min_facts: 3
 Agentic_loop_reretrieve_k_boost: 2.0
 Agentic_loop_reretrieve_n_results: 5
 Agentic_loop_refine_token_boost: 600
-Agentic_loop_min_words: 250         # 250 = short; 1100 = long (Level B)
 Agentic_loop_refine_token_boost_thinking: 900
-Agentic_loop_min_words_thinking: 900
+# Minimum word count and minimum sentences per section come from the story
+# length target above, so the loop cannot accept a draft shorter than the
+# prompt asked for.
 
 # --- Book search (optional) ---
 Archive_url: "https://archive.org/advancedsearch.php"

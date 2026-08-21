@@ -17,25 +17,47 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 LOG = logging.getLogger(__name__)
 
-_RERANKER_CACHE: dict = {}    # model_id -> CrossEncoder
-_VECTORSTORE_CACHE: dict = {} # (chroma_dir, collection, embed_model) -> Chroma
+_RERANKER_CACHE: dict = {}    # (model_id, device) -> CrossEncoder
+_VECTORSTORE_CACHE: dict = {} # (chroma_dir, collection, embed_model, device) -> Chroma
+
+# Default placement for the reranker and the retriever's own embedding model
+# when setup.yaml does not override it. CPU by default: both do a handful of
+# encodes per request (well under a second), and keeping them off the GPU
+# avoids fighting Ollama's own CUDA context for VRAM -- on a 16GB card that
+# contention has been observed to crash Ollama's llama-server on init ("CUDA
+# error: shared object initialization failed") rather than just run slower.
+# Set Reranker_device / Embedding_device to "cuda" if you have VRAM to spare.
+_DEFAULT_DEVICE = "cpu"
+
+
+def _resolve_device(requested: str) -> str:
+    device = str(requested or _DEFAULT_DEVICE).strip().lower() or _DEFAULT_DEVICE
+    if device == "cuda":
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                LOG.warning("cuda requested but unavailable; using cpu.")
+                return "cpu"
+        except Exception:
+            return "cpu"
+    return device
 
 
 # ---------------------------------------------------------------------------
 # Reranker
 # ---------------------------------------------------------------------------
 
-def _get_reranker(model_id: str):
-    """Load (or return cached) a cross-encoder reranker on GPU."""
-    if model_id in _RERANKER_CACHE:
-        return _RERANKER_CACHE[model_id]
+def _get_reranker(model_id: str, device: str = _DEFAULT_DEVICE):
+    """Load (or return cached) a cross-encoder reranker on `device` (default cpu)."""
+    device = _resolve_device(device)
+    cache_key = (model_id, device)
+    if cache_key in _RERANKER_CACHE:
+        return _RERANKER_CACHE[cache_key]
     try:
         from sentence_transformers import CrossEncoder  # type: ignore
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
         LOG.info("Loading reranker model %s on %s", model_id, device)
         reranker = CrossEncoder(model_id, device=device)
-        _RERANKER_CACHE[model_id] = reranker
+        _RERANKER_CACHE[cache_key] = reranker
         return reranker
     except ImportError:
         LOG.warning(
@@ -51,11 +73,12 @@ def _rerank_docs(
     *,
     reranker_model_id: str,
     top_n: int = 6,
+    device: str = _DEFAULT_DEVICE,
 ) -> list:
     """Re-rank retrieved chunks by relevance; return top_n (or unchanged if reranker missing)."""
     if not docs:
         return docs
-    reranker = _get_reranker(reranker_model_id)
+    reranker = _get_reranker(reranker_model_id, device=device)
     if reranker is None:
         return docs[:top_n]
     pairs = [(query, d.page_content) for d in docs]
@@ -81,16 +104,11 @@ def _get_paths_and_names(cfg: dict[str, Any]):
 
 def _build_vectorstore(cfg: dict[str, Any]) -> Chroma:
     chroma_dir, collection, embed_model = _get_paths_and_names(cfg)
-    cache_key = (chroma_dir, collection, embed_model)
+    device = _resolve_device(str(cfg.get("Embedding_device") or _DEFAULT_DEVICE))
+    cache_key = (chroma_dir, collection, embed_model, device)
     if cache_key in _VECTORSTORE_CACHE:
-        LOG.debug("Reusing cached vectorstore (%s / %s)", collection, embed_model)
+        LOG.debug("Reusing cached vectorstore (%s / %s / %s)", collection, embed_model, device)
         return _VECTORSTORE_CACHE[cache_key]
-
-    try:
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        device = "cpu"
 
     is_bge = "bge" in embed_model.lower()
     encode_kwargs: dict = {"normalize_embeddings": True}
@@ -170,8 +188,15 @@ def _select_diverse_stories(
     *,
     n_stories: int = 3,
     chunks_per_story: int = 2,
+    target: Optional[int] = None,
 ) -> list[Document]:
-    """Pick chunks from up to `n_stories` different titles so one book does not dominate."""
+    """Pick chunks from up to `n_stories` different titles so one book does not dominate.
+
+    `chunks_per_story` caps how many chunks each title contributes on the first
+    pass (the diversity guarantee). `target` is the total number of chunks to
+    return; when it exceeds what the first pass produced, the backfill loop tops
+    up from the remaining ranked docs. Defaults to n_stories * chunks_per_story.
+    """
     by_title: dict[str, list[Document]] = {}
     for d in docs:
         md = d.metadata or {}
@@ -186,7 +211,10 @@ def _select_diverse_stories(
         picked_titles.add(title)
         picked.extend(group[: max(1, chunks_per_story)])
 
-    target = max(1, n_stories) * max(1, chunks_per_story)
+    target = int(target) if target else max(1, n_stories) * max(1, chunks_per_story)
+    target = max(1, target)
+    if len(picked) > target:
+        picked = picked[:target]
     if len(picked) < min(target, len(docs)):
         seen = {id(d) for d in picked}
         for d in docs:
@@ -277,8 +305,20 @@ def retrieve_docs(
                       Enables targeted retrieval within a series or story type.
     """
     vectorstore = _build_vectorstore(cfg)
-    base_k = int(cfg.get("Story_generation_n_results") or 3)
-    k = max(base_k, n_stories * max(1, chunks_per_story) * 4)
+
+    # Story_generation_n_results is the number of chunks actually handed to the
+    # fact-extraction step. It used to be computed as
+    #     k = max(base_k, n_stories * chunks_per_story * 4)
+    # which -- since every caller passes n_stories=3, chunks_per_story=2 -- was
+    # always max(base_k, 24), and the API caps n_results at 20. So the knob could
+    # never win the max() and was completely inert: n_results=1 and n_results=20
+    # returned an identical 6 chunks.
+    target_chunks = max(1, int(cfg.get("Story_generation_n_results") or 3))
+
+    # Candidate pool: retrieve several times the target so diversity selection and
+    # the reranker have room to choose. Floored at the historical 24 so behaviour
+    # never gets *narrower* than before.
+    k = max(target_chunks * 4, n_stories * max(1, chunks_per_story) * 4)
     k = int(round(k * max(1.0, float(k_boost))))
 
     search_kwargs: dict[str, Any] = {"k": k}
@@ -295,7 +335,12 @@ def retrieve_docs(
         docs = _rrf_fuse(docs, bm25_ranked, bm25_weight=bm25_weight)
         LOG.debug("Hybrid BM25+dense fusion applied (bm25_weight=%.2f)", bm25_weight)
 
-    docs = _select_diverse_stories(docs, n_stories=n_stories, chunks_per_story=chunks_per_story)
+    docs = _select_diverse_stories(
+        docs,
+        n_stories=n_stories,
+        chunks_per_story=chunks_per_story,
+        target=target_chunks,
+    )
 
     # Optional cross-encoder rerank (see Reranker_enabled / Reranker_model in setup.yaml).
     if use_reranker is None:
@@ -304,7 +349,18 @@ def retrieve_docs(
         reranker_on = bool(use_reranker)
     if reranker_on:
         reranker_model_id = str(cfg.get("Reranker_model") or "cross-encoder/ms-marco-MiniLM-L-6-v2")
-        top_n = int(cfg.get("Story_generation_rerank_top_n") or 6)
-        docs = _rerank_docs(query, docs, reranker_model_id=reranker_model_id, top_n=top_n)
+        # Defaults to target_chunks rather than a hardcoded 6, so raising
+        # Story_generation_n_results is not silently undone by the rerank cap.
+        # An explicit Story_generation_rerank_top_n still wins (set it below
+        # n_results to deliberately trim after reranking).
+        top_n = int(cfg.get("Story_generation_rerank_top_n") or target_chunks)
+        reranker_device = str(cfg.get("Reranker_device") or _DEFAULT_DEVICE)
+        docs = _rerank_docs(
+            query, docs, reranker_model_id=reranker_model_id, top_n=top_n, device=reranker_device
+        )
 
+    LOG.debug(
+        "Retrieval: pool k=%d -> %d chunks (target=%d, rerank=%s)",
+        k, len(docs), target_chunks, reranker_on,
+    )
     return docs

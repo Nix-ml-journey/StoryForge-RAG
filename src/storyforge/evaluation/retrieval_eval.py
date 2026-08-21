@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -86,14 +87,29 @@ def normalize_results(raw_results: Any) -> list[RetrievalHit]:
             if not isinstance(item, dict):
                 continue
             meta = item.get("metadata") or item.get("metadatas") or {}
+            # Accept "document" or "text": query_vector_result emits both (it used to
+            # emit only "text" while this reader looked only for "document", so every
+            # hit came back with an empty document and every metric scored 0.0).
+            document = item.get("document")
+            if document is None:
+                document = item.get("text", item.get("documents", ""))
             hits.append(
                 RetrievalHit(
-                    title=str(meta.get("Title", item.get("Title", ""))),
-                    author=str(meta.get("Author", item.get("Author", ""))),
-                    summary=str(meta.get("Summary", item.get("Summary", ""))),
-                    document=str(item.get("document", item.get("documents", "")) or ""),
+                    title=str(meta.get("Title", item.get("Title", "")) or ""),
+                    author=str(meta.get("Author", item.get("Author", "")) or ""),
+                    summary=str(meta.get("Summary", item.get("Summary", "")) or ""),
+                    document=str(document or ""),
                     distance=item.get("distance") if isinstance(item.get("distance"), (float, int)) else None,
                 )
+            )
+        if hits and not any(h.title for h in hits):
+            # Loud, because silently scoring 0.0 across the board is exactly how this
+            # harness went unnoticed while being completely non-functional.
+            logging.warning(
+                "retrieval_eval: %d hits returned but every Title is empty — the "
+                "retriever's metadata does not carry a 'Title' key, so all match "
+                "metrics will be 0.0. Check the ingest metadata schema.",
+                len(hits),
             )
         return hits
 

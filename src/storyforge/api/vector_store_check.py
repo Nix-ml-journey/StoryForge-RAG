@@ -4,16 +4,33 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from storyforge.config.config import load_config
 from storyforge.vector_store.chromadb import (
     Collection,
     get_all_data,
     get_data,
+    query_data,
     reset_vector_store_dir,
     set_active_collection,
 )
 from storyforge.vector_store.ingest_stories import ingest_stories_dir
 
 # Root logging is configured once in storyforge/__init__.py.
+
+
+def _configured_collection() -> str:
+    """Resolve Chroma_collection_name at request time.
+
+    Read live rather than captured at import so it always matches what
+    rag/retrieval.py resolves; hardcoding the literal here previously meant the
+    reset/ingest endpoints wrote to a different collection than the one queried.
+    """
+    try:
+        return str(load_config().get("Chroma_collection_name") or "StoryForgeRag_v1")
+    except Exception:
+        logging.warning("Could not read Chroma_collection_name; using StoryForgeRag_v1")
+        return "StoryForgeRag_v1"
+
 
 vector_store_inspect_router = APIRouter(tags=["Vector Store"])
 vector_store_router = APIRouter(prefix="/vector_store", tags=["Vector Store"])
@@ -314,14 +331,26 @@ async def vector_store_check_status_alias():
 @vector_store_router.post("/query", response_model=VectorStoreQueryResponse)
 async def vector_store_query(request: VectorStoreQueryRequest):
     try:
-        await asyncio.to_thread(set_active_collection, request.collection)
+        # Routed through query_data rather than calling Collection.query directly.
+        # Two bugs lived in the direct call:
+        #   1. query_texts=[...] made Chroma embed with its own default 384-dim model
+        #      against 768-dim BGE vectors -> dimension mismatch on every request.
+        #   2. `Collection` is bound by value at import time, so set_active_collection
+        #      (which rebinds the global in chromadb.py) never affected this call --
+        #      the `collection` field was silently ignored.
+        # query_data now embeds with Vector_store_model and resolves the collection.
         raw = await asyncio.to_thread(
-            Collection.query,
-            query_texts=[request.query or ""],
+            query_data,
+            request.query or "",
             n_results=int(request.n_results or 5),
-            where={"query_type": "content"},
-            include=["distances", "documents", "metadatas"],
+            query_type="content",
+            collection_name=request.collection,
         )
+        if raw is None:
+            raise RuntimeError(
+                "Vector query failed — could not embed the query with the configured "
+                "Vector_store_model. See server logs."
+            )
         ids = (raw.get("ids") or [[]])[0]
         docs = (raw.get("documents") or [[]])[0]
         metas = (raw.get("metadatas") or [[]])[0]
@@ -400,7 +429,7 @@ async def vector_store_reset():
     try:
         result = await asyncio.to_thread(
             reset_vector_store_dir,
-            new_collection_name="StoryForgeRag_v1",
+            new_collection_name=_configured_collection(),
         )
         return VectorStoreResetResponse(
             success=result.get("success", False),
@@ -417,11 +446,14 @@ async def vector_store_reset():
 @vector_store_router.post("/ingest_stories", response_model=VectorStoreIngestStoriesResponse)
 async def vector_store_ingest_stories():
     try:
-        # Ensure requests hit the expected new collection.
-        await asyncio.to_thread(set_active_collection, "StoryForgeRag_v1")
+        # Ensure requests hit the configured collection (not a hardcoded literal,
+        # which would ingest into StoryForgeRag_v1 while retrieval.py reads
+        # Chroma_collection_name -- i.e. into a collection nothing ever queries).
+        collection = _configured_collection()
+        await asyncio.to_thread(set_active_collection, collection)
         res = await asyncio.to_thread(
             ingest_stories_dir,
-            collection_name="StoryForgeRag_v1",
+            collection_name=collection,
         )
         return VectorStoreIngestStoriesResponse(
             success=res.success,

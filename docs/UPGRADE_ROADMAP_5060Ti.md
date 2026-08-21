@@ -24,9 +24,10 @@ Nothing in this document requires a cloud GPU or a machine upgrade.
 | Flash Attention 2 | Yes (Blackwell natively supported) |
 | INT8 / INT4 (bitsandbytes) | Yes |
 
-With 16 GB VRAM you can run **7B–8B class models** at full BF16 precision, or
-**13B–14B models** with INT4/GPTQ quantization. This is a meaningful step up from
-the current Qwen2.5-1.5B the project uses.
+With 16 GB VRAM you can run **7B–9B class models** at full BF16 precision, or
+**13B–14B models** with INT4/GPTQ quantization (or via Ollama's own quantizations).
+The project currently generates with **Ollama `qwen3.5:9b`** by default — not the
+older Qwen2.5-1.5B baseline mentioned in early notes.
 
 ---
 
@@ -85,7 +86,25 @@ Implemented in `rag/retrieval.py` (`_bm25_rank_docs` + `_rrf_fuse`). Requires `p
 
 ### 0.9 ✅ Expand context window + token budgets
 
-`Model_max_prompt_tokens: 12288`, `Single_pass_fast_max_tokens: 3200`, `Single_pass_thinking_max_tokens: 4000`.
+`Model_max_prompt_tokens: 12288`. Token floors: `Single_pass_fast_max_tokens: 3200`, `Single_pass_thinking_max_tokens: 4000`. Effective generation budget is now `max(floor, length-derived)` capped by `Story_length_max_new_tokens_cap`.
+
+### 0.10 ✅ Unified story-length target
+
+Raising token budgets alone did not grow stories past ~450 words — the prompt still asked for 3–6 sentences per section, and the accept gate only required a short draft.
+
+**Fix:** `src/storyforge/rag/length_profile.py` derives prompt `{length_guidance}`, `max_new_tokens`, `min_words`, and `min_sentences_per_section` from one target.
+
+Request field `length` accepts:
+
+- presets: `short` (450) / `medium` (900) / `long` (1500) / `epic` (2200)
+- narration duration: `"13min"` (uses `Story_length_words_per_minute`)
+- explicit word count: `"1800"`
+
+Config keys: `Story_length_presets`, `Story_length_default_fast` / `_thinking`, `Story_length_words_per_minute`, `Story_length_max_new_tokens_cap`.
+
+Also raised `Story_generation_n_results` to 10 and `HF_grounded_facts_max_new_tokens` to 1600 so long targets have enough grounded material. Wired through generate / run_step / stream APIs. Tests in `tests/test_length_profile.py`.
+
+**Open:** thinking mode can still return empty bodies; prefer `mode: "fast"` + `length: "13min"` for long targets until empty-draft recovery is hardened.
 
 ---
 
@@ -284,8 +303,10 @@ Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
 | Hybrid BM25+dense (RRF) | ✅ Done | ⭐⭐⭐ | None |
 | SSE streaming endpoint | ✅ Done | ⭐⭐⭐ | None |
 | Context window expansion | ✅ Done | ⭐⭐⭐ | +~1 GB |
+| Unified story-length target | ✅ Done | ⭐⭐⭐⭐ | None (time cost only) |
 | Structured JSON output (HF json_mode) | ✅ Done | ⭐⭐⭐ | None |
 | vLLM as high-throughput backend | ✅ Done | ⭐⭐⭐⭐ | Same |
+| Empty-draft recovery after length guard | 🔄 Next | ⭐⭐⭐ | None |
 | INT4 quantization path | ⬜ Later | ⭐⭐ | −7 GB |
 | Local evaluation model | ⬜ Later | ⭐⭐ | +6 GB (post-gen) |
 
@@ -293,9 +314,11 @@ Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
 
 ## Recommended next steps
 
-1. **Try `qwen3.5:14b`** — `docker exec -it ollama ollama pull qwen3.5:14b` then swap `Generative_model` — immediate story quality lift if VRAM allows.
-2. **Re-evaluate vLLM (3.1)** — relevant if you add concurrent users or want batch evaluation.
-3. **Local evaluation model (3.5)** — useful if HF API rate limits become a bottleneck.
+1. **Harden empty thinking drafts** — re-check after length-guard refine; fail clearly when `length` is still unmet. Workaround today: `mode: "fast"` + `length: "13min"`.
+2. **Try `qwen3.5:14b`** — `docker exec -it ollama ollama pull qwen3.5:14b` then swap `Generative_model` — quality lift if VRAM allows.
+3. **Tune Level B accept rate** — run agentic loop with `length: "long"` / `"13min"` and track word count vs target.
+4. **Re-evaluate vLLM (3.1)** — relevant if you add concurrent users or want batch evaluation.
+5. **Local evaluation model (3.5)** — useful if HF API rate limits become a bottleneck.
 
 > **Before any upgrade:** run `python -m pytest -q` as a regression check.
-> The attribution gate, evaluation, and agentic loop tests confirm the RAG pipeline is still correct.
+> Length-profile, attribution gate, evaluation, and agentic loop tests confirm the RAG pipeline is still correct.
