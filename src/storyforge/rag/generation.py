@@ -18,7 +18,6 @@ from storyforge.rag.generation_backend import (
     generation_provider,
     load_ollama_llm,
     load_vllm_llm,
-    use_ollama_for_generation,
 )
 from storyforge.rag.length_profile import (
     LengthProfile,

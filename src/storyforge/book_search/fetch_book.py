@@ -134,7 +134,6 @@ def search_in_archive(book_info: dict[str, Any], archive_url: str) -> list[dict[
         data = response.json()
 
         docs = data.get("response", {}).get("docs", [])
-        num_found = data.get("response", {}).get("numFound", 0)
 
         if docs:
             return docs
@@ -148,7 +147,6 @@ def search_in_archive(book_info: dict[str, Any], archive_url: str) -> list[dict[
             data = response.json()
 
             docs = data.get("response", {}).get("docs", [])
-            num_found = data.get("response", {}).get("numFound", 0)
 
             return docs or None
         return None

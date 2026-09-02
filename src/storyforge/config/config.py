@@ -28,7 +28,7 @@ def resolve_config_path(config_path: str | Path | None = None) -> Path:
     return EXAMPLE_CONFIG_FILE
 
 
-def _normalize_base_path(config: dict[str, Any], source_path: Path) -> None:
+def _normalize_base_path(config: dict[str, Any]) -> None:
     base_path = str(config.get("BASE_PATH") or "").strip()
     is_placeholder = "path/to/your/project" in base_path.replace("\\", "/")
     # Blank or placeholder BASE_PATH → use repo root.
@@ -43,7 +43,7 @@ def _load_config_cached(config_path_key: str, overlay_keys: bool) -> dict[str, A
         raise FileNotFoundError(f"Missing config file. Expected {CONFIG_FILE} or {EXAMPLE_CONFIG_FILE}.")
     with open(path, "r", encoding="utf-8") as file:
         config = yaml.safe_load(file) or {}
-    _normalize_base_path(config, path)
+    _normalize_base_path(config)
     if overlay_keys:
         overlay_api_keys_from_env(config)
     return config

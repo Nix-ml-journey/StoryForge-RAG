@@ -1,8 +1,27 @@
 # StoryForge-RAG
 
-End-to-end RAG pipeline: ingest stories → Chroma retrieval → grounded extraction → local LLM generation → automated evaluation.
+End-to-end RAG for **grounded stories**, not Q&A chat: ingest public-domain text → Chroma retrieval → extract attributable facts → write a 5-section narrative on a local GPU → score and optionally refine.
 
-**Full documentation:** [`docs/README.md`](docs/README.md)
+Most RAG demos retrieve chunks and dump them into a prompt. This one treats generation as a **controlled pipeline**: facts must cite source chunks, length is one request field (not three knobs that disagree), and an agentic loop decides refine vs re-retrieve instead of always restarting.
+
+**Full documentation:** [`docs/README.md`](docs/README.md) · design story: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md)
+
+---
+
+## What is different from typical RAG
+
+| Typical RAG / story LLM | StoryForge-RAG |
+|-------------------------|----------------|
+| Retrieve chunks → paste into the generator | **3 steps:** retrieve → extract JSON facts with `source_chunk_ids` → generate **from facts only** |
+| Open-ended “write a story” with no length contract | One `length` target (`short` / `"13min"` / `1800`) drives **prompt, token budget, and accept gate** together |
+| Hallucinated names and places are common | Generation forbids new named entities; an **attribution check** logs (or truncates) names not in the facts |
+| One retrieve-then-generate pass | Optional **agentic loop:** ACCEPT / REFINE (finish a grounded draft) / RE_RETRIEVE (only when faithfulness is thin) |
+| Dense search only | **Hybrid BM25 + dense (RRF)** + cross-encoder rerank + diverse titles so one book does not dominate |
+| Cloud LLM for everything, or one huge local model | **Split stack:** embeddings/rerank local, facts on HF API (no VRAM fight), story on **Ollama in Docker** (vLLM / Transformers optional) |
+| Chroma’s default embedder silently mismatches ingest | Ingest **embeds with BGE explicitly** so query and corpus stay on the same 768-dim model |
+| Demo quality sold as production-ready | Honest **quality tiers** (short is reliable; long-form is still being tuned) and production boundaries in [`docs/PRODUCTION_NOTES.md`](docs/PRODUCTION_NOTES.md) |
+
+**Built for:** video-style narration scripts (3–16 minutes) that must stay faithful to a story corpus on a **consumer 16 GB GPU**, not for general chatbot RAG.
 
 ---
 

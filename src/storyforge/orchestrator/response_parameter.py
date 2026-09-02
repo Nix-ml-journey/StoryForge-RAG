@@ -1,6 +1,5 @@
 import json
 import logging
-import shutil
 import tempfile
 from storyforge.data.step1_prepare_and_enrich import run_step1_prepare_and_enrich
 from datetime import datetime
@@ -59,7 +58,7 @@ def search_books(api_key: str, query: str, n_results: int = 20) -> dict:
             if b.get("selfLink") or b.get("infoLink")
         ]
         return {"success": True, "results": results, "metadata": {}, "urls": urls}
-    except Exception as e:
+    except Exception:
         LOG.exception("search_books failed")
         return FAIL
 
@@ -124,7 +123,7 @@ def download_book_archive(
         }
         meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         return {"success": True, "saved": True, "saved_path": str(meta_file)}
-    except Exception as e:
+    except Exception:
         LOG.exception("download_book_archive failed")
         return FAIL_SAVE
 
@@ -326,7 +325,7 @@ def generate_story_result(
                 }
             )
         return payload
-    except Exception as e:
+    except Exception:
         LOG.exception("generate_story failed")
         return {"success": False, "content": "", "saved": False, "saved_path": None, "timestamp": ""}
 
@@ -438,7 +437,7 @@ def generate_summary_result(story_path: str, base_path: str, summary_output_dir:
             "saved_path": str(out_path),
             "timestamp": datetime.now().isoformat(),
         }
-    except Exception as e:
+    except Exception:
         LOG.exception("generate_summary failed")
         return {
             "success": False,
