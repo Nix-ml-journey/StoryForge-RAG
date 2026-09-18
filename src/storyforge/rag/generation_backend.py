@@ -147,18 +147,23 @@ def vllm_model_id(cfg: dict) -> str:
     ).strip()
 
 
-def load_vllm_llm(
-    cfg: dict,
+def build_chat_openai(
+    cfg: dict[str, Any],
     *,
     max_new_tokens: int,
     temperature: float,
     top_p: float,
-) -> GenerationLLM:
-    """ChatOpenAI client for a local vLLM OpenAI-compatible server."""
+) -> Any:
+    """Build a raw ChatOpenAI client against the local vLLM OpenAI-compatible server.
+
+    Shared by load_vllm_llm (non-streaming) and orchestration_routes.py's SSE
+    stream (needs the raw client for .astream()) so the two call sites can't
+    drift the way build_chat_ollama / an inline ChatOllama once did.
+    """
     from langchain_openai import ChatOpenAI  # type: ignore
 
     repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
-    llm = ChatOpenAI(
+    return ChatOpenAI(
         model=vllm_model_id(cfg),
         base_url=vllm_base_url(cfg),
         api_key="EMPTY",  # required non-empty; vLLM ignores it
@@ -167,4 +172,15 @@ def load_vllm_llm(
         top_p=top_p,
         model_kwargs={"frequency_penalty": max(0.0, min(2.0, repeat_penalty - 1.0))},
     )
+
+
+def load_vllm_llm(
+    cfg: dict,
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> GenerationLLM:
+    """ChatOpenAI client for a local vLLM OpenAI-compatible server."""
+    llm = build_chat_openai(cfg, max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p)
     return _PromptLLM(llm)

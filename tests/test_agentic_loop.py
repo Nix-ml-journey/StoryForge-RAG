@@ -194,3 +194,100 @@ def test_reformulate_query_appends_entities():
 def test_reformulate_query_unchanged_without_entities():
     parsed = parse_grounded_facts_json("{}")
     assert reformulate_query("the duel", parsed, {}) == "the duel"
+
+
+# ---------------------------------------------------------------------------
+# run_agentic_story_loop: generation-failure recovery
+#
+# generate_from_facts raises RuntimeError when both a thinking draft and its
+# fast-mode retry come back empty (see generation.py). Unlike the 3-step
+# length guard (which has exactly one prior draft to fall back to), the
+# agentic loop may have several iterations of history -- it should stop with
+# the best draft seen so far instead of letting the exception abort the whole
+# run and lose that history. retrieve_docs / extract_grounded_facts /
+# generate_from_facts / evaluate_model are all imported lazily inside
+# run_agentic_story_loop, so they're patched on their source modules.
+# ---------------------------------------------------------------------------
+
+
+def _fake_docs_chain(monkeypatch, *, facts_json):
+    import storyforge.rag.retrieval as retrieval_mod
+    import storyforge.rag.extraction as extraction_mod
+    import storyforge.evaluation.evaluation as evaluation_mod
+
+    monkeypatch.setattr(retrieval_mod, "retrieve_docs", lambda *a, **k: ["doc"])
+    monkeypatch.setattr(retrieval_mod, "_docs_to_chunks", lambda docs: [{"chunk_id": "c1", "title": "T", "metadata": {}, "text": "hi"}])
+    monkeypatch.setattr(retrieval_mod, "_docs_to_context", lambda docs: "context")
+
+    parsed = parse_grounded_facts_json(facts_json)
+    monkeypatch.setattr(extraction_mod, "extract_grounded_facts", lambda query, chunks, cfg: (facts_json, parsed))
+
+    # Force has_eval=False so decide_action uses its simpler no-eval-provider
+    # branch (ACCEPT if complete, else REFINE/RE_RETRIEVE on facts_count) --
+    # the exact eval score isn't what this test is about.
+    def _raise_no_eval(*a, **k):
+        raise RuntimeError("no evaluation provider configured for this test")
+    monkeypatch.setattr(evaluation_mod, "evaluate_model", _raise_no_eval)
+
+
+def test_generation_failure_on_first_iteration_stops_gracefully(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.rag.generation as generation_mod
+
+    _fake_docs_chain(
+        monkeypatch,
+        facts_json='{"facts":[{"type":"who","fact":"Alana fights Zoruk","source_chunk_ids":["c1"]}]}',
+    )
+
+    def _raise_empty(*a, **k):
+        raise RuntimeError("Story generation returned an empty draft.")
+    monkeypatch.setattr(generation_mod, "generate_from_facts", _raise_empty)
+
+    cfg = {"Agentic_loop_max_iterations": 3}
+    result = run_agentic_story_loop(
+        "a test query", cfg=cfg, debug=False, show_progress=False
+    )
+
+    assert result.content == ""
+    assert result.accepted is False
+    assert result.stop_reason == "generation_failed"
+    assert len(result.iterations) == 1
+    assert result.iterations[0]["action"] == "generation_failed"
+
+
+def test_generation_failure_after_partial_progress_keeps_best_draft(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.rag.generation as generation_mod
+
+    _fake_docs_chain(
+        monkeypatch,
+        facts_json='{"facts":[{"type":"who","fact":"Alana fights Zoruk","source_chunk_ids":["c1"]}]}',
+    )
+
+    # Iteration 1: incomplete (missing sections) but non-empty -> REFINE, not
+    # ACCEPT, so the loop continues to a second iteration and this draft
+    # becomes `best`. Iteration 2: the refine call comes back empty twice
+    # (thinking + fast retry) and raises.
+    first_draft = "[SECTION 1: WHO]\nAn unfinished story that just stops."
+    calls = {"n": 0}
+
+    def _first_ok_then_raise(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return first_draft
+        raise RuntimeError("Story generation returned an empty draft.")
+
+    monkeypatch.setattr(generation_mod, "generate_from_facts", _first_ok_then_raise)
+
+    cfg = {"Agentic_loop_max_iterations": 3}
+    result = run_agentic_story_loop(
+        "a test query", cfg=cfg, debug=False, show_progress=False
+    )
+
+    assert result.content == first_draft
+    assert result.accepted is False
+    assert result.stop_reason == "generation_failed_using_best_so_far"
+    assert len(result.iterations) == 2
+    assert result.iterations[0]["action"] == "refine"
+    assert result.iterations[1]["action"] == "generation_failed"
+    assert calls["n"] == 2

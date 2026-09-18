@@ -33,7 +33,7 @@ flowchart LR
 | **Step 2** | Extract grounded facts (JSON with chunk ids) | HF router `Qwen/Qwen3-8B` (API); Ollama fallback |
 | **Step 3** | Write a fixed **5-section** story from facts only, sized by `length` | Ollama `qwen3.5:9b` (also vLLM / Transformers) |
 | **Length profile** | One target drives prompt guidance, token budget, and accept gate | `src/storyforge/rag/length_profile.py` |
-| **Agentic loop** | Score each draft; refine incomplete stories or widen retrieval | HF eval 7B → Gemini fallback |
+| **Agentic loop** | Score each draft; refine incomplete stories or widen retrieval | HF eval 7B → Gemini fallback (or local model, `Evaluation_mode: "local"`) |
 
 **Orchestrator steps:** prepare story JSON → reset/ingest Chroma → `4_generate_story_3step` or `4_generate_story_agentic` (when `Agentic_loop_enabled`).
 
@@ -87,8 +87,8 @@ Post-save cleanup in `generative_ai.clean_story_output()` fixes common formattin
 | `storyforge/rag/langchain_rag.py` | 3-step orchestrator + length guard |
 | `storyforge/rag/agentic_loop.py` | Evaluate → REFINE / RE_RETRIEVE / ACCEPT |
 | `storyforge/rag/attribution.py` | Grounded-facts parsing, attribution gate |
-| `storyforge/rag/generation_backend.py` | Ollama / vLLM loaders, `strip_thinking_tags` |
-| `storyforge/evaluation/` | HF-first rubric JSON; Gemini on failure |
+| `storyforge/rag/generation_backend.py` | Ollama / vLLM loaders, `build_chat_openai`, `strip_thinking_tags` |
+| `storyforge/evaluation/` | HF → Gemini, or local Transformers (`Evaluation_mode: "local"`) |
 | `storyforge/orchestrator/` + `api/` | Pipeline steps, FastAPI routes, SSE stream |
 
 Lazy imports in `rag/__init__.py` keep unit tests runnable without loading Transformers on import.
@@ -125,7 +125,7 @@ Lazy imports in `rag/__init__.py` keep unit tests runnable without loading Trans
 |------|--------|----------------|--------|
 | **Short** (~450 words / ~3 min) | Single-pass | `mode: "fast"` or `length: "short"` | **Works reliably** |
 | **Medium** (~900 words / ~6 min) | Single-pass or agentic | `length: "medium"` | **Usable** |
-| **Long (Level B)** (~1,500 words / ~11 min) | Agentic + refine | `mode: "thinking"` or `length: "long"` / `"13min"` | **Improving** — length gates now agree; empty thinking drafts still need a retry |
+| **Long (Level B)** (~1,500 words / ~11 min) | Agentic + refine | `mode: "thinking"` or `length: "long"` / `"13min"` | **Improving** — length gates now agree; empty thinking drafts retry automatically with fast sampling |
 | **Epic (Level C)** (~2,200 words / ~16 min) | Agentic + richer retrieval | `length: "epic"` | **Experimental** — latency grows; thin facts risk repetition |
 
 On consumer 16 GB VRAM with Ollama, the ceiling is less about OOM and more about wall-clock time + empty thinking-mode responses that strip to `0` words before refine.
@@ -243,9 +243,9 @@ Accepted `length` forms: preset name, `"12min"` (words = minutes × `Story_lengt
 - Companion knobs for long prose: `Story_generation_n_results: 10`, `HF_grounded_facts_max_new_tokens: 1600`
 - Tests: `tests/test_length_profile.py` + updated prompt/config contracts
 
-### Remaining open issue
+### Remaining open issue (resolved — see the empty-draft recovery session below)
 
-Thinking mode can still return an empty body (Ollama spends budget inside `<think>` / strips to zero words). The length guard triggers a refine pass, but a single refine can still land short. Workaround for long targets today: `mode: "fast"` + `length: "13min"` (or `"long"` / `"epic"`). Next hardening: re-check after refine and fail clearly when the target is still unmet.
+Thinking mode could return an empty body (budget spent inside `<think>`). That path now retries once with fast sampling and raises a clear `RuntimeError` if both attempts are empty; the length-guard refine falls back to the pre-refine draft. Prefer `mode: "fast"` + `length: "13min"` when you want the most reliable long target.
 
 ### Architecture modules (current)
 
@@ -261,19 +261,100 @@ Thinking mode can still return an empty body (Ollama spends budget inside `<thin
 | `storyforge/rag/langchain_rag.py` | 3-step orchestrator + length guard |
 | `storyforge/rag/agentic_loop.py` | Evaluate → REFINE / RE_RETRIEVE / ACCEPT |
 | `storyforge/rag/attribution.py` | Grounded-facts parsing, attribution gate |
-| `storyforge/rag/generation_backend.py` | `load_ollama_llm`, `strip_thinking_tags`, vLLM |
-| `storyforge/evaluation/` | HF-first rubric JSON; Gemini on failure |
+| `storyforge/rag/generation_backend.py` | `load_ollama_llm`, `build_chat_openai`, `strip_thinking_tags`, vLLM |
+| `storyforge/evaluation/` | HF → Gemini, or local Transformers (`Evaluation_mode: "local"`) |
 | `storyforge/orchestrator/` + `api/` | Pipeline steps, FastAPI routes, SSE stream |
+
+---
+
+## Session: vLLM backend, empty-draft recovery, structural cleanup, local evaluation (2026)
+
+This session had two parts: closing out the roadmap's remaining high-value items, and a
+structure pass to remove drift and dead code accumulated across earlier sessions.
+
+### vLLM as a second generation backend
+
+Added `generation_backend.py: load_vllm_llm()` (a `langchain_openai.ChatOpenAI` client
+against a local OpenAI-compatible vLLM server) alongside the existing Ollama path.
+`generation_provider(cfg)` now resolves `ollama` / `vllm` / `transformers` from
+`Generation_provider`, and `generation.py`'s `_load_generation_llm()` dispatches on it
+before falling through to Ollama. Useful for concurrent/batched generation; for a single
+local user, Ollama remains the simpler default.
+
+### Empty-draft recovery
+
+Thinking mode occasionally returned a fully empty draft (the model spent its whole budget
+inside `<think>...</think>`, which `strip_thinking_tags()` then strips to nothing).
+`generate_from_facts()` now retries once with `mode="fast"` sampling before giving up, and
+raises a clear `RuntimeError` (rather than returning `""`) if that retry is also empty. The
+length-guard refine pass in `langchain_rag.py` catches that `RuntimeError` and falls back to
+the original (pre-refine) draft instead of losing the story entirely. This closed the
+"remaining open issue" from the previous session.
+
+**Follow-up gap, caught in review:** the first pass only wired this into the 3-step length
+guard — `agentic_loop.py`'s `run_agentic_story_loop()` called `generate_from_facts()` with no
+`try/except` at all, so a `RuntimeError` on iteration 2+ still aborted the whole loop and
+discarded every earlier iteration's `best` draft, propagating up as a generic `success: false`
+with no draft attached. The loop now catches `RuntimeError` per iteration, records a
+`generation_failed` entry in `iterations` for visibility, and stops with the best draft seen
+so far (`stop_reason: "generation_failed_using_best_so_far"`) — or a clear empty result with
+`stop_reason: "generation_failed"` if it happens on the very first iteration, when there's no
+prior draft to fall back to. Tests in `tests/test_agentic_loop.py`.
+
+### Structural cleanup
+
+A pass through the whole `src/storyforge/` tree against an earlier internal audit
+(`StoryForge_pattern_audit.md`) found most high-severity findings already fixed in prior
+sessions. What was still live:
+
+- Removed ~90 lines of dead code in `book_search/fetch_book.py`
+  (`download_archive_book_and_save_meta` was never called anywhere — the live download
+  flow was reimplemented separately in `orchestrator/response_parameter.py`).
+- `_split_section_bodies` / `_sentence_count` / `_SECTION_HEADER_RE` were independently
+  defined in both `generation.py` and `agentic_loop.py` — the exact "duplicated logic that
+  drifts" pattern the audit called out. Consolidated into `length_profile.py` as the single
+  shared source.
+- The vLLM `ChatOpenAI` client was being built inline in `orchestration_routes.py`,
+  duplicating `load_vllm_llm()`'s guts. Extracted a shared `build_chat_openai()` so the
+  streaming and non-streaming paths can't drift the way the Ollama client once did.
+- Aligned divergent hardcoded defaults (`Chroma_path`, `Story_input`) that only worked
+  because `setup.yaml` happened to set them explicitly — an omitted key would have silently
+  pointed ingest and retrieval at different directories.
+- Fixed `secrets.py` resolving `.env` relative to its own file location instead of the repo
+  root (every other module uses the repo-root convention).
+- `orchestrator.run_pipeline` hardcoded `formats=["pdf", "epub"]` for step 0, making the
+  configured `Download_formats` key unreachable — now reads it from config.
+- Removed the dead `Prompts_file` config key (declared in both YAMLs, read nowhere).
+- Added the missing `vLLM_base_url` / `vLLM_model` keys to the real `setup.yaml`, and the
+  missing `Generated_story_output` / `Generated_summary_output` / `Evaluated_stories_output`
+  keys to `setup.example.yaml` so a fresh clone matches the real output layout.
+
+### Local evaluation model
+
+Added `Evaluation_mode: "local"` as a third path alongside the existing HF/Gemini API
+chain. `evaluate_model()` checks it first and, when set, short-circuits straight to a local
+evaluator descriptor instead of racing through `Evaluation_provider_priority`.
+`_invoke_local_once()` loads a small causal LM (`Local_evaluation_model`, default
+`Qwen/Qwen2.5-3B-Instruct`) via Transformers, cached by `(model_id, device)` so it loads
+once per server process and is reused across every agentic-loop iteration afterward. If the
+local model fails for any reason (OOM, missing weights), `_invoke_local_with_fallback()`
+catches it and retries through the normal HF → Gemini chain rather than failing the loop.
+
+`Local_evaluation_device` defaults to `"cpu"` deliberately — loading a second model on
+`"cuda"` alongside Ollama's own CUDA context has been observed to starve VRAM on a 16 GB
+card (see the `Reranker_device` note in `setup.yaml`). This removes one full external API
+round-trip (extraction already uses one) from every agentic-loop iteration when enabled.
 
 ---
 
 ## What I am doing next
 
-1. Harden empty-draft recovery after length-guard refine (retry + clearer `success: false`).
-2. More ingest diversity and chunk-quality checks (retrieval is still the ceiling).
+1. Fix the BGE passage-prefix convention (currently prefixed like a query at ingest; the documented recipe only prefixes queries) and re-embed the corpus.
+2. More ingest diversity and chunk-quality checks (retrieval is still the ceiling) — see [`DATA_PREP.md`](./DATA_PREP.md).
 3. Tune long-form (`length: "long"` / `"13min"`) until Level B accepts consistently under agentic loop.
 4. Stronger retrieval eval harness (precision@k on fixed query set).
 5. Optional epic / Level C only after stable wall-clock and non-empty generation under Ollama.
+6. Optionally post-process streamed stories with the attribution gate (streaming still skips it by design today).
 
 ---
 
@@ -281,5 +362,6 @@ Thinking mode can still return an empty body (Ollama spends budget inside `<thin
 
 - **Code:** https://github.com/Nix-ml-journey/StoryForge-RAG  
 - **Overview:** `docs/README.md`  
+- **Data prep after extract:** `docs/DATA_PREP.md`  
 - **Quick test path:** `docs/QUICK_DEMO.md`  
 - **Roadmap:** `docs/PROJECT_UPDATE_ROADMAP.md`, `docs/UPGRADE_ROADMAP_5060Ti.md`

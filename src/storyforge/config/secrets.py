@@ -4,7 +4,10 @@ import logging
 import os
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent
+# Repo root: src/storyforge/config/secrets.py -> four parents up (same
+# resolution as config.py's ROOT_DIR). Previously resolved to this file's own
+# directory, so a repo-root .env was never found.
+_ROOT = Path(__file__).resolve().parents[3]
 
 
 def try_load_dotenv() -> None:

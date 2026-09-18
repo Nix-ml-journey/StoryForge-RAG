@@ -4,7 +4,47 @@ End-to-end RAG for **grounded stories**, not Q&A chat: ingest public-domain text
 
 Most RAG demos retrieve chunks and dump them into a prompt. This one treats generation as a **controlled pipeline**: facts must cite source chunks, length is one request field (not three knobs that disagree), and an agentic loop decides refine vs re-retrieve instead of always restarting.
 
-**Full documentation:** [`docs/README.md`](docs/README.md) · design story: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md)
+**Full documentation:** [`docs/README.md`](docs/README.md) · after extract / data prep: [`docs/DATA_PREP.md`](docs/DATA_PREP.md) · design story: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md)
+
+---
+
+## Core idea — why this isn't another "chat with your PDF" repo
+
+Most RAG repos on GitHub follow one shape: chunk documents, embed them, run top-k cosine
+similarity, and paste the results into a prompt so an LLM can answer a question about them.
+That pattern works for Q&A. It falls apart for narrative generation, where the output isn't
+one factual answer — it's a few hundred to a few thousand words of connected prose that has
+to stay consistent across five sections while pulling from multiple retrieved passages at
+once.
+
+StoryForge-RAG treats generation as a **controlled pipeline**, not "retrieve, then hope
+the model behaves":
+
+- **Facts are extracted before generation, not during it.** Step 2 turns retrieved chunks
+  into structured JSON facts with `source_chunk_ids`. The model in Step 3 writes from that
+  fact list — it never has to synthesize raw retrieved text on the fly, which is where most
+  RAG hallucination actually comes from.
+- **Length is one contract, not a token limit and a prayer.** A single `length` target
+  drives the prompt's per-section guidance, the token budget, *and* the accept gate. Most
+  RAG repos set `max_tokens` and stop there — nothing checks the output actually matches
+  what was asked for.
+- **The pipeline evaluates and corrects its own output.** The agentic loop scores each
+  draft and picks ACCEPT / REFINE / RE_RETRIEVE based on rubric score, faithfulness, and
+  completeness — not a single generate-and-return pass.
+- **Retrieval is a real search stack, not `top_k=5`.** Dense + BM25 fused with RRF, a
+  cross-encoder reranker, and diverse-title selection so one source book can't dominate the
+  context — closer to a production search pipeline than the naive cosine-similarity loop in
+  most quickstart repos.
+- **The hardware target is stated up front, not assumed away.** This is built for one
+  consumer 16 GB GPU with explicit local/API split (embeddings and rerank local, facts on
+  HF API to avoid VRAM contention, story generation swappable between Ollama / vLLM /
+  Transformers) — not "assume unlimited OpenAI budget" or "assume one fixed model that
+  happens to fit on your machine."
+- **Limitations are documented, not hidden.** [`docs/PRODUCTION_NOTES.md`](docs/PRODUCTION_NOTES.md)
+  says plainly what's reliable (short stories), what's still improving (long-form), and what
+  a production version would need. Most portfolio RAG repos oversell "production-ready."
+
+The comparison table below has the specifics; this section is the "so what."
 
 ---
 
@@ -20,6 +60,7 @@ Most RAG demos retrieve chunks and dump them into a prompt. This one treats gene
 | Cloud LLM for everything, or one huge local model | **Split stack:** embeddings/rerank local, facts on HF API (no VRAM fight), story on **Ollama in Docker** (vLLM / Transformers optional) |
 | Chroma’s default embedder silently mismatches ingest | Ingest **embeds with BGE explicitly** so query and corpus stay on the same 768-dim model |
 | Demo quality sold as production-ready | Honest **quality tiers** (short is reliable; long-form is still being tuned) and production boundaries in [`docs/PRODUCTION_NOTES.md`](docs/PRODUCTION_NOTES.md) |
+| Empty thinking drafts fail silently | **Empty-draft recovery:** thinking → one fast retry → clear error; length-guard and agentic loop fall back to the best available draft |
 
 **Built for:** video-style narration scripts (3–16 minutes) that must stay faithful to a story corpus on a **consumer 16 GB GPU**, not for general chatbot RAG.
 
@@ -34,9 +75,10 @@ Most RAG demos retrieve chunks and dump them into a prompt. This one treats gene
 | Hybrid search | BM25 + dense (RRF fusion) | Local |
 | Step 2 — grounded facts | `Qwen/Qwen3-8B` via HF Inference API | Cloud, no VRAM cost |
 | Step 3 — story generation | `qwen3.5:9b` via Ollama (default) | Local GPU, `localhost:11434` |
-| Evaluation | `Qwen/Qwen2.5-7B-Instruct` via HF API → Gemini fallback | Cloud |
+| Evaluation | `Qwen/Qwen2.5-7B-Instruct` via HF API → Gemini fallback (or local) | Cloud, or local GPU/CPU |
 
 Step 3 can also use **vLLM** or **Transformers** — set `Generation_provider` in `setup.yaml`.
+Evaluation can run **in-process** instead of calling an API — set `Evaluation_mode: "local"` to remove the HF/Gemini round-trip from every agentic-loop iteration.
 
 ---
 
@@ -128,8 +170,10 @@ When `Agentic_loop_enabled: true`, step 4 uses evaluate → refine / re-retrieve
 
 Manifest ingest now computes **BGE embeddings explicitly** so Chroma does not fall back to a mismatched default embedder.
 
+Extracted text in `data/raw_extracted/` is scratch. Clean and split it into `data/stories/` first — [`docs/DATA_PREP.md`](docs/DATA_PREP.md).
+
 ```powershell
-# Full pipeline: stories → story_json → manifest → Chroma
+# Full pipeline: cleaned stories → story_json → review JSON → manifest → Chroma
 py scripts/step1_prepare_and_enrich.py
 py scripts/records_to_ingest_manifest.py
 py scripts/ingest_manifest.py
@@ -177,6 +221,8 @@ py scripts/push_section_metadata.py --glob "Lovecraft__*"
 | `Generation_fast_*` / `Generation_thinking_*` | Sampling and token floors per mode |
 | `Agentic_loop_*` | Evaluate/refine/re-retrieve loop thresholds |
 | `HF_grounded_facts_json_mode` | Strict JSON for Step 2 (falls back if unsupported) |
+| `Evaluation_mode` | `api` (default, HF → Gemini) or `local` (in-process, no API round-trip) |
+| `Local_evaluation_model` / `_device` | Local judge (default `Qwen/Qwen2.5-3B-Instruct` on CPU) |
 
 Copy `setup.example.yaml` → `setup.yaml` and edit locally. Secrets stay out of git.
 
@@ -200,9 +246,12 @@ GOOGLE_BOOKS_API_KEY
 
 ## Links
 
-- [Quick demo (no GPU)](docs/QUICK_DEMO.md)
+- [Data prep after extract](docs/DATA_PREP.md)
+- [Quick demo / how to use](docs/QUICK_DEMO.md)
 - [Project journey](docs/PROJECT_JOURNEY.md)
 - [Upgrade roadmap](docs/UPGRADE_ROADMAP_5060Ti.md)
+- [Production notes](docs/PRODUCTION_NOTES.md)
+- [Pattern audit (historical)](StoryForge_pattern_audit.md)
 - [GitHub](https://github.com/Nix-ml-journey/StoryForge-RAG)
 
 ## License

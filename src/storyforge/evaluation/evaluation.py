@@ -91,6 +91,118 @@ def _build_gemini_evaluator(temperature: float = 0.3, model_name: Optional[str] 
     return llm
 
 
+_LOCAL_EVAL_CACHE: dict[tuple, Any] = {}  # (model_id, device) -> (tokenizer, model)
+
+
+def _local_evaluation_device(cfg: dict[str, Any]) -> str:
+    device = str(cfg.get("Local_evaluation_device") or "cpu").strip().lower() or "cpu"
+    if device == "cuda":
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                logging.warning("Local_evaluation_device=cuda requested but unavailable; using cpu.")
+                return "cpu"
+        except Exception:
+            return "cpu"
+    return device
+
+
+def _load_local_evaluator_model(model_id: str, device: str):
+    """Load (or return cached) a small local causal LM used only for scoring drafts."""
+    cache_key = (model_id, device)
+    if cache_key in _LOCAL_EVAL_CACHE:
+        return _LOCAL_EVAL_CACHE[cache_key]
+
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+
+    logging.info("Loading local evaluation model (first use): %s on %s", model_id, device)
+    tok = AutoTokenizer.from_pretrained(model_id)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        device_map="cuda" if device == "cuda" else None,
+        torch_dtype=(torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else None),
+    )
+    if device != "cuda":
+        model = model.to(device)
+
+    _LOCAL_EVAL_CACHE[cache_key] = (tok, model)
+    return tok, model
+
+
+def _build_local_evaluator(temperature: float = 0.1, model_name: Optional[str] = None) -> dict[str, Any]:
+    cfg = _cfg()
+    model_id = model_name or str(cfg.get("Local_evaluation_model") or "Qwen/Qwen2.5-3B-Instruct")
+    device = _local_evaluation_device(cfg)
+    logging.info("Initialized StoryEvaluator with local model: %s (%s)", model_id, device)
+    return {"provider": "local", "model": model_id, "device": device, "temperature": float(temperature)}
+
+
+def _invoke_local_once(evaluator: dict[str, Any], prompt: str) -> str:
+    cfg = _cfg()
+    max_new = int(cfg.get("Local_evaluation_max_new_tokens") or cfg.get("HF_evaluation_max_new_tokens") or 700)
+    tok, model = _load_local_evaluator_model(evaluator["model"], evaluator["device"])
+
+    import torch
+
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        input_ids = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+    except Exception:
+        # Tokenizer has no chat template — fall back to raw text.
+        input_ids = tok(prompt, return_tensors="pt").input_ids
+    input_ids = input_ids.to(model.device)
+
+    temperature = float(evaluator.get("temperature") or 0.1)
+    with torch.no_grad():
+        out = model.generate(
+            input_ids,
+            max_new_tokens=max_new,
+            do_sample=temperature > 0,
+            temperature=max(temperature, 0.01),
+            pad_token_id=(tok.pad_token_id or tok.eos_token_id),
+        )
+    generated = out[0][input_ids.shape[-1] :]
+    return tok.decode(generated, skip_special_tokens=True).strip()
+
+
+def _invoke_local_with_fallback(evaluator: dict[str, Any], prompt: str) -> str:
+    """Try the local model; on any failure (e.g. OOM), fall back to the API chain.
+
+    Keeps the agentic loop moving even if the local model can't be loaded or
+    run on this machine, rather than failing every evaluation for the rest of
+    the run.
+    """
+    try:
+        return _invoke_local_once(evaluator, prompt)
+    except Exception as e:
+        logging.warning(
+            "Local evaluation model failed (%s); falling back to the API provider chain.", e
+        )
+        cfg = _cfg()
+        providers = _normalise_provider_priority(
+            cfg.get("Evaluation_provider_priority") or ["huggingface", "gemini"]
+        )
+        temperature = evaluator.get("temperature")
+        errors = [f"local: {e}"]
+        for candidate in providers:
+            try:
+                if candidate in {"hf", "huggingface", "hugging_face"}:
+                    hf_evaluator = _build_huggingface_evaluator(temperature=temperature)
+                    return _invoke_hf_with_retry(hf_evaluator, prompt)
+                if candidate == "gemini":
+                    gemini = _build_gemini_evaluator(temperature=temperature)
+                    return _invoke_gemini_with_retry(gemini, prompt)
+            except Exception as e2:
+                errors.append(f"{candidate}: {e2}")
+        raise RuntimeError(
+            "Local evaluation failed and no API fallback succeeded: " + " | ".join(errors)
+        ) from e
+
+
 def _invoke_huggingface_once(evaluator: dict[str, Any], prompt: str) -> str:
     cfg = _cfg()
     hf_evaluation_max_new_tokens = int(cfg.get("HF_evaluation_max_new_tokens", 700))
@@ -162,6 +274,9 @@ def _invoke_with_retry(model, prompt: str):
     cfg = _cfg()
     primary = str(cfg.get("Gemini_evaluation_model") or "").strip()
     fallback = str(cfg.get("Gemini_evaluation_fallback_model") or "").strip()
+    if isinstance(model, dict) and model.get("provider") == "local":
+        return _invoke_local_with_fallback(model, prompt)
+
     if isinstance(model, dict) and model.get("provider") == "huggingface":
         try:
             return _invoke_hf_with_retry(model, prompt)
@@ -209,6 +324,14 @@ def evaluate_model(
             temperature = float(cfg.get("HF_evaluation_temperature", 0.1))
         except (TypeError, ValueError):
             temperature = 0.1
+
+    # Evaluation_mode: "local" short-circuits the API provider priority below --
+    # it's a separate in-process backend (Transformers), not another HTTP
+    # provider to race against huggingface/gemini. Removes the HF/Gemini API
+    # round-trip (and rate-limit risk) from every agentic-loop iteration.
+    eval_mode = str(cfg.get("Evaluation_mode") or "api").strip().lower()
+    if eval_mode == "local":
+        return _build_local_evaluator(temperature=temperature, model_name=model_name)
 
     providers = [provider.lower()] if provider else _normalise_provider_priority(
         cfg.get("Evaluation_provider_priority") or ["huggingface", "gemini"]

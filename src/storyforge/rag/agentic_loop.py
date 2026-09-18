@@ -13,6 +13,8 @@ from typing import Any, Optional
 
 from storyforge.config.config import load_config
 from storyforge.rag.generative_ai import Gen_mode, StoryType
+from storyforge.rag.length_profile import sentence_count as _sentence_count
+from storyforge.rag.length_profile import split_section_bodies as _split_section_bodies
 
 LOG = logging.getLogger(__name__)
 
@@ -52,8 +54,6 @@ _NON_CRITERION_KEYS = {
 _TERMINAL_CHARS = frozenset('.!?"\u201d\u2019\'')
 _EXPECTED_SECTIONS = 5
 
-_SECTION_HEADER_RE = re.compile(r"^\[SECTION\s+(\d+).*?\]\s*$", re.IGNORECASE | re.MULTILINE)
-
 
 @dataclass(frozen=True)
 class CompletenessReport:
@@ -62,26 +62,6 @@ class CompletenessReport:
     missing_sections: tuple[int, ...]
     ends_clean: bool
     reasons: tuple[str, ...] = ()
-
-
-def _split_section_bodies(text: str) -> dict[int, str]:
-    matches = list(_SECTION_HEADER_RE.finditer(text or ""))
-    if not matches:
-        return {}
-    sections: dict[int, str] = {}
-    for i, m in enumerate(matches):
-        try:
-            section_idx = int(m.group(1))
-        except Exception:
-            continue
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text or "")
-        sections[section_idx] = (text or "")[start:end].strip()
-    return sections
-
-
-def _sentence_count(text: str) -> int:
-    return len(re.findall(r"[^.!?]+[.!?]", (text or "").strip()))
 
 
 def completeness_report(
@@ -371,17 +351,45 @@ def run_agentic_story_loop(
     refine_max_new: Optional[int] = None
 
     for i in range(1, max_iter + 1):
-        story = generate_from_facts(
-            query,
-            parsed,
-            grounded_raw,
-            cfg,
-            mode=mode,
-            profile=profile,
-            refine_feedback=refine_feedback,
-            prior_draft=prior_draft,
-            max_new_tokens=refine_max_new,
-        )
+        try:
+            story = generate_from_facts(
+                query,
+                parsed,
+                grounded_raw,
+                cfg,
+                mode=mode,
+                profile=profile,
+                refine_feedback=refine_feedback,
+                prior_draft=prior_draft,
+                max_new_tokens=refine_max_new,
+            )
+        except RuntimeError as e:
+            # generate_from_facts already retried thinking -> fast once and still
+            # came back empty. Unlike the length guard (which has a single prior
+            # draft to fall back to), the loop may have several iterations' worth
+            # of history -- stop here and return the best draft seen so far
+            # instead of losing the whole run to one bad generation call.
+            LOG.warning(
+                "Agentic loop: generation failed on iteration %d (%s). "
+                "Stopping with the best draft found so far.", i, e,
+            )
+            iterations.append(
+                {
+                    "iteration": i,
+                    "action": "generation_failed",
+                    "average_score": None,
+                    "faithfulness": None,
+                    "completeness_ok": False,
+                    "word_count": 0,
+                    "missing_sections": [],
+                    "reasons": [str(e)],
+                    "query": current_query,
+                    "facts_count": len(parsed.facts),
+                    "scores": {},
+                }
+            )
+            stop_reason = "generation_failed" if best is None else "generation_failed_using_best_so_far"
+            break
 
         comp = completeness_report(
             story,

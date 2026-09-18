@@ -176,7 +176,9 @@ def ingest_stories_dir(
     try:
         cfg = load_config()
         root = Path(base_path or cfg.get("BASE_PATH") or Path(__file__).resolve().parents[1])
-        stories_path = Path(stories_dir) if stories_dir else root / (cfg.get("Story_input") or "Stories")
+        # Default must match story_records.py's, or an omitted Story_input
+        # silently points ingest at a directory that doesn't exist.
+        stories_path = Path(stories_dir) if stories_dir else root / (cfg.get("Story_input") or "data/stories")
         stories_path = stories_path.resolve()
 
         collection = get_or_create_collection(collection_name)

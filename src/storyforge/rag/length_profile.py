@@ -12,11 +12,14 @@ from typing import Any, Optional
 
 __all__ = [
     "BUILTIN_LENGTH_PRESETS",
+    "SECTION_HEADER_RE",
     "LengthProfile",
     "is_thinking_mode",
     "length_presets",
     "length_token_cap",
     "resolve_length_profile",
+    "sentence_count",
+    "split_section_bodies",
 ]
 
 _SECTIONS = 5
@@ -59,10 +62,40 @@ _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)$")
 # mode="medium" means thinking; length="medium" means the ~900-word preset.
 _THINKING_MODE_NAMES = frozenset({"thinking", "think", "slow", "medium"})
 
+# Shared by generation.py (single-pass drafts) and agentic_loop.py (completeness
+# checks) — was independently defined in both and had already drifted once.
+SECTION_HEADER_RE = re.compile(r"^\[SECTION\s+(\d+).*?\]\s*$", re.IGNORECASE | re.MULTILINE)
+
 
 def is_thinking_mode(mode: Any) -> bool:
     """True for thinking / medium / slow mode values."""
     return str(getattr(mode, "value", mode) or "").strip().lower() in _THINKING_MODE_NAMES
+
+
+def split_section_bodies(story: str) -> dict[int, str]:
+    """Map SECTION number -> its body text, using SECTION_HEADER_RE as delimiters."""
+    text = str(story or "")
+    matches = list(SECTION_HEADER_RE.finditer(text))
+    if not matches:
+        return {}
+    sections: dict[int, str] = {}
+    for i, m in enumerate(matches):
+        try:
+            idx = int(m.group(1))
+        except Exception:
+            continue
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        sections[idx] = text[start:end].strip()
+    return sections
+
+
+def sentence_count(text: str) -> int:
+    """Rough sentence count via terminal-punctuation runs."""
+    body = str(text or "").strip()
+    if not body:
+        return 0
+    return len(re.findall(r"[^.!?]+[.!?]", body))
 
 
 @dataclass(frozen=True)

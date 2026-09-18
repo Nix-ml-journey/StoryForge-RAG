@@ -372,10 +372,9 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
         )
         from storyforge.rag.generation_backend import (
             build_chat_ollama,
+            build_chat_openai,
             generation_provider,
             strip_thinking_tags,
-            vllm_base_url,
-            vllm_model_id,
         )
         from storyforge.rag.length_profile import resolve_length_profile
         from langchain_core.messages import HumanMessage
@@ -392,20 +391,10 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
         )
 
         max_new, temperature, top_p = _mode_generation_params(cfg, mode=mode, profile=profile)
-        repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
 
         provider = generation_provider(cfg)
         if provider == "vllm":
-            from langchain_openai import ChatOpenAI  # type: ignore
-            llm = ChatOpenAI(
-                model=vllm_model_id(cfg),
-                base_url=vllm_base_url(cfg),
-                api_key="EMPTY",
-                max_tokens=max_new,
-                temperature=temperature,
-                top_p=top_p,
-                model_kwargs={"frequency_penalty": max(0.0, min(2.0, repeat_penalty - 1.0))},
-            )
+            llm = build_chat_openai(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p)
         elif provider == "ollama":
             llm = build_chat_ollama(
                 cfg,

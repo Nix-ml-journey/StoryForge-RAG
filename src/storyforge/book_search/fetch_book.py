@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 import json
 import logging
 import re
@@ -13,15 +12,6 @@ import requests
 from storyforge.config.config import load_config
 
 LOG = logging.getLogger(__name__)
-
-
-def _maybe_tqdm(it, **kwargs):
-    try:
-        from tqdm import tqdm  # type: ignore
-
-        return tqdm(it, **kwargs)
-    except Exception:
-        return it
 
 
 def receive_book(google_book_api_key: str, user_input: str) -> dict[str, Any] | None:
@@ -94,16 +84,6 @@ def extract_books_info(search_results: dict[str, Any]) -> list[dict[str, Any]]:
         books.append(current_book)
 
     return books
-
-
-def _identifier_already_downloaded(output_books: Path, identifier: str) -> bool:
-    if not identifier or not output_books.exists():
-        return False
-    prefix = f"archive__{identifier}__"
-    for f in output_books.iterdir():
-        if f.is_file() and f.name.startswith(prefix):
-            return True
-    return False
 
 
 def search_in_archive(book_info: dict[str, Any], archive_url: str) -> list[dict[str, Any]] | None:
@@ -264,64 +244,6 @@ def download_archive_book(docs, output_dir, formats=None):
     except Exception as e:
         LOG.error("Error downloading from Archive.org: %s", str(e))
         return None
-
-
-def download_archive_book_and_save_meta(
-    *,
-    base_path: str | Path | None,
-    query: str,
-    formats: list[str],
-    raw_dir: str,
-    meta_dir: str,
-    archive_url: str,
-) -> dict[str, Any]:
-    """
-    Convenience helper compatible with existing orchestrator:
-    searches archive.org then downloads one file + writes a small metadata json.
-    """
-    cfg = load_config()
-    base = Path(base_path or cfg.get("BASE_PATH") or ".").resolve()
-    output_books = (base / raw_dir).resolve()
-    output_meta = (base / meta_dir).resolve()
-
-    docs = search_in_archive({"title": query, "authors": []}, archive_url) or []
-    if not docs:
-        return {"success": False, "saved": False, "saved_path": None}
-
-    downloaded = None
-    identifier = ""
-    # Try results in order, showing progress when tqdm is available.
-    for doc in _maybe_tqdm(docs, desc="Archive download candidates", unit="item"):
-        identifier = str((doc or {}).get("identifier") or "").strip()
-        if not identifier:
-            continue
-        if _identifier_already_downloaded(output_books, identifier):
-            continue
-        downloaded = download_archive_book([doc], output_books, formats=formats)
-        if downloaded:
-            break
-
-    if not downloaded:
-        return {"success": False, "saved": False, "saved_path": None}
-
-    output_meta.mkdir(parents=True, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    meta_file = output_meta / f"archive_books_{ts}.json"
-    meta_file.write_text(
-        json.dumps(
-            {
-                "search_query": query,
-                "source": "archive.org",
-                "timestamp": ts,
-                "books": [{"title": query, "authors": [], "identifier": identifier, "file_path": str(downloaded)}],
-            },
-            indent=2,
-            ensure_ascii=False,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return {"success": True, "saved": True, "saved_path": str(meta_file)}
 
 
 if __name__ == "__main__":

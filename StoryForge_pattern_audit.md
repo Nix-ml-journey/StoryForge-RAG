@@ -1,11 +1,33 @@
 # StoryForge RAG — Pattern Audit
 
-> **Status: historical audit snapshot (2026-08-20).** Findings were true at audit time.
-> Several items are **superseded** by later work — do not treat as current architecture:
+> **Status: historical audit snapshot (2026-08-20), largely resolved.** Findings were true at
+> audit time; most are no longer current. As of the last review pass:
+> - **All 7 High-severity findings (H1–H7) are fixed** — collection-name wiring, the
+>   `query_data` embedding mismatch, the `query_type` write/read mismatch, the retrieval
+>   evaluator's schema mismatch, `n_results` being inert, `HF_evaluation_temperature` being
+>   dead, and `Section_label_model` being ignored on the Ollama path.
+> - Medium: M2 (`.env` path) and half of M3 (`Chroma_path` / `Story_input` default drift) are
+>   fixed; M1's duplicated `ChatOpenAI` construction is fixed, but streaming still cannot run
+>   the attribution gate or length guard mid-stream (architectural, not a bug); M4/M5/M6/M7
+>   still stand as described.
+> - Low: `Prompts_file`, the missing `vLLM_model` key, `Download_formats` being unreachable,
+>   and the dead `download_archive_book_and_save_meta` function are fixed.
+>   `Story_generation_rerank_top_n` is **less of a trap** now that `Story_generation_n_results`
+>   defaults higher (10), but raising `rerank_top_n` alone above the diversity cap still only
+>   reorders — the diversity-before-rerank order of operations is unchanged. Phantom
+>   config-key fallbacks and a couple of duplicated helper pairs (JSON fence stripping,
+>   `_maybe_tqdm`) are still present. Section-body helpers were consolidated into
+>   `length_profile.py`.
 > - Story length is now a unified `length` / `Story_length_*` profile (`length_profile.py`);
 >   `Min_sentences_per_section` and `Agentic_loop_min_words*` are no longer hand-tuned config.
 > - Streaming shares `build_story_prompt` with the non-streaming path (length guidance included);
->   it still cannot run the post-generation length guard mid-stream.
+>   it still cannot run the post-generation length guard or attribution gate mid-stream.
+> - Empty-draft recovery: thinking → one fast retry → clear `RuntimeError`; length-guard and
+>   agentic loop both catch that error (pre-refine draft / best-so-far) instead of aborting.
+> - The Security note below about `.env` not loading is **superseded** — `secrets.py` now
+>   resolves the repo root correctly. Still rotate any token that was pasted into chat.
+> - The sections below are kept as-written for the historical record of what was found and why —
+>   do not treat individual H/M/L items as current bugs without checking the code first.
 > - Prefer [`docs/README.md`](docs/README.md) and [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md) for current truth.
 
 **Date:** 2026-08-20

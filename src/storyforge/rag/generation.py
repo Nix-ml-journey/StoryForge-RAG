@@ -25,11 +25,12 @@ from storyforge.rag.length_profile import (
     length_token_cap,
     resolve_length_profile,
 )
+from storyforge.rag.length_profile import sentence_count as _sentence_count
+from storyforge.rag.length_profile import split_section_bodies as _split_section_bodies
 
 LOG = logging.getLogger(__name__)
 
 _LOCAL_MODEL_CACHE: dict = {}     # (model_id, precision, use_cuda) -> (tokenizer, model)
-_SECTION_HEADER_RE = re.compile(r"^\[SECTION\s+(\d+).*?\]\s*$", re.IGNORECASE | re.MULTILINE)
 
 _format_facts_for_prompt = format_facts_for_prompt
 
@@ -199,30 +200,6 @@ def _flow_section_headers(cfg: dict[str, Any]) -> str:
     )
 
 
-def _split_section_bodies(story: str) -> dict[int, str]:
-    text = str(story or "")
-    matches = list(_SECTION_HEADER_RE.finditer(text))
-    if not matches:
-        return {}
-    sections: dict[int, str] = {}
-    for i, m in enumerate(matches):
-        try:
-            idx = int(m.group(1))
-        except Exception:
-            continue
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        sections[idx] = text[start:end].strip()
-    return sections
-
-
-def _sentence_count(text: str) -> int:
-    body = str(text or "").strip()
-    if not body:
-        return 0
-    return len(re.findall(r"[^.!?]+[.!?]", body))
-
-
 def build_story_prompt(
     cfg: dict[str, Any],
     *,
@@ -356,4 +333,23 @@ def generate_from_facts(
         )
 
     story = str(gen_llm.invoke(story_prompt) or "").strip()
+
+    # Thinking mode occasionally returns an empty body (model emits only <think>…</think>).
+    # Retry once with fast-mode sampling before giving up.
+    if not story and _is_thinking_mode(mode):
+        LOG.warning(
+            "Empty draft from thinking mode — retrying once with fast sampling (query=%r).",
+            (query or "")[:80],
+        )
+        fast_llm = _load_generation_llm(
+            cfg, mode="fast", max_new_tokens=max_new_tokens, profile=profile
+        )
+        story = str(fast_llm.invoke(story_prompt) or "").strip()
+
+    if not story:
+        raise RuntimeError(
+            "Story generation returned an empty draft. "
+            "Try mode=\'fast\' or a smaller \'length\' target."
+        )
+
     return _apply_attribution_gate(story, parsed.facts, cfg)

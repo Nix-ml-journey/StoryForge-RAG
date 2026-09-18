@@ -163,7 +163,10 @@ class Orchestrator:
             for step in steps_to_run:
                 logging.info(f"Running step: {step}")
                 if step == "0_fetch_and_extract":
-                    res_download = self.download_book(query=title, urls=[], formats=["pdf", "epub"])
+                    # Was hardcoded ["pdf", "epub"], making the configured
+                    # Download_formats key unreachable.
+                    formats = self.config.get("Download_formats") or ["pdf", "epub"]
+                    res_download = self.download_book(query=title, urls=[], formats=formats)
                     if not res_download.get("success"):
                         logging.warning(f"download: {res_download.get('message', res_download.get('error', 'failed'))}")
                     res_extract = self.extract_text()

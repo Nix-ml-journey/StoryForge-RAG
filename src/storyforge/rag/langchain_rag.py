@@ -103,11 +103,21 @@ def generate_story_3step_langchain(
             int(cfg.get("Single_pass_refine_max_tokens") or 0),
             profile.max_new_tokens,
         )
-        story = generate_from_facts(
-            query, parsed, grounded_raw, cfg,
-            mode=mode, profile=profile, refine_feedback=" ".join(feedback_parts),
-            prior_draft=story, max_new_tokens=refine_max,
-        )
+        # Keep the original draft so we can fall back if the refine pass also fails.
+        original_story = story
+        try:
+            story = generate_from_facts(
+                query, parsed, grounded_raw, cfg,
+                mode=mode, profile=profile, refine_feedback=" ".join(feedback_parts),
+                prior_draft=story, max_new_tokens=refine_max,
+            )
+        except RuntimeError as _refine_err:
+            LOG.warning(
+                "Length guard refine returned empty draft (%s) — "
+                "returning best available draft (%d words).",
+                _refine_err, len(original_story.split()),
+            )
+            story = original_story
     if pbar:
         pbar.update(1)
         pbar.close()

@@ -104,7 +104,7 @@ Config keys: `Story_length_presets`, `Story_length_default_fast` / `_thinking`, 
 
 Also raised `Story_generation_n_results` to 10 and `HF_grounded_facts_max_new_tokens` to 1600 so long targets have enough grounded material. Wired through generate / run_step / stream APIs. Tests in `tests/test_length_profile.py`.
 
-**Open:** thinking mode can still return empty bodies; prefer `mode: "fast"` + `length: "13min"` for long targets until empty-draft recovery is hardened.
+**Fixed (see empty-draft recovery below):** thinking mode can still return an empty body in rare cases, but `generation.py` now retries once with fast sampling and raises a clear `RuntimeError` if that also fails. The length guard in `langchain_rag.py` and the agentic loop in `agentic_loop.py` both catch that error (pre-refine draft / best-so-far). `mode: "fast"` + `length: "13min"` is still the most reliable path for long targets.
 
 ---
 
@@ -226,6 +226,19 @@ python -m vllm.entrypoints.openai.api_server \
 
 ---
 
+### 3.1b ✅ Empty-draft recovery
+
+Thinking mode (`qwen3.5:9b` with `think=True`) occasionally returns an empty story body — the model emits only a `<think>…</think>` block, and `strip_thinking_tags()` removes everything.
+
+**Implementation (done):**
+- `generation.py` `generate_from_facts()`: after `gen_llm.invoke()`, if the story is empty and the mode is thinking, retries once with `mode="fast"` (fast sampling, no think block). If the retry also returns empty, raises `RuntimeError("Story generation returned an empty draft.")`.
+- `langchain_rag.py` length guard: wraps the refine call in `try/except RuntimeError` and falls back to the original draft instead of propagating the error — the user always gets something back.
+- `agentic_loop.py` `run_agentic_story_loop()`: the first pass only covered the 3-step path — the agentic loop called `generate_from_facts()` with no `try/except`, so a `RuntimeError` on any iteration still aborted the whole run and discarded every earlier iteration's best draft. Now wrapped per-iteration: catches `RuntimeError`, records a `generation_failed` entry in `iterations`, and stops with the best draft found so far (`stop_reason: "generation_failed_using_best_so_far"`), or a clean empty result (`stop_reason: "generation_failed"`) if it happens on the first iteration.
+- `tests/test_empty_draft_recovery.py`: 4 tests covering thinking retry, both-empty `RuntimeError`, fast-mode `RuntimeError`, and length-guard fallback.
+- `tests/test_agentic_loop.py`: 2 tests covering the agentic-loop failure path (first-iteration failure vs. failure-after-partial-progress).
+
+---
+
 ### 3.2 Add a 4-bit quantized model path for lower VRAM
 
 If you ever want to run a 13B model (e.g. `Qwen2.5-14B-Instruct-GPTQ-Int4`) or just
@@ -271,22 +284,39 @@ Generation_precision: "bf16"
 
 ---
 
-### 3.5 ⬜ Replace `requests`-based HF evaluation with a local evaluator
+### 3.5 ✅ Replace `requests`-based HF evaluation with a local evaluator
 
-The evaluation step currently calls the HuggingFace Inference API (remote, rate-limited,
-can fail). With a 7B generation model loaded locally you have enough VRAM — after
-generation — to run evaluation on the same GPU using a smaller local model.
+The evaluation step previously always called the HuggingFace Inference API (remote,
+rate-limited, can fail) — twice per agentic-loop iteration when combined with Step 2's
+own HF call. `Evaluation_mode: "local"` loads a small model in-process instead,
+removing that round-trip and its rate-limit risk from every iteration.
 
-**Approach:** After generation completes and the generation model is unloaded (or
-using `torch.cuda.empty_cache()`), load `Qwen/Qwen2.5-3B-Instruct` locally for
-evaluation. This eliminates the HF API dependency entirely for evaluation.
+**Implementation (done):**
+- `evaluation.py`: `evaluate_model()` checks `Evaluation_mode` first — `"local"` short-circuits
+  the HF/Gemini provider-priority chain entirely and returns a local evaluator descriptor.
+- `_load_local_evaluator_model()` loads and caches (by model id + device) a small causal LM
+  via Transformers; `_invoke_local_once()` runs it through the tokenizer's chat template.
+- `_invoke_local_with_fallback()` catches any local failure (OOM, missing weights, etc.) and
+  automatically retries through the existing HF → Gemini chain, so a bad local config
+  degrades gracefully instead of failing the whole agentic loop.
+- `Local_evaluation_device` defaults to `"cpu"` — loading a second model on `"cuda"` alongside
+  Ollama's own CUDA context has been observed to starve VRAM on a 16 GB card (see the
+  `Reranker_device` note). Set to `"cuda"` only if you have headroom.
+- Tests in `tests/test_evaluation.py`: local mode selection, API-priority bypass, routing,
+  fallback-on-failure, and raising when every backend fails.
 
-Add to `setup.yaml`:
+**Config (`setup.yaml` / `setup.example.yaml`):**
 ```yaml
-# "api" (current) or "local" (loads model on GPU after generation)
+# "api" (default) or "local" (loads a small model in-process, no HF/Gemini round-trip)
 Evaluation_mode: "api"
 Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
+Local_evaluation_device: "cpu"   # "cuda" only if you have VRAM to spare alongside Ollama
+Local_evaluation_max_new_tokens: 700
 ```
+
+**To use:** set `Evaluation_mode: "local"` in `setup.yaml`. First evaluation call in a
+process loads and caches the model; every call after that (across all agentic-loop
+iterations, and across HTTP requests within the same running server) reuses it.
 
 ---
 
@@ -306,19 +336,20 @@ Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
 | Unified story-length target | ✅ Done | ⭐⭐⭐⭐ | None (time cost only) |
 | Structured JSON output (HF json_mode) | ✅ Done | ⭐⭐⭐ | None |
 | vLLM as high-throughput backend | ✅ Done | ⭐⭐⭐⭐ | Same |
-| Empty-draft recovery after length guard | 🔄 Next | ⭐⭐⭐ | None |
+| Empty-draft recovery (3-step + agentic) | ✅ Done | ⭐⭐⭐ | None |
+| Local evaluation model | ✅ Done | ⭐⭐⭐ | 0 (cpu default) / +6 GB (cuda) |
 | INT4 quantization path | ⬜ Later | ⭐⭐ | −7 GB |
-| Local evaluation model | ⬜ Later | ⭐⭐ | +6 GB (post-gen) |
 
 ---
 
 ## Recommended next steps
 
-1. **Harden empty thinking drafts** — re-check after length-guard refine; fail clearly when `length` is still unmet. Workaround today: `mode: "fast"` + `length: "13min"`.
-2. **Try `qwen3.5:14b`** — `docker exec -it ollama ollama pull qwen3.5:14b` then swap `Generative_model` — quality lift if VRAM allows.
-3. **Tune Level B accept rate** — run agentic loop with `length: "long"` / `"13min"` and track word count vs target.
-4. **Re-evaluate vLLM (3.1)** — relevant if you add concurrent users or want batch evaluation.
-5. **Local evaluation model (3.5)** — useful if HF API rate limits become a bottleneck.
+1. **Try `qwen3.5:14b`** — `docker exec -it ollama ollama pull qwen3.5:14b` then swap `Generative_model` — quality lift if VRAM allows.
+2. **Tune accept rate** — run agentic loop with `length: "long"` / `"13min"` and track word count vs target; adjust `Agentic_loop_accept_score` if stories are over-refined.
+3. **Re-evaluate vLLM (3.1)** — relevant if you add concurrent users or want batch evaluation.
+4. **INT4 quantization (3.2)** — if you want to run a 13B model with the same VRAM budget.
+5. **Turn on local evaluation** — set `Evaluation_mode: "local"` in `setup.yaml` if HF API rate limits or latency are a bottleneck; keep `Local_evaluation_device: "cpu"` unless you've confirmed VRAM headroom alongside Ollama.
+6. **Fix BGE passage-prefix convention** — ingest currently prefixes passages the same way as queries; BGE's documented recipe only prefixes queries. Fixing it means re-embedding the whole corpus.
 
 > **Before any upgrade:** run `python -m pytest -q` as a regression check.
 > Length-profile, attribution gate, evaluation, and agentic loop tests confirm the RAG pipeline is still correct.

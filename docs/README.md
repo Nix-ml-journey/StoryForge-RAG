@@ -15,7 +15,7 @@ flowchart TD
     retrieval --> extraction["Step 2: Grounded facts (HF API)"]
     extraction --> generation["Step 3: Story generation (Ollama / vLLM / Transformers)"]
     generation --> lengthGuard["Length guard / refine"]
-    lengthGuard --> evaluation["HF-first evaluation"]
+    lengthGuard --> evaluation["Evaluation (HF-first, or local)"]
     evaluation --> agentic{"Agentic loop?"}
     agentic -->|refine / re-retrieve| generation
     agentic -->|accept| outputs["Saved story output"]
@@ -23,10 +23,11 @@ flowchart TD
 
 ## Reviewer quick path
 
-1. Read [`QUICK_DEMO.md`](./QUICK_DEMO.md) for the no-GPU / no-API-key validation path.
-2. Run `python -m pytest` (or `.\venv\Scripts\python.exe -m pytest` inside the project venv).
-3. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for design decisions and trade-offs.
-4. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries.
+1. Read [`QUICK_DEMO.md`](./QUICK_DEMO.md) for setup and first generate.
+2. Read [`DATA_PREP.md`](./DATA_PREP.md) if you care about corpus quality after extract.
+3. Run `python -m pytest` (or `.\venv\Scripts\python.exe -m pytest` inside the project venv).
+4. Read [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for design decisions and trade-offs.
+5. Read [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries.
 
 Tests use temporary directories and do not require GPU, Chroma data, or live API calls.
 
@@ -39,12 +40,12 @@ Tests use temporary directories and do not require GPU, Chroma data, or live API
 | Hybrid search | BM25 + dense (RRF) | Optional via `Hybrid_search_enabled` |
 | Step 2 facts | `Qwen/Qwen3-8B` (HF API) | Retry + optional JSON mode; local Ollama fallback |
 | Step 3 story | `qwen3.5:9b` (Ollama) | Also supports vLLM or Transformers |
-| Evaluation | HF 7B → Gemini fallback | Used by the agentic loop |
+| Evaluation | HF 7B → Gemini fallback | Used by the agentic loop; `Evaluation_mode: "local"` runs it in-process instead |
 
 ## Grounded story generation
 
 1. **Step 1 — Retrieval:** Chroma search (+ hybrid BM25 + reranker). Diverse story titles when multiple sources match. Chunk count is controlled by `Story_generation_n_results` (default 10).
-2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors; falls back to Ollama/Transformers if HF is down. Fact-token budget is `HF_grounded_facts_max_new_tokens` (default 1600).
+2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors; falls back to local generation (Ollama / vLLM / Transformers, matching `Generation_provider`) if HF is down. Fact-token budget is `HF_grounded_facts_max_new_tokens` (default 1600).
 3. **Step 3 — Generation:** One pass from grounded facts into a 5-section story. A length guard may run one refine pass when the draft is too short.
 
 If extraction returns no usable facts, generation falls back to retrieval-only mode.
@@ -150,7 +151,7 @@ curl -N http://localhost:8000/orchestration/generate_stream \
   }'
 ```
 
-Streaming uses the same length guidance in the prompt. It cannot retry mid-stream, so length enforcement after generation is a non-streaming / agentic-loop concern.
+Streaming uses the same length guidance in the prompt. It cannot retry mid-stream and does not run the attribution gate, so length enforcement and attribution after generation are non-streaming / agentic-loop concerns.
 
 ## Key config (`setup.example.yaml`)
 
@@ -169,6 +170,9 @@ Streaming uses the same length guidance in the prompt. It cannot retry mid-strea
 | `Generation_fast_*` / `Generation_thinking_*` | Sampling + token floors |
 | `Generation_repetition_penalty` | Anti-loop decoding |
 | `Agentic_loop_*` | Loop thresholds (scores / re-retrieve / refine boost) |
+| `Evaluation_mode` | `api` (default, HF → Gemini) or `local` (in-process, no per-iteration API round-trip) |
+| `Local_evaluation_model` / `_device` | Local judge model (default `Qwen/Qwen2.5-3B-Instruct` on CPU) |
+| `Generated_story_output` / `Evaluated_stories_output` | Output folders under `data/outputs/` |
 | `Host` / `Port` | API bind address |
 
 Copy `setup.example.yaml` → `setup.yaml` for local runs. Secrets stay out of git.
@@ -181,7 +185,8 @@ Prompt templates live in `prompts.yaml` under `generation`. Story / refine promp
 - Ingests chunks into Chroma with explicit BGE embeddings
 - Retrieves relevant context, extracts grounded facts, generates stories
 - Enforces a configurable length target across prompt, tokens, and accept gate
-- Evaluates output with rubric scoring (HF first, Gemini fallback)
+- Retries empty thinking-mode drafts once with fast sampling; length-guard refine falls back to the pre-refine draft
+- Evaluates output with rubric scoring (HF → Gemini, or `Evaluation_mode: "local"`)
 - Optional book search / PDF-EPUB extraction for public-domain sources
 
 ## Tech stack
@@ -189,7 +194,7 @@ Prompt templates live in `prompts.yaml` under `generation`. Story / refine promp
 - Python, FastAPI, Pydantic
 - ChromaDB, sentence-transformers
 - Ollama / vLLM / Transformers (Step 3)
-- Hugging Face Inference API + Gemini fallback
+- Hugging Face Inference API + Gemini fallback (optional local eval model)
 
 ## Project structure
 
@@ -231,13 +236,18 @@ After changing `setup.yaml` or `prompts.yaml`, restart `python main.py` — conf
 
 ## Main data flow
 
-1. Put story `.txt` files in `data/stories/`
+Extracted books in `data/raw_extracted/` are **not** ingest-ready. Clean, split (one story per file), then:
+
+1. Put cleaned story `.txt` files in `data/stories/`
 2. `py scripts/step1_prepare_and_enrich.py`
-3. `py scripts/records_to_ingest_manifest.py`
-4. `py scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe)
-5. Generate via API:
+3. Review `data/story_json/*.json` (author/title, chunks, section tags)
+4. `py scripts/records_to_ingest_manifest.py`
+5. `py scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe)
+6. Generate via API:
    - `POST /create-eval/story_generate` with `query`, optional `mode`, optional `length`
    - or `POST /orchestration/run_step` with `4_generate_story_3step` / `4_generate_story_agentic`
+
+See [`DATA_PREP.md`](./DATA_PREP.md) for the post-extract quality checklist.
 
 ### Chroma maintenance
 
@@ -252,7 +262,7 @@ After changing `setup.yaml` or `prompts.yaml`, restart `python main.py` — conf
 python -m pytest
 ```
 
-Covers: config loading, length-profile resolution, evaluation provider selection, retrieval metrics, agentic loop decisions, prompt contracts, story cleanup, API route contracts.
+Covers: config loading, length-profile resolution, evaluation provider selection (including `Evaluation_mode: "local"`), empty-draft recovery (`tests/test_empty_draft_recovery.py` + agentic failure paths in `tests/test_agentic_loop.py`), retrieval metrics, agentic loop decisions, prompt contracts, story cleanup, API route contracts.
 
 ## Retrieval evaluation
 
@@ -266,18 +276,20 @@ Reports top-1 / top-k accuracy and expected fact coverage.
 
 The pipeline is functional end-to-end. Active tuning areas:
 
-- Long-form reliability when Ollama thinking mode returns an empty body (length guard retries once; prefer `mode: "fast"` + `length: "13min"` if thinking drafts come back empty)
 - Retrieval quality as corpus size grows
 - Reducing repetitive phrasing in generated prose
+- BGE passage-prefix convention deviates slightly from the documented recipe (queries only should carry the instruction prefix); fixing it means re-embedding the corpus
 
-Recent upgrades: BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), unified story-length target (`length` / presets / `Nmin`), shared prompt builders for streaming + non-streaming, section length guardrails, and Chroma maintenance scripts.
+Recent upgrades: BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), unified story-length target (`length` / presets / `Nmin`), shared prompt builders for streaming + non-streaming, section length guardrails, Chroma maintenance scripts, a vLLM generation backend, empty-draft recovery (thinking → fast retry → clear error; length-guard and agentic loop both fall back gracefully), and an optional local evaluation model (`Evaluation_mode: "local"`) that removes the HF/Gemini round-trip from the agentic loop.
 
 ## Related docs
 
+- [`DATA_PREP.md`](./DATA_PREP.md) — after extract: clean, split, review JSON, then ingest
 - [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) — development story and trade-offs
 - [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md) — hardware-focused upgrade plan
 - [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) — production boundaries
-- [`QUICK_DEMO.md`](./QUICK_DEMO.md) — fast reviewer path
+- [`QUICK_DEMO.md`](./QUICK_DEMO.md) — how to use / fast path
+- [`../StoryForge_pattern_audit.md`](../StoryForge_pattern_audit.md) — historical bug audit (read the banner first)
 - Root [`../README.md`](../README.md) — short overview that points here
 
 ## Security

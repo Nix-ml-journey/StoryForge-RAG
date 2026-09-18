@@ -82,7 +82,9 @@ def _rerank_docs(
 def _get_paths_and_names(cfg: dict[str, Any]):
     from pathlib import Path
     base = Path(cfg.get("BASE_PATH") or Path(__file__).resolve().parents[3]).resolve()
-    chroma_dir = (base / (cfg.get("Chroma_path") or "chroma_db")).resolve()
+    # Must match chromadb.py's default, or an omitted Chroma_path silently
+    # points ingest and retrieval at two different directories.
+    chroma_dir = (base / (cfg.get("Chroma_path") or "data/chroma_db")).resolve()
     collection = cfg.get("Chroma_collection_name") or "StoryForgeRag_v1"
     embed_model = cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5"
     return chroma_dir, str(collection), str(embed_model)

@@ -1,162 +1,189 @@
-# Quick Demo
+# How to Use StoryForge-RAG
 
-This guide gives reviewers a fast way to understand and verify StoryForge-RAG without needing a GPU, Gemini key, Hugging Face key, Google Books key, or local Chroma database.
+This guide walks you through the full process in plain language — from setup to generating your first story.
 
-The full pipeline still needs local configuration and model/API access. The quick path below focuses on the parts that can be checked safely on a fresh clone: project structure, data helpers, parsing logic, and documentation.
+---
 
-## 1. Install
+## What does this do?
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
+StoryForge-RAG takes a question or topic (your **query**), searches through a library of stored stories, picks out relevant facts, and writes a brand new **5-section story** grounded in those facts.
+
+It does not make things up. Every named character, place, and event in the output comes directly from your story library.
+
+---
+
+## Before you start — one-time setup
+
+### 1. Start Ollama (the AI that writes the story)
+
+```powershell
+docker compose up -d
+docker exec -it ollama ollama pull qwen3.5:9b
+```
+
+This downloads the writing model (~6 GB, first run only). Wait until it finishes.
+
+### 2. Install Python packages
+
+```powershell
 pip install -r requirements.txt
 ```
 
-On macOS/Linux, activate with:
+### 3. Create your config file
 
-```bash
-source .venv/bin/activate
+```powershell
+copy setup.example.yaml setup.yaml
 ```
 
-## 2. Run The Lightweight Tests
+Open `setup.yaml` and set:
+- `BASE_PATH` → the full path to this project folder
+- `facehugging_api` → your Hugging Face API key (free at huggingface.co)
 
-```bash
-python -m pytest
-```
+### 4. Start the API
 
-These tests use temporary folders and do not touch local runtime data such as `data/stories/`, `data/chroma_db/`, `data/outputs/`, or a private `setup.yaml`.
-
-Current test coverage focuses on:
-
-- Config loading and `setup.example.yaml` fallback (`storyforge.config`)
-- Story-length profile resolution (`tests/test_length_profile.py`)
-- Prompt contracts (including `{length_guidance}` placeholders)
-- Hugging Face-first evaluation provider selection and Gemini fallback
-- Retrieval metric calculations (`storyforge.evaluation.retrieval_eval`)
-- Story-json → ingest manifest workflow
-- Agentic loop decisions, attribution gate, and API route contracts
-
-Run the same lightweight suite locally with `python -m pytest` (see `tests/`). Prefer the project venv if you use one (`.\venv\Scripts\python.exe -m pytest`).
-
-## 3. Review The Architecture
-
-Start with:
-
-- [`../README.md`](../README.md) for a short overview
-- [`README.md`](./README.md) for the current architecture, length targets, and API examples
-- [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) for trade-offs, failures, and lessons learned
-- [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md) for hardware / backend upgrade notes
-- [`PROJECT_UPDATE_ROADMAP.md`](./PROJECT_UPDATE_ROADMAP.md) for a historical hiring-readiness snapshot (not current architecture)
-- [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) for production boundaries and next steps
-
-The main system shape is:
-
-```text
-Stories (.txt) → story_json → ingest manifest
-        |
-        v
-Chroma Vector Store (BGE + hybrid BM25 + rerank)
-        |
-        v
-Step 1 Retrieve → Step 2 Grounded facts (HF) → Step 3 Story (Ollama)
-        |
-        v
-Length guard / agentic evaluate → refine / re-retrieve / accept
-```
-
-Story length is one request field (`length`: preset / `"12min"` / word count). It drives prompt guidance, token budget, and accept gates together. See [`README.md`](./README.md#story-length).
-
-## Demo Mode Status
-
-The current reviewer demo is a lightweight validation path, not a full mocked API mode. It proves the deterministic pieces of the project with tests and documents how to run the real API when local config is available.
-
-What is mocked or lightweight today:
-
-- Evaluation provider selection is tested with mocked Hugging Face/Gemini behavior.
-- Retrieval metrics are tested with mocked retrieval results.
-- Length-profile resolution is pure arithmetic / config parsing (no GPU).
-- Data merge and metadata checks run against temporary folders.
-
-What still requires real local setup:
-
-- End-to-end `/create-eval/story_generate`
-- Chroma-backed retrieval
-- Ollama (or vLLM / Transformers) generation
-- Live HF/Gemini calls
-
-## 4. Optional Full API Run
-
-The API path requires local setup:
-
-1. Copy `setup.example.yaml` to `setup.yaml` for real local runs.
-2. Set `BASE_PATH` to this project folder.
-3. Start Ollama: `docker compose up -d` then `docker exec -it ollama ollama pull qwen3.5:9b`.
-4. Add API keys only for the features you want to run (HF for Step 2 / eval).
-5. Start the API:
-
-```bash
+```powershell
 python main.py
 ```
 
-Open:
+Open your browser at **http://localhost:8000/docs** — you should see the API explorer.
 
-```text
-http://localhost:8000/docs
+---
+
+## Step A — Add stories to the library
+
+Stories must be plain `.txt` files, one story per file, saved in `data/stories/`.
+If you just extracted a PDF/EPUB, clean and split it first — see [`DATA_PREP.md`](./DATA_PREP.md).
+
+Once your files are there, run these three scripts in order:
+
+```powershell
+# 1. Prepare and enrich the stories (adds tags, summaries, chunking)
+py scripts/step1_prepare_and_enrich.py
+
+# 2. Build the ingest list
+py scripts/records_to_ingest_manifest.py
+
+# 3. Load everything into the search database
+py scripts/ingest_manifest.py
 ```
 
-Useful endpoints:
+You only need to do this again when you add or change stories.
 
-| Path | Purpose |
-|------|---------|
-| `POST /create-eval/story_generate` | Generate with `mode` + optional `length` |
-| `POST /orchestration/run_step` | Single pipeline step (incl. generate) |
-| `POST /orchestration/generate_stream` | SSE token stream |
-| `/vector_store/*` | Inspect / query Chroma |
-| `/book-docs` | Book search / download |
-| `/data-docs` | Data merge / summarization |
+> **Starting fresh?** Run `py scripts/reset_and_ingest.py` to wipe and reload everything in one step.
 
-Example generate body:
+---
+
+## Step B — Generate a story
+
+### Option 1: Use the browser (easiest)
+
+Go to **http://localhost:8000/docs**, find `POST /create-eval/story_generate`, click **Try it out**, and paste this:
 
 ```json
 {
-  "query": "A scholar discovers something in an old house that he shouldn't have",
-  "generation_type": "full_story",
-  "save": true,
+  "query": "A soldier returns home to find everything has changed",
   "mode": "fast",
-  "length": "long",
-  "story_type": "mix"
+  "length": "medium",
+  "save": true
 }
 ```
 
-After editing `setup.yaml` or `prompts.yaml`, restart the API — config and prompts are cached.
+Click **Execute**. The story appears in the response.
 
-## What Requires External Resources
+---
 
-- Full story generation requires Ollama (default) or another configured provider, plus enough GPU memory.
-- Book search/download can use Google Books and Archive.org access.
-- Summary creation uses Hugging Face Inference API.
-- Story/summary evaluation tries Hugging Face first, then Gemini fallback if configured.
-- RAG generation expects a populated Chroma database.
-- Real retrieval evaluation expects a populated Chroma database, but the metric logic is covered by lightweight tests.
+### Option 2: Use the terminal
 
-To run retrieval evaluation after ingesting data:
-
-```bash
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+```powershell
+curl -s -X POST http://localhost:8000/create-eval/story_generate `
+  -H "Content-Type: application/json" `
+  -d '{"query": "A soldier returns home to find everything has changed", "mode": "fast", "length": "medium", "save": true}'
 ```
 
-HF-first evaluation is configured with:
+---
 
-- `Evaluation_provider_priority`
-- `HF_evaluation_model`
-- `HF_evaluation_max_new_tokens`
-- `HF_evaluation_temperature`
-- `facehugging_api` or an HF token environment variable
+### Option 3: Stream the story as it writes (word by word)
 
-## What This Demo Proves
+```powershell
+curl -N -X POST http://localhost:8000/orchestration/generate_stream `
+  -H "Content-Type: application/json" `
+  -d '{"query": "A soldier returns home", "mode": "fast", "length": "medium"}'
+```
 
-The lightweight demo proves the repository has runnable tests and that core data/parsing helpers behave predictably without external services.
+Tokens stream in real time as the model writes.
 
-It also verifies that fresh-clone imports can fall back to `setup.example.yaml` through the shared config loader instead of requiring a private local `setup.yaml` immediately.
+---
 
-The full project demonstrates the larger applied AI system: ingestion, retrieval, grounded generation with a selectable length target, orchestration, and evaluation.
+## Choosing story length and style
+
+### Length
+
+| Value | Words | Narration time |
+|-------|-------|----------------|
+| `"short"` | ~450 | ~3 minutes |
+| `"medium"` | ~900 | ~6 minutes |
+| `"long"` | ~1500 | ~11 minutes |
+| `"epic"` | ~2200 | ~16 minutes |
+| `"10min"` | auto | exactly 10 minutes |
+| `"1800"` | 1800 | ~13 minutes |
+
+Leave `length` out and the system picks a default based on `mode`.
+
+### Mode
+
+| Value | What it does |
+|-------|-------------|
+| `"fast"` | Quick generation, good quality |
+| `"thinking"` | Slower, more detailed — better for longer stories |
+
+---
+
+## Story structure
+
+Every generated story has exactly **5 sections**:
+
+```
+[SECTION 1] Who, Where, When — The Setup
+[SECTION 2] The Inciting Incident
+[SECTION 3] Rising Action
+[SECTION 4] Climax / Confrontation
+[SECTION 5] Resolution / Outcome
+```
+
+The system checks that all 5 sections are present and that the story is long enough. If not, it automatically tries to improve the draft before returning it to you.
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Story comes back empty | Rare now — thinking mode retries once with fast sampling; length-guard / agentic loop keep the best draft they have. If it still fails, use `"mode": "fast"` |
+| "No documents found" | Run the ingest scripts (Step A) first. If you just extracted a book, clean it first ([`DATA_PREP.md`](./DATA_PREP.md)) |
+| API not responding | Check that `python main.py` is still running |
+| Ollama errors | Run `docker compose up -d` to restart Ollama |
+| HF rate limits on evaluation | Set `Evaluation_mode: "local"` in `setup.yaml` (CPU by default) |
+
+---
+
+## Quick reference — all story endpoints
+
+| Endpoint | What it does |
+|----------|-------------|
+| `POST /create-eval/story_generate` | Generate + evaluate (recommended) |
+| `POST /orchestration/run_step` + `4_generate_story_3step` | Single-pass, no evaluation |
+| `POST /orchestration/run_step` + `4_generate_story_agentic` | With refine/retry loop |
+| `POST /orchestration/generate_stream` | Stream tokens as they generate |
+
+---
+
+## After changing config or prompts
+
+Restart the API after any edits to `setup.yaml` or `prompts.yaml`:
+
+```powershell
+# Stop with Ctrl+C, then:
+python main.py
+```
+
+Config and prompts are cached on startup.

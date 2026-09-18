@@ -2,6 +2,8 @@
 
 Optional CLI helpers. Run from the **repo root** unless noted.
 
+After extract, clean and split text **before** these scripts. See [`docs/DATA_PREP.md`](../docs/DATA_PREP.md).
+
 ## Story pipeline (Step 1 → ingest)
 
 | Script | Purpose |
@@ -13,10 +15,11 @@ Optional CLI helpers. Run from the **repo root** unless noted.
 | `ingest_manifest.py` | Upsert manifest into Chroma (explicit BGE embeddings) |
 | `reset_and_ingest.py` | Wipe Chroma + re-ingest from `data/stories/` |
 
-Typical full ingest:
+Typical full ingest (only after `data/stories/*.txt` is cleaned):
 
 ```powershell
 py scripts/step1_prepare_and_enrich.py
+# then open data/story_json/*.json and fill author/title; drop bad chunks
 py scripts/records_to_ingest_manifest.py
 py scripts/ingest_manifest.py
 ```
@@ -73,5 +76,6 @@ py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example
 ## Docs
 
 - Overview + length targets: [`../docs/README.md`](../docs/README.md)
+- After extract / data prep: [`../docs/DATA_PREP.md`](../docs/DATA_PREP.md)
 - Project journey: [`../docs/PROJECT_JOURNEY.md`](../docs/PROJECT_JOURNEY.md)
 - Upgrade roadmap: [`../docs/UPGRADE_ROADMAP_5060Ti.md`](../docs/UPGRADE_ROADMAP_5060Ti.md)
