@@ -48,8 +48,13 @@ py scripts/push_section_metadata.py --glob "Jekyll_and_Hyde__*"
 | `retrieval_eval.py` | Measure retrieval top-k accuracy against fixture cases |
 | `test_generation.py` | HTTP smoke tests (server must be running) |
 | `debug_hf_grounded_facts_mode.py` | Probe Step 2 HF JSON mode vs fallback |
+| `measure_generation_length.py` | Batch-run agentic generation, log requested vs. actual word count and accept rate (no server needed -- calls the orchestrator directly) |
 
 When smoke-testing generation, pass `length` if you want a specific target (presets / `"12min"` / word count). Defaults follow mode (`fast` → short, `thinking` → long). See `docs/README.md`.
+
+```powershell
+py scripts/measure_generation_length.py --mode fast --length long
+```
 
 ## Text prep
 
@@ -71,6 +76,9 @@ py scripts/debug_hf_grounded_facts_mode.py
 
 # Retrieval quality report
 py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+
+# Phase 2: agentic length / accept-rate measurement (no HTTP server; needs Ollama + Chroma)
+py scripts/measure_generation_length.py --mode fast --length long
 ```
 
 ## Docs

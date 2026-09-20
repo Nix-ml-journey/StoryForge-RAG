@@ -189,6 +189,9 @@ py scripts/ingest_manifest.py
 # Or wipe and re-ingest from data/stories/
 py scripts/reset_and_ingest.py
 
+# Phase 2 measurement: agentic length / accept rate (needs Ollama + ingested Chroma; no HTTP server)
+py scripts/measure_generation_length.py --mode fast --length long
+
 # After editing chunk text in story_json (re-embed only, keep metadata)
 py scripts/refresh_chunk_embeddings.py --glob "Lovecraft__*"
 

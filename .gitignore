@@ -90,6 +90,7 @@ save_book/
 # --- Local evaluation artifacts ---
 Evaluation/retrieval_eval_report.json
 Evaluation/retrieval_eval_cases.json
+Evaluation/generation_eval_report.json
 tests/fixtures/retrieval_eval_cases.json
 
 # --- Portfolio (local only; lives in ../StoryForge-portfolio/) ---

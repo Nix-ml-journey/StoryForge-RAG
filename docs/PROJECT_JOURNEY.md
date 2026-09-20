@@ -394,12 +394,16 @@ round-trip (extraction already uses one) from every agentic-loop iteration when 
    The 2 "A" misses are a genuine embedding/corpus collision, not a pool-size artifact: both are confused with the *same* book, `Lovecraft__Herbert_West-Reanimator` -- a story about reanimating corpses that BGE-base apparently embeds closer to "assembles a creature from dead body parts" / "grave robbers supply corpses" than the actual target passages are. The over-fetch pool (k≈40) already includes far more than 3 titles' worth of candidates; a bigger k is unlikely to be the lever, and the fix that would plausibly help -- entity-biased query reformulation, or corpus/chunking changes so Frankenstein's and Body_Snatcher's most distinctive passages surface more often -- is not a one-line change. Stopping Phase 1 retrieval tuning here per the standing instruction to prefer stopping over a change that isn't clearly scoped.
 
    **Phase 2 plan (write-up only; not started):**
-   1. Measure long-form accept rate: run `mode="fast"` + `length="long"`/`"13min"`, log requested vs. actual word count and the agentic loop's ACCEPT/REFINE/RE_RETRIEVE outcome per iteration, across a handful of prompts.
+   1. ~~Measure long-form accept rate~~ — tooling done (2026-09): neither `/create-eval/story_generate` (always the non-agentic 3-step path) nor `/orchestration/run_step`/`run_pipeline` (agentic, but only logs iterations server-side and returns a thin `{success, steps_done}` response) exposes the agentic loop's per-iteration data over HTTP. `scripts/measure_generation_length.py` calls `Orchestrator.generate_story_agentic()` directly instead, so it gets the full iteration history. Run on your machine (needs Ollama running, an ingested Chroma collection, and a reachable HF token if `Evaluation_mode: "api"`):
+      ```
+      py scripts/measure_generation_length.py --mode fast --length long
+      ```
+      Optionally also run `--mode thinking --length long` to exercise the empty-draft recovery path. Logs requested length target, actual word count, whether it was under `LengthProfile.min_words`, ACCEPT/REFINE/RE_RETRIEVE per iteration, and faithfulness; writes a summary (accept rate, under-min-words rate, avg iterations) to `Evaluation/generation_eval_report.json` (gitignored). Paste those numbers back before any further Phase 2 code change — no facts/token or streaming change should be made without them.
    2. If facts are thin for long targets (padding/repetition symptom), try raising `HF_grounded_facts_max_new_tokens` and/or the chunk count Step 2 draws from, and re-measure the same way -- one change, before/after.
    3. Streaming parity: after SSE finishes, optionally run the attribution gate as a post-process step (streaming still skips it by design); note this explicitly still requires the length-refine pass to stay non-streaming.
    4. Do not move to a bigger model (14b) until 1-2 above have real before/after numbers -- per the standing hard constraint.
 6. More ingest diversity and chunk-quality checks (retrieval is still the ceiling) — see [`DATA_PREP.md`](./DATA_PREP.md).
-7. Tune long-form (`length: "long"` / `"13min"`) until Level B accepts consistently under agentic loop — see the Phase 2 plan above.
+7. Tune long-form (`length: "long"` / `"13min"`) until Level B accepts consistently under agentic loop — see the Phase 2 plan above (measurement tooling: `scripts/measure_generation_length.py`).
 8. Optional epic / Level C only after stable wall-clock and non-empty generation under Ollama.
 9. Optionally post-process streamed stories with the attribution gate (streaming still skips it by design today).
 
