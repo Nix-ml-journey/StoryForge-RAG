@@ -276,11 +276,11 @@ Reports top-1 / top-k accuracy and expected fact coverage.
 
 The pipeline is functional end-to-end. Active tuning areas:
 
-- Retrieval quality as corpus size grows
+- Retrieval quality as corpus size grows -- Phase 1 tuning stopped (2026-09) at top1=0.80 / top3=0.90 / fact_coverage=0.77; remaining misses need query reformulation or corpus/chunking work, not another knob (see docs/PROJECT_JOURNEY.md "What I am doing next" for the case-by-case breakdown and why `Hybrid_bm25_weight` is currently a no-op with reranking on)
 - Reducing repetitive phrasing in generated prose
-- BGE passage-prefix convention deviates slightly from the documented recipe (queries only should carry the instruction prefix); fixing it means re-embedding the corpus
+- Retrieval eval fixture (`tests/fixtures/retrieval_eval_cases.example.json`) now has 30 realistic cases incl. "wrong book" traps; `scripts/retrieval_eval.py` was fixed (2026-09) to route through the real hybrid+rerank `retrieve_docs()` pipeline instead of a bare dense-only Chroma query it was silently using before -- use it before/after any retrieval tuning
 
-Recent upgrades: BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), unified story-length target (`length` / presets / `Nmin`), shared prompt builders for streaming + non-streaming, section length guardrails, Chroma maintenance scripts, a vLLM generation backend, empty-draft recovery (thinking → fast retry → clear error; length-guard and agentic loop both fall back gracefully), and an optional local evaluation model (`Evaluation_mode: "local"`) that removes the HF/Gemini round-trip from the agentic loop.
+Recent upgrades: reranked before diversity selection in `retrieve_docs()` instead of after (2026-09; the cross-encoder now scores the full hybrid-fused pool before diversity narrows it to a few titles, not the other way around -- see docs/PROJECT_JOURNEY.md for the retrieval_eval cases this targets and the exact re-measure command), fixed the BGE passage-prefix convention (ingest no longer prefixes passages -- only queries carry the instruction prefix, per BGE's documented recipe; **re-ingest required**, see docs/DATA_PREP.md), BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), unified story-length target (`length` / presets / `Nmin`), shared prompt builders for streaming + non-streaming, section length guardrails, Chroma maintenance scripts, a vLLM generation backend, empty-draft recovery (thinking → fast retry → clear error; length-guard and agentic loop both fall back gracefully), and an optional local evaluation model (`Evaluation_mode: "local"`) that removes the HF/Gemini round-trip from the agentic loop.
 
 ## Related docs
 

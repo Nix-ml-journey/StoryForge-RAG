@@ -190,6 +190,28 @@ def write_report(report: dict[str, Any], output_path: str | Path) -> Path:
     return path
 
 
+def make_retrieve_docs_query_fn(cfg: dict[str, Any]) -> Callable[[str, int], list[dict[str, Any]]]:
+    """Build a query_fn that routes through the real Step 1 pipeline
+    (storyforge.rag.retrieval.retrieve_docs): hybrid BM25+dense fusion,
+    diverse-title selection, and cross-encoder reranking, per
+    Hybrid_search_enabled / Reranker_enabled / Story_generation_* in ``cfg``.
+
+    Previously this harness queried Orchestrator.query_vector_store(), which
+    goes through storyforge.vector_store.chromadb.query_data() -- a bare
+    Chroma dense-vector query with none of the above. That path is not what
+    story generation actually uses, so the harness was scoring a retrieval
+    mode the app never serves, and Hybrid_bm25_weight / reranker tuning had
+    no effect on its numbers at all.
+    """
+    from storyforge.rag.retrieval import _docs_to_chunks, retrieve_docs
+
+    def query_fn(query: str, k: int) -> list[dict[str, Any]]:
+        docs = retrieve_docs(query, cfg)
+        return _docs_to_chunks(docs)
+
+    return query_fn
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run a lightweight retrieval evaluation against the configured vector store."
@@ -207,15 +229,13 @@ def main() -> int:
     parser.add_argument("--k", type=int, default=3, help="Top-k retrieval cutoff.")
     args = parser.parse_args()
 
-    from storyforge.orchestrator.orchestrator import Orchestrator
+    from storyforge.config.config import load_config
 
-    orchestrator = Orchestrator()
+    cfg = load_config()
     cases = load_cases(args.cases)
-    report = evaluate_retrieval(
-        cases,
-        lambda query, k: orchestrator.query_vector_store(query=query, n_results=k),
-        k=args.k,
-    )
+    query_fn = make_retrieve_docs_query_fn(cfg)
+
+    report = evaluate_retrieval(cases, query_fn, k=args.k)
     output = write_report(report, args.output)
     print(f"Wrote retrieval evaluation report to {output}")
     print(json.dumps(report["summary"], indent=2))

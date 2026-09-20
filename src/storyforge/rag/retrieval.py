@@ -15,6 +15,8 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 
+from storyforge.vector_store.embeddings import QUERY_PREFIX
+
 LOG = logging.getLogger(__name__)
 
 _RERANKER_CACHE: dict = {}    # (model_id, device) -> CrossEncoder
@@ -103,12 +105,12 @@ def _build_vectorstore(cfg: dict[str, Any]) -> Chroma:
     model_kwargs: dict = {"device": device}
 
     if is_bge:
-        _BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
         class _BGEEmbeddings(HuggingFaceEmbeddings):
             def embed_query(self, text: str) -> list[float]:
-                """Prepend BGE query prefix before encoding so retrieval scores match ingest."""
-                return super().embed_query(_BGE_QUERY_PREFIX + text)
+                """Prepend BGE query prefix before encoding (shared with embed_query()
+                in storyforge.vector_store.embeddings -- passages get no prefix)."""
+                return super().embed_query(QUERY_PREFIX + text)
 
         embeddings: HuggingFaceEmbeddings = _BGEEmbeddings(
             model_name=embed_model,
@@ -289,6 +291,34 @@ def retrieve_docs(
         bm25_ranked = _bm25_rank_docs(query, docs)
         docs = _rrf_fuse(docs, bm25_ranked, bm25_weight=bm25_weight)
         LOG.debug("Hybrid BM25+dense fusion applied (bm25_weight=%.2f)", bm25_weight)
+        # NOTE: fusion only reorders this same candidate set (BM25 reranks the
+        # already dense-retrieved pool; it can't add corpus chunks dense missed),
+        # and when Reranker_enabled is true (the default) the block below rescores
+        # every candidate from scratch and sorts purely on that score -- so
+        # Hybrid_bm25_weight does not affect the final top-1/top-k order in the
+        # default config. It only matters with reranking disabled, where diversity
+        # selection below reads this fused order directly. See setup.example.yaml.
+
+    # Rerank BEFORE diversity selection (not after). Diversity used to run on the
+    # raw dense/BM25-fused order and pick whichever 3 titles happened to lead that
+    # order, discarding everything else -- so a correct title ranked outside those
+    # first 3 by dense/BM25 alone never reached the reranker at all, and one that
+    # did survive was reranked only against the other titles diversity happened to
+    # keep, not the full candidate pool. Reranking the full fused pool first lets
+    # the (more accurate) cross-encoder score decide what's actually relevant, and
+    # diversity then picks its titles from that better-ordered list. See
+    # docs/PROJECT_JOURNEY.md for the retrieval_eval cases this targets.
+    if use_reranker is None:
+        reranker_on = str(cfg.get("Reranker_enabled") or "").strip().lower() not in ("false", "0", "no", "")
+    else:
+        reranker_on = bool(use_reranker)
+    if reranker_on and docs:
+        reranker_model_id = str(cfg.get("Reranker_model") or "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        top_n = int(cfg.get("Story_generation_rerank_top_n") or target_chunks)
+        reranker_device = str(cfg.get("Reranker_device") or _DEFAULT_DEVICE)
+        docs = _rerank_docs(
+            query, docs, reranker_model_id=reranker_model_id, top_n=top_n, device=reranker_device
+        )
 
     docs = _select_diverse_stories(
         docs,
@@ -296,18 +326,6 @@ def retrieve_docs(
         chunks_per_story=chunks_per_story,
         target=target_chunks,
     )
-
-    if use_reranker is None:
-        reranker_on = str(cfg.get("Reranker_enabled") or "").strip().lower() not in ("false", "0", "no", "")
-    else:
-        reranker_on = bool(use_reranker)
-    if reranker_on:
-        reranker_model_id = str(cfg.get("Reranker_model") or "cross-encoder/ms-marco-MiniLM-L-6-v2")
-        top_n = int(cfg.get("Story_generation_rerank_top_n") or target_chunks)
-        reranker_device = str(cfg.get("Reranker_device") or _DEFAULT_DEVICE)
-        docs = _rerank_docs(
-            query, docs, reranker_model_id=reranker_model_id, top_n=top_n, device=reranker_device
-        )
 
     LOG.debug(
         "Retrieval: pool k=%d -> %d chunks (target=%d, rerank=%s)",

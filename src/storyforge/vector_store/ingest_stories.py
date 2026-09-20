@@ -40,13 +40,22 @@ def _get_embed_model(model_name: str):
 
 
 def _embed_chunks(model, texts: list[str], *, is_bge: bool = False) -> list[list[float]] | None:
-    """Embed a list of texts. Returns None when the model is unavailable."""
+    """Embed a list of texts. Returns None when the model is unavailable.
+
+    ``is_bge`` is accepted for call-site compatibility but no longer changes
+    encoding: BGE's documented recipe (BAAI/bge-base-en-v1.5) only prefixes
+    the *query* side ("Represent this sentence for searching relevant
+    passages: ", applied at search time -- see
+    storyforge.vector_store.embeddings.QUERY_PREFIX). Passages/documents are
+    embedded with no instruction prefix. This function previously also
+    prefixed passages with "Represent this passage for retrieval: ", which
+    deviated from that recipe -- fixed here. Any collection ingested before
+    this fix has vectors baked with the old (wrong) prefix and must be
+    re-ingested; see docs/DATA_PREP.md.
+    """
     if model is None:
         return None
     try:
-        # BGE: passage prefix on ingest (query prefix is applied only at search time).
-        if is_bge:
-            texts = ["Represent this passage for retrieval: " + t for t in texts]
         vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return [v.tolist() for v in vecs]
     except Exception as e:

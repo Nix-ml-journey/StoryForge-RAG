@@ -56,7 +56,7 @@ The comparison table below has the specifics; this section is the "so what."
 | Open-ended “write a story” with no length contract | One `length` target (`short` / `"13min"` / `1800`) drives **prompt, token budget, and accept gate** together |
 | Hallucinated names and places are common | Generation forbids new named entities; an **attribution check** logs (or truncates) names not in the facts |
 | One retrieve-then-generate pass | Optional **agentic loop:** ACCEPT / REFINE (finish a grounded draft) / RE_RETRIEVE (only when faithfulness is thin) |
-| Dense search only | **Hybrid BM25 + dense (RRF)** + cross-encoder rerank + diverse titles so one book does not dominate |
+| Dense search only | **Hybrid BM25 + dense (RRF)** → cross-encoder **rerank** → diverse titles (rerank runs on the full pool before diversity) |
 | Cloud LLM for everything, or one huge local model | **Split stack:** embeddings/rerank local, facts on HF API (no VRAM fight), story on **Ollama in Docker** (vLLM / Transformers optional) |
 | Chroma’s default embedder silently mismatches ingest | Ingest **embeds with BGE explicitly** so query and corpus stay on the same 768-dim model |
 | Demo quality sold as production-ready | Honest **quality tiers** (short is reliable; long-form is still being tuned) and production boundaries in [`docs/PRODUCTION_NOTES.md`](docs/PRODUCTION_NOTES.md) |
@@ -168,7 +168,15 @@ When `Agentic_loop_enabled: true`, step 4 uses evaluate → refine / re-retrieve
 
 ## Ingest and Chroma maintenance
 
-Manifest ingest now computes **BGE embeddings explicitly** so Chroma does not fall back to a mismatched default embedder.
+Manifest ingest computes **BGE embeddings explicitly** so Chroma does not fall back to a mismatched default embedder. BGE uses a **query-only** instruction prefix (`QUERY_PREFIX` in `vector_store/embeddings.py`); passages are embedded with no prefix. After any embedding-convention change, wipe and re-ingest — see [`docs/DATA_PREP.md`](docs/DATA_PREP.md).
+
+Step 1 retrieval is **hybrid BM25 + dense (RRF) → cross-encoder rerank → title diversity**. Measure it with the real pipeline (not bare Chroma):
+
+```powershell
+py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+```
+
+Phase 1 retrieval tuning (2026-09) stopped at about **top1 0.80 / top3 0.90 / fact_coverage 0.77** on that harness. Details: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md).
 
 Extracted text in `data/raw_extracted/` is scratch. Clean and split it into `data/stories/` first — [`docs/DATA_PREP.md`](docs/DATA_PREP.md).
 

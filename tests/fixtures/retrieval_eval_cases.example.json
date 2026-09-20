@@ -1,0 +1,155 @@
+{
+  "_comment": "Retrieval evaluation cases for scripts/retrieval_eval.py. Queries are phrased the way a user/orchestrator would ask for grounding material -- not verbatim quotes -- so they exercise semantic retrieval rather than lexical matching. expected_title matches the Chroma 'Title' metadata (the story's filename stem in data/stories/). expected_facts are short substrings verified present in the source text (case-insensitive) used for the fact_coverage metric. Several cases are deliberate 'wrong book' traps: they share a theme, monster, or place with another title in the corpus (case 21 vs The_Hound_of_the_Baskervilles, case 30 vs Yamanoth, case 10 vs case 9) so a retriever that keys on surface words instead of the right passage will misfire.",
+  "cases": [
+    {
+      "query": "a man wakes up one morning transformed into a giant insect",
+      "expected_title": "Kafka__The_Metamorphosis",
+      "expected_facts": ["Gregor Samsa", "vermin"]
+    },
+    {
+      "query": "Sherlock Holmes investigates a legend of a spectral hound haunting the moor",
+      "expected_title": "The_Hound_of_the_Baskervilles",
+      "expected_facts": ["Sherlock Holmes", "Penang lawyer"]
+    },
+    {
+      "query": "an inventor demonstrates a machine that can travel forward and backward through time",
+      "expected_title": "The_Time_Machine",
+      "expected_facts": ["Time Traveller"]
+    },
+    {
+      "query": "Martian invaders land on Earth and lay waste to England with heat rays",
+      "expected_title": "War_of_the_Worlds",
+      "expected_facts": ["Martians"]
+    },
+    {
+      "query": "a young Swiss scientist assembles a living creature from dead body parts",
+      "expected_title": "Frankenstein",
+      "expected_facts": ["Genevese"]
+    },
+    {
+      "query": "a lawyer investigates his old friend's connection to a violent alter ego",
+      "expected_title": "Jekyll_and_Hyde__The_Strange_Case_of_Dr_Jekyll_and_Mr_Hyde",
+      "expected_facts": ["Utterson"]
+    },
+    {
+      "query": "a doctor sends his patient to recover in the countryside where he falls for a strange young woman",
+      "expected_title": "Jekyll_and_Hyde__Olalla",
+      "expected_facts": ["Padre"]
+    },
+    {
+      "query": "grave robbers supply fresh corpses to an anatomy school in a small town",
+      "expected_title": "Jekyll_and_Hyde__The_Body_Snatcher",
+      "expected_facts": ["Fettes", "Debenham"]
+    },
+    {
+      "query": "a cult worships a monstrous god sleeping beneath the sea, pieced together from a dead man's papers",
+      "expected_title": "Lovecraft__The_Call_of_Cthulhu",
+      "expected_facts": ["Francis Wayland Thurston"]
+    },
+    {
+      "query": "federal agents raid a decaying New England fishing town and burn the old waterfront houses",
+      "expected_title": "Lovecraft__The_Shadow_Over_Innsmouth",
+      "expected_facts": ["Innsmouth", "1927-28"]
+    },
+    {
+      "query": "a farmhouse in Vermont is besieged by whispering alien creatures from another planet",
+      "expected_title": "Lovecraft__The_Whisperer_in_Darkness",
+      "expected_facts": ["Henry Akeley", "Vermont"]
+    },
+    {
+      "query": "a morphine addict throws himself from a window after seeing a monstrous creature rise from the sea",
+      "expected_title": "Lovecraft__Dagon",
+      "expected_facts": ["morphine"]
+    },
+    {
+      "query": "a glowing meteorite crashes on a farm and slowly poisons the land and the family living there",
+      "expected_title": "Lovecraft__The_Colour_Out_of_Space",
+      "expected_facts": ["Arkham"]
+    },
+    {
+      "query": "a medical student experiments with bringing corpses back to life at his university",
+      "expected_title": "Lovecraft__Herbert_West-Reanimator",
+      "expected_facts": ["Miskatonic University"]
+    },
+    {
+      "query": "a man restores his ancestral priory and discovers a horrifying secret moving in its walls",
+      "expected_title": "Lovecraft__The_Rats_in_the_Walls",
+      "expected_facts": ["Exham Priory"]
+    },
+    {
+      "query": "a man explains why he must keep his room artificially refrigerated at all times",
+      "expected_title": "Lovecraft__Cool_Air",
+      "expected_facts": ["Muñoz"]
+    },
+    {
+      "query": "a teenage immigrant arrives by ship in New York harbor and sees the Statue of Liberty",
+      "expected_title": "Kafka__The_Stoker__A_Fragment",
+      "expected_facts": ["Karl Rossmann", "Statue of Liberty"]
+    },
+    {
+      "query": "a professional faster is displayed in a cage as a spectacle for a dwindling audience",
+      "expected_title": "Kafka__A_Hunger_Artist",
+      "expected_facts": ["hunger artist"]
+    },
+    {
+      "query": "an officer proudly demonstrates a torture apparatus that carves a sentence into a condemned man",
+      "expected_title": "Kafka__In_the_Penal_Colony",
+      "expected_facts": ["apparatus"]
+    },
+    {
+      "query": "a man from the country waits his whole life for permission to pass through a guarded door",
+      "expected_title": "Kafka__Before_the_Law",
+      "expected_facts": ["doorkeeper"]
+    },
+    {
+      "query": "two grave-robbing friends are stalked by something after stealing an amulet from a corpse",
+      "expected_title": "Lovecraft__The_Hound",
+      "expected_facts": ["St. John"]
+    },
+    {
+      "query": "a formless crawling chaos figure appears amid a season of political unrest and dread",
+      "expected_title": "Lovecraft__Nyarlathotep",
+      "expected_facts": ["crawling chaos"]
+    },
+    {
+      "query": "a prisoner insists to his interrogators that he remembers everything about a catacombs expedition",
+      "expected_title": "Lovecraft__The_Statement_of_Randolph_Carter",
+      "expected_facts": ["Randolph Carter"]
+    },
+    {
+      "query": "a man is struck down near an old church after gazing into a strange shining stone",
+      "expected_title": "Lovecraft__The_Haunter_of_the_Dark",
+      "expected_facts": ["Robert Blake"]
+    },
+    {
+      "query": "an unhappy outsider raised alone in a vast dismal castle longs for the world beyond",
+      "expected_title": "Lovecraft__The_Outsider",
+      "expected_facts": ["Baron"]
+    },
+    {
+      "query": "an orphaned huntress from the Ebony Jungle is raised by trolls after a panther kills her parents",
+      "expected_title": "Zelea",
+      "expected_facts": ["Ebony Jungle", "Shadowfang Panther"]
+    },
+    {
+      "query": "a merchant's son falls into a chasm outside a trade city and wakes inside an ancient tomb",
+      "expected_title": "Blaze",
+      "expected_facts": ["Bartholomew", "Xandor"]
+    },
+    {
+      "query": "a goblin explosives maker builds a reputation supplying a bustling trade city's markets",
+      "expected_title": "Cirilo",
+      "expected_facts": ["Irongard", "goblin"]
+    },
+    {
+      "query": "the god of chaos and disorder rules his spiraling citadel from the depths of a chaotic realm",
+      "expected_title": "Yamanoth",
+      "expected_facts": ["Pandemonium", "Chaos Spire"]
+    },
+    {
+      "query": "death knights who serve a god of chaos raid villages and burn farms without mercy",
+      "expected_title": "Talia",
+      "expected_facts": ["Death Knights", "Yamanoth"]
+    }
+  ]
+}

@@ -131,7 +131,15 @@ Embedding_device: "cpu"
 # --- Hybrid search (BM25 + dense, fused via RRF) ---
 # false = pure dense vector (original behaviour)
 Hybrid_search_enabled: true
-Hybrid_bm25_weight: 0.3      # 0.0–1.0; 0.3 gives BM25 30 % and dense 70 %
+# 0.0-1.0; 0.3 gives BM25 30% and dense 70% -- but only when Reranker_enabled is
+# false. With reranking on (the default), retrieve_docs() reranks the *entire*
+# fused candidate pool with the cross-encoder before diversity selection, and
+# that rerank re-scores every candidate from scratch, so the final top-1/top-k
+# order does not depend on the fusion order this weight controls. Confirmed via
+# the retrieval_eval A/B (2026-09): this weight is currently a no-op on final
+# results whenever Reranker_enabled is true. It still matters if you disable
+# reranking, since diversity then reads directly off this fused order.
+Hybrid_bm25_weight: 0.3
 
 # --- Agentic loop ---
 Agentic_loop_enabled: true

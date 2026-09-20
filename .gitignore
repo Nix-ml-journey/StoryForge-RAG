@@ -64,6 +64,7 @@ Data/ingest/**/*.jsonl
 # --- Runtime / derived data ---
 data/outputs/
 data/chroma_db/
+data/chroma_db_test_probe/
 data/raw_extracted/
 chroma_db/
 Raw_Extracted/
@@ -113,13 +114,13 @@ STORY_FORMAT_GUIDE.md
 *_FIXED_EXAMPLE.py
 
 # --- Legacy duplicate packages (removed from repo; ignore if present locally) ---
-legacy/
-API/
-Orchestrator/
-Vector_Store/
-Generative_AI/
-Book_search/
-Evaluation/
+/legacy/
+/API/
+/Orchestrator/
+/Vector_Store/
+/Generative_AI/
+/Book_search/
+/Evaluation/
 
 # --- Accidental / scratch ---
 str

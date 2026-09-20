@@ -134,11 +134,11 @@ On consumer 16 GB VRAM with Ollama, the ceiling is less about OOM and more about
 
 ## Key technical decisions
 
-- **Embeddings:** `BGE-base-en-v1.5` with query prefix at search time; passage prefix at ingest (must re-ingest after model change).
+- **Embeddings:** `BGE-base-en-v1.5`; only the query gets the BGE instruction prefix at search time (per BGE's documented recipe) -- passages are embedded with no prefix. Must re-ingest after a model change, and required a one-time re-ingest (2026-09) after fixing ingest to stop wrongly prefixing passages too.
 - **Generation:** Ollama `qwen3.5:9b` by default (warm model outside the Python process); Transformers / vLLM still supported via `Generation_provider`.
 - **Facts extraction:** HF API (`Qwen/Qwen3-8B`) so Step 2 does not compete with Step 3 for VRAM; local Ollama fallback when HF returns 502 / rate limits.
 - **Length:** One derived profile beats three hand-tuned knobs. Presets live in `Story_length_presets`; requests override with `length`.
-- **Config:** Secrets in `setup.yaml` (gitignored); template in `setup.example.yaml`. Config and prompts are cached — restart the API after edits.
+- **Config:** Secrets in `setup.yaml` (gitignored); template in `setup.example.yaml`. Config and prompts are cached — restart the API after edits. Fixed (2026-09) a `.gitignore` bug where the legacy `Vector_Store/` (and `API/`, `Orchestrator/`, `Evaluation/`, `Book_search/`) ignore patterns, combined with this checkout's case-insensitive git config, silently matched the real `src/storyforge/vector_store/` package too -- `embeddings.py` had never been committed as a result. Patterns are now anchored to the repo root (`/Vector_Store/`, etc.) so they only match the removed legacy top-level dirs.
 - **Tests:** Pure decision tests for agentic loop + length profile; lightweight pytest without GPU.
 
 ---
@@ -349,12 +349,59 @@ round-trip (extraction already uses one) from every agentic-loop iteration when 
 
 ## What I am doing next
 
-1. Fix the BGE passage-prefix convention (currently prefixed like a query at ingest; the documented recipe only prefixes queries) and re-embed the corpus.
-2. More ingest diversity and chunk-quality checks (retrieval is still the ceiling) — see [`DATA_PREP.md`](./DATA_PREP.md).
-3. Tune long-form (`length: "long"` / `"13min"`) until Level B accepts consistently under agentic loop.
-4. Stronger retrieval eval harness (precision@k on fixed query set).
-5. Optional epic / Level C only after stable wall-clock and non-empty generation under Ollama.
-6. Optionally post-process streamed stories with the attribution gate (streaming still skips it by design today).
+1. ~~Fix the BGE passage-prefix convention~~ — done (2026-09): ingest no longer prefixes passages, only queries do. Re-ingested (72 files, 2138 chunks).
+2. ~~Stronger retrieval eval harness~~ — `tests/fixtures/retrieval_eval_cases.example.json` now has 30 realistic cases (distinctive names, plot beats, wrong-book traps) covering the full corpus; `scripts/retrieval_eval.py` reports top-1/top-k/fact_coverage.
+3. ~~Wire the eval harness to the real retrieval pipeline~~ — done (2026-09): post re-ingest baseline was top1=0.80, top3=0.83, fact_coverage=0.67, but the harness was calling `Orchestrator.query_vector_store()` → `chromadb.query_data()`, a bare dense-only Chroma query -- not `storyforge.rag.retrieval.retrieve_docs()`, the actual Step 1 pipeline with hybrid BM25 fusion, diverse-title selection, and cross-encoder reranking. `Hybrid_bm25_weight` / rerank-order tuning was therefore invisible to this metric no matter what you set it to. `scripts/retrieval_eval.py` now calls `retrieve_docs()` via `make_retrieve_docs_query_fn()`. Re-run the baseline command below to get true numbers before tuning either knob:
+   ```
+   py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+   ```
+4. ~~Rerank-before-diversity~~ — done (2026-09). True-pipeline baseline (72 files / 2138 chunks) was top1=0.80, top3=0.87, fact_coverage=0.77 (`Evaluation/retrieval_eval_report.json`). Of the 6 top1 misses, 4 had the expected title *in the pool but ranked low* (Jekyll_and_Hyde__Olalla rank 7, Jekyll_and_Hyde__The_Body_Snatcher rank 6, Lovecraft__Cool_Air rank 3, Lovecraft__The_Haunter_of_the_Dark rank 2) and 2 weren't in the pool at all (Frankenstein, Lovecraft__The_Statement_of_Randolph_Carter, both `expected_rank: null`).
+
+   **Hypothesis:** `retrieve_docs()` ran `_select_diverse_stories()` *before* `_rerank_docs()`. Diversity picked its up-to-3 titles from the raw dense+BM25-fused order and discarded everything else, so (a) a title outside those first 3 never reached the reranker at all (explains the two `null`-rank misses) and (b) a title that did survive was only reranked against the few other titles diversity happened to keep, not the full ~40-candidate pool (explains the 4 low-rank misses). Reordering to rerank the full fused pool first, then run diversity selection on that better-ordered list, should let the cross-encoder's relevance judgment -- not raw dense/BM25 order -- decide which titles diversity keeps.
+
+   **Change:** swapped the two blocks in `retrieve_docs()` (`src/storyforge/rag/retrieval.py`) -- rerank now runs on the full hybrid-fused pool, diversity selection runs on the reranked output. No config values changed; `Hybrid_bm25_weight` and `Story_generation_rerank_top_n` untouched. Regression tests in `tests/test_retrieval.py` assert the call order and that rerank sees the full pool (they fail against the old order).
+
+   **Re-measure:**
+   ```
+   py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+   ```
+
+   **A/B result (2026-09):**
+
+   | | top1 | top3 | fact_coverage |
+   |---|---|---|---|
+   | Before (rerank after diversity) | 0.80 | 0.87 | 0.77 |
+   | After (rerank before diversity) | 0.80 | **0.90** | 0.77 |
+
+   top3 improved, top1 and fact_coverage held steady, nothing regressed. **Kept.**
+
+5. **Phase 1 retrieval tuning: stopped here (2026-09).** Re-ran the eval after the A/B; 6 of 30 cases still miss top1. Classified against the true baseline's remaining report:
+
+   | query (abridged) | expected_title | expected_rank | class |
+   |---|---|---|---|
+   | Swiss scientist assembles a creature from dead body parts | Frankenstein | null | A -- never retrieved |
+   | grave robbers supply corpses to an anatomy school | Jekyll_and_Hyde__The_Body_Snatcher | null | A -- never retrieved |
+   | doctor sends patient to the countryside, falls for a woman | Jekyll_and_Hyde__Olalla | 3 | B -- in pool, rank 3 |
+   | man explains why his room must stay refrigerated | Lovecraft__Cool_Air | 3 | B -- in pool, rank 3 |
+   | man struck down near a church after a shining stone | Lovecraft__The_Haunter_of_the_Dark | 3 | B -- in pool, rank 3 |
+   | prisoner insists he remembers a catacombs expedition | Lovecraft__The_Statement_of_Randolph_Carter | 9 | B -- in pool, rank 9 |
+
+   4 of 6 are technically "B" (in the pool, just not #1), which per the standing playbook would suggest tuning `Hybrid_bm25_weight` or `Story_generation_rerank_top_n` next. Traced both through the code instead of guessing, and neither is viable as a single next move:
+
+   - **`Hybrid_bm25_weight` is a no-op on the final ranking whenever `Reranker_enabled` is true (the default).** `_rrf_fuse()` only *reorders* the dense-retrieved candidate set (BM25 reranks the same top-k pool the dense query returned; it cannot pull in corpus chunks dense missed). After the item-4 reorder, `_rerank_docs()` then rescores *every* candidate from scratch with the cross-encoder and sorts purely on that score -- a deterministic function of `(query, chunk text)`, not of the incoming order. So changing the fusion weight changes an ordering that gets immediately thrown away. Documented in `setup.example.yaml` and as a code comment in `retrieve_docs()` so this isn't rediscovered the hard way later. (It would matter again with reranking disabled, where diversity selection reads the fused order directly.)
+   - **`Story_generation_rerank_top_n`** (currently 10) only changes how many reranked candidates survive into diversity selection. All three rank-3 misses and the rank-9 miss are already inside that window -- raising it doesn't reorder anyone already included, and lowering it below 9 would drop Randolph_Carter's chunk entirely without helping the rank-3 cases.
+
+   The 2 "A" misses are a genuine embedding/corpus collision, not a pool-size artifact: both are confused with the *same* book, `Lovecraft__Herbert_West-Reanimator` -- a story about reanimating corpses that BGE-base apparently embeds closer to "assembles a creature from dead body parts" / "grave robbers supply corpses" than the actual target passages are. The over-fetch pool (k≈40) already includes far more than 3 titles' worth of candidates; a bigger k is unlikely to be the lever, and the fix that would plausibly help -- entity-biased query reformulation, or corpus/chunking changes so Frankenstein's and Body_Snatcher's most distinctive passages surface more often -- is not a one-line change. Stopping Phase 1 retrieval tuning here per the standing instruction to prefer stopping over a change that isn't clearly scoped.
+
+   **Phase 2 plan (write-up only; not started):**
+   1. Measure long-form accept rate: run `mode="fast"` + `length="long"`/`"13min"`, log requested vs. actual word count and the agentic loop's ACCEPT/REFINE/RE_RETRIEVE outcome per iteration, across a handful of prompts.
+   2. If facts are thin for long targets (padding/repetition symptom), try raising `HF_grounded_facts_max_new_tokens` and/or the chunk count Step 2 draws from, and re-measure the same way -- one change, before/after.
+   3. Streaming parity: after SSE finishes, optionally run the attribution gate as a post-process step (streaming still skips it by design); note this explicitly still requires the length-refine pass to stay non-streaming.
+   4. Do not move to a bigger model (14b) until 1-2 above have real before/after numbers -- per the standing hard constraint.
+6. More ingest diversity and chunk-quality checks (retrieval is still the ceiling) — see [`DATA_PREP.md`](./DATA_PREP.md).
+7. Tune long-form (`length: "long"` / `"13min"`) until Level B accepts consistently under agentic loop — see the Phase 2 plan above.
+8. Optional epic / Level C only after stable wall-clock and non-empty generation under Ollama.
+9. Optionally post-process streamed stories with the attribution gate (streaming still skips it by design today).
 
 ---
 

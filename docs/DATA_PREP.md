@@ -208,6 +208,28 @@ py scripts/push_section_metadata.py --glob "Lovecraft__*"
 
 If you change the embedding model, you must re-ingest. Old vectors will not match new queries.
 
+**2026-09: BGE passage-prefix fix -- re-ingest required.** Ingest previously
+prefixed passages with `"Represent this passage for retrieval: "` before
+embedding them, in addition to the query-side prefix applied at search time.
+That is not BGE's documented recipe: `BAAI/bge-base-en-v1.5` only prefixes
+the *query* side for asymmetric retrieval; passages get no instruction
+prefix. `storyforge/vector_store/ingest_stories.py::_embed_chunks` no longer
+adds that prefix. The embedding model and its dimensionality are unchanged,
+so Chroma will not reject a mismatched batch the way it does for a real model
+swap -- it will happily keep serving the *old*, wrongly-prefixed vectors
+side by side with correctly-embedded new ones, silently degrading relevance
+for anything not re-ingested. Any collection ingested before this fix must be
+rebuilt from scratch:
+
+```powershell
+py scripts/reset_and_ingest.py
+```
+
+`refresh_chunk_embeddings.py` and `ingest_manifest.py` pick up the fix too
+(they share `_embed_chunks`), but only for the records they touch -- they do
+not repair chunks already sitting in Chroma with the old prefix, so a full
+`reset_and_ingest.py` is the only way to guarantee a clean collection.
+
 ---
 
 ## How you know the prep was good
