@@ -113,6 +113,8 @@ def _run_one(orchestrator: Orchestrator, query: str, *, mode: Gen_mode, length: 
                 "faithfulness": it.get("faithfulness"),
                 "completeness_ok": it.get("completeness_ok"),
                 "facts_count": it.get("facts_count"),
+                "missing_sections": it.get("missing_sections"),
+                "reasons": it.get("reasons"),
             }
             for it in iterations
         ],

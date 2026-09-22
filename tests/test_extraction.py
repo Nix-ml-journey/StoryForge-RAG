@@ -112,6 +112,80 @@ def test_json_mode_falls_back_on_type_error(monkeypatch):
     assert result.strip().endswith("}")
 
 
+def test_disables_thinking_by_default(monkeypatch):
+    """By default, Qwen3's hidden chain-of-thought is discouraged two ways:
+    extra_body.chat_template_kwargs.enable_thinking=False (harmless if the
+    backend ignores it) AND a literal "/no_think" suffix appended to the user
+    turn (the model-level soft switch Qwen3 honors regardless of API support --
+    testing against the real HF-routed backend showed extra_body alone had no
+    measurable effect, so this is the primary mechanism, not a belt-and-braces
+    extra)."""
+    captured: dict = {}
+
+    def _fake_chat_completion(**kwargs):
+        captured.update(kwargs)
+        return _fake_hf_response('{"facts":[]}')
+
+    fake_client = MagicMock()
+    fake_client.chat_completion.side_effect = _fake_chat_completion
+
+    with patch("storyforge.rag.extraction.InferenceClient", return_value=fake_client):
+        from storyforge.rag.extraction import _hf_chat_extract_json
+        _hf_chat_extract_json(cfg=_cfg(), system="sys", user="usr")
+
+    assert captured.get("extra_body") == {"chat_template_kwargs": {"enable_thinking": False}}
+    user_msg = captured["messages"][1]["content"]
+    assert user_msg.startswith("usr")
+    assert user_msg.rstrip().endswith("/no_think")
+
+
+def test_disable_thinking_can_be_turned_off_by_config(monkeypatch):
+    """HF_grounded_facts_disable_thinking: false must omit extra_body and the
+    /no_think suffix entirely, leaving the user content untouched."""
+    captured: dict = {}
+
+    def _fake_chat_completion(**kwargs):
+        captured.update(kwargs)
+        return _fake_hf_response('{"facts":[]}')
+
+    fake_client = MagicMock()
+    fake_client.chat_completion.side_effect = _fake_chat_completion
+
+    with patch("storyforge.rag.extraction.InferenceClient", return_value=fake_client):
+        from storyforge.rag.extraction import _hf_chat_extract_json
+        _hf_chat_extract_json(
+            cfg=_cfg(HF_grounded_facts_disable_thinking=False), system="sys", user="usr"
+        )
+
+    assert "extra_body" not in captured
+    assert captured["messages"][1]["content"] == "usr"
+    assert "/no_think" not in captured["messages"][1]["content"]
+
+
+def test_drops_both_optional_kwargs_on_type_error(monkeypatch):
+    """If the backend rejects an optional kwarg with TypeError, retry once
+    without extra_body or response_format (whichever caused it isn't knowable
+    from a bare TypeError, so both are dropped together)."""
+    call_count = 0
+
+    def _fake_chat_completion(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "extra_body" in kwargs or "response_format" in kwargs:
+            raise TypeError("unexpected keyword argument")
+        return _fake_hf_response('{"facts":[]}')
+
+    fake_client = MagicMock()
+    fake_client.chat_completion.side_effect = _fake_chat_completion
+
+    with patch("storyforge.rag.extraction.InferenceClient", return_value=fake_client):
+        from storyforge.rag.extraction import _hf_chat_extract_json
+        result = _hf_chat_extract_json(cfg=_cfg(), system="sys", user="usr")
+
+    assert call_count == 2
+    assert '"facts"' in result
+
+
 def test_hf_chat_extract_json_raises_without_token():
     """Missing HF token must raise ValueError immediately."""
     from storyforge.rag.extraction import _hf_chat_extract_json

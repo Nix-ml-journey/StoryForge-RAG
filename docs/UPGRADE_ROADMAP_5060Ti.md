@@ -76,7 +76,7 @@ Thinking-mode support: `ChatOllama(think=True/False)` and `strip_thinking_tags()
 ### 0.7 ✅ Hybrid BM25 + dense retrieval (RRF fusion)
 
 `Hybrid_search_enabled: true`, `Hybrid_bm25_weight: 0.3` in `setup.yaml`.  
-Implemented in `rag/retrieval.py` (`_bm25_rank_docs` + `_rrf_fuse`). Requires `pip install rank-bm25`.
+Implemented in `rag/retrieval.py` (`_bm25_rank_docs` + `_rrf_fuse`). Dependency: `rank-bm25` (required in `requirements.txt`; without it, fusion is silently skipped and only dense + rerank run).
 
 `retrieve_docs` also accepts `filter_metadata` for Chroma `where`-filter targeting a specific series or story type.
 

@@ -187,7 +187,7 @@ Ollama in Docker solves all three: model stays warm, Ollama manages GPU memory o
 
 ### New features shipped
 
-**Hybrid BM25 + dense retrieval:** `rag/retrieval.py` fuses Chroma dense results with a BM25 pass over the same candidate pool using Reciprocal Rank Fusion. Controlled by `Hybrid_search_enabled` and `Hybrid_bm25_weight` in `setup.yaml`. Captures exact name/keyword matches that vector similarity misses.
+**Hybrid BM25 + dense retrieval:** `rag/retrieval.py` fuses Chroma dense results with a BM25 pass over the same candidate pool using Reciprocal Rank Fusion. Controlled by `Hybrid_search_enabled` and `Hybrid_bm25_weight` in `setup.yaml`. Captures exact name/keyword matches that vector similarity misses. Depends on `rank-bm25` (required in `requirements.txt`); if the package is missing, BM25 fusion is skipped with a warning and dense + rerank still run.
 
 **Metadata filtering:** `retrieve_docs` now accepts `filter_metadata` (a Chroma `where` filter), enabling targeted series- or story-type-scoped retrieval.
 
@@ -393,15 +393,67 @@ round-trip (extraction already uses one) from every agentic-loop iteration when 
 
    The 2 "A" misses are a genuine embedding/corpus collision, not a pool-size artifact: both are confused with the *same* book, `Lovecraft__Herbert_West-Reanimator` -- a story about reanimating corpses that BGE-base apparently embeds closer to "assembles a creature from dead body parts" / "grave robbers supply corpses" than the actual target passages are. The over-fetch pool (k≈40) already includes far more than 3 titles' worth of candidates; a bigger k is unlikely to be the lever, and the fix that would plausibly help -- entity-biased query reformulation, or corpus/chunking changes so Frankenstein's and Body_Snatcher's most distinctive passages surface more often -- is not a one-line change. Stopping Phase 1 retrieval tuning here per the standing instruction to prefer stopping over a change that isn't clearly scoped.
 
-   **Phase 2 plan (write-up only; not started):**
-   1. ~~Measure long-form accept rate~~ — tooling done (2026-09): neither `/create-eval/story_generate` (always the non-agentic 3-step path) nor `/orchestration/run_step`/`run_pipeline` (agentic, but only logs iterations server-side and returns a thin `{success, steps_done}` response) exposes the agentic loop's per-iteration data over HTTP. `scripts/measure_generation_length.py` calls `Orchestrator.generate_story_agentic()` directly instead, so it gets the full iteration history. Run on your machine (needs Ollama running, an ingested Chroma collection, and a reachable HF token if `Evaluation_mode: "api"`):
-      ```
-      py scripts/measure_generation_length.py --mode fast --length long
-      ```
-      Optionally also run `--mode thinking --length long` to exercise the empty-draft recovery path. Logs requested length target, actual word count, whether it was under `LengthProfile.min_words`, ACCEPT/REFINE/RE_RETRIEVE per iteration, and faithfulness; writes a summary (accept rate, under-min-words rate, avg iterations) to `Evaluation/generation_eval_report.json` (gitignored). Paste those numbers back before any further Phase 2 code change — no facts/token or streaming change should be made without them.
-   2. If facts are thin for long targets (padding/repetition symptom), try raising `HF_grounded_facts_max_new_tokens` and/or the chunk count Step 2 draws from, and re-measure the same way -- one change, before/after.
-   3. Streaming parity: after SSE finishes, optionally run the attribution gate as a post-process step (streaming still skips it by design); note this explicitly still requires the length-refine pass to stay non-streaming.
-   4. Do not move to a bigger model (14b) until 1-2 above have real before/after numbers -- per the standing hard constraint.
+   **Phase 2 measurement (2026-09):** `py scripts/measure_generation_length.py --mode fast --length long`, 8 queries, target 1500 words (min 1275):
+
+   | Metric | Value |
+   |---|---|
+   | Succeeded | 8/8 |
+   | Accept rate | 0.88 (7/8) |
+   | Under min words | 0.0 |
+   | Avg words | 1864 vs target 1500 |
+   | Avg iterations | 1.62 |
+
+   **Length is not the reliability problem.** Nothing came in under `min_words`; drafts usually overshoot target. The original goal-2 hypothesis ("thin facts cause short/padded prose") is not supported by this data as stated -- but the raw per-iteration report surfaced two real issues the summary table hid:
+
+   - **`facts_count` (`len(parsed.facts)` from Step 2) was 0 on 5 of 8 queries**, vs. 10-12 on the other 3 -- not uniformly thin, inconsistent. Traced `extract_grounded_facts()` (`src/storyforge/rag/extraction.py`): a parse failure silently returned `ParsedFacts(facts=(), raw={})` with no logging, and separately, `attribution.parse_grounded_facts_json()` silently drops any fact missing `source_chunk_ids`/`sources`, also unlogged. Either could explain the zeros and there was no way to tell which from the existing logs. **Also found while checking:** with no eval provider available (see faithfulness note below), `decide_action()`'s no-eval fallback path accepts on completeness alone -- it does not require `facts_count > 0` -- so a fully "accepted" story can currently have zero grounded facts behind it. That's a real gap in the grounding guarantee, separate from length.
+   - **`average_score` was 0.0 on every iteration of all 8 queries.** Not a bug: `Evaluation_mode: "api"` failed for every call (`HF_evaluation_model: "Qwen/Qwen2.5-7B-Instruct"` returned `model_not_supported` from the HF router), so every iteration ran through `decide_action()`'s `has_eval=False` branch, which never computes a real average -- it decides on completeness + facts_count only. Expected behavior given the eval outage, not itself a defect, but it means **this run measured length/accept behavior under the no-eval fallback path, not the scored path** -- worth knowing before comparing future runs where the HF eval works.
+   - **One failure, case 6 ("whispering farmhouse"), stop_reason=`max_iterations`:** facts_count was 10 throughout (not thin), but `completeness_ok` stayed `False` across all 3 refine iterations while the draft *shrank* each time (2622 -> 1786 -> 821 words) instead of converging. `missing_sections`/`reasons` weren't captured by the script in this run, so the exact completeness gate that kept failing isn't known yet.
+
+   **Change made (diagnostics only, no behavior change):**
+   - `extraction.py`: log the parse exception (with a truncated raw response) on failure, and log a warning whenever extraction yields 0 usable facts -- includes how many raw `"facts"` entries the model returned vs. how many survived filtering, so the next run shows whether the model returned nothing, returned facts missing `source_chunk_ids`, or the JSON failed to parse.
+   - `scripts/measure_generation_length.py`: iteration records now also capture `missing_sections` and `reasons`, so a repeat of case 6's pattern will show exactly which completeness check keeps failing and why refine isn't fixing it.
+   - `python -m pytest -q`: 104 passed (unchanged baseline); log-only change, no logic touched.
+
+   **Also observed in the run log:** `rank-bm25` wasn't installed in the venv that ran this, so hybrid BM25 fusion was silently disabled (dense + rerank still ran). **Fixed (2026-09):** `rank-bm25>=0.2.2,<1` is now a required entry in `requirements.txt` (was previously commented under OPTIONAL) and installed in the project `.venv`. Fresh `pip install -r requirements.txt` installs it; without it, `retrieve_docs()` still logs a warning and continues dense-only. Not a Phase 1 retrieval-tuning change.
+
+   **Root cause found (2026-09) and fixed.** Two more measurement rounds (with the real HF eval provider up this time, not the no-eval fallback) showed the true scale of the problem: accept rate collapsed to 0.12, then 0.25 (vs. 0.88 when eval was down) -- because 22-23 of 24 logged iterations had `facts_count: 0, reasons: ['no grounded facts extracted']`, and `decide_action()` forces `RE_RETRIEVE` whenever `facts_count <= 0`, *before* it even looks at the (excellent, 8.8-9.2) average score or completeness. Retrieval, length, and the eval model were all fine; Step 2 (grounded-facts extraction) was the actual failure, almost universally, once the eval-masking was gone.
+
+   Diagnosed with the repo's existing `scripts/debug_hf_grounded_facts_mode.py` probe (`--show-raw`) rather than another full batch run:
+   ```
+   MODEL: Qwen/Qwen3-8B
+   FINISH_REASON: length
+   USAGE: completion_tokens=1600 (all of it)
+   FACTS_PARSED: 0
+   RAW_PREVIEW: <empty>
+   REASONING_CONTENT_PREVIEW: Okay, let's tackle this query. The user is asking about...
+   ```
+   `Qwen/Qwen3-8B` (the configured `HF_grounded_facts_model`) emits hidden chain-of-thought by default. That reasoning counts against `max_tokens`, and for this structured-extraction call it reliably consumed the entire 1600-token budget before the model ever wrote the JSON answer -- `finish_reason: "length"`, empty `message.content`, 0 facts, every time. Not a length problem, not a retrieval problem, not a parser-schema problem (the parser was never even reached).
+
+   **Fix (2026-09):** `_hf_chat_extract_json()` (`src/storyforge/rag/extraction.py`) now sends `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` on the HF grounded-facts call, gated by new config `HF_grounded_facts_disable_thinking` (default `true`, documented in `setup.example.yaml`). If a backend rejects the kwarg with `TypeError`, the call retries once without it (and without `response_format`, since a bare `TypeError` doesn't say which optional kwarg was the problem) rather than failing extraction outright. 3 new unit tests in `tests/test_extraction.py` cover: extra_body sent by default, extra_body omitted when the config flag is off, and the retry-without-optional-kwargs path on `TypeError`. `python -m pytest -q`: 107 passed (104 baseline + 3 new), same 8 pre-existing chromadb-on-network-mount errors as before (unrelated to this change).
+
+   **First fix attempt (`extra_body.chat_template_kwargs.enable_thinking: False`) did not work** -- re-probed and found the reasoning trace was statistically unchanged with the flag on vs. off (845 vs. 1359 completion tokens, same style/length of chain-of-thought either way): this specific HF-routed backend for Qwen3-8B silently ignores that kwarg. A follow-up full batch with the "fix" in place still showed `facts_count: 0` on 20 of 24 iterations, confirming it did nothing.
+
+   **Second fix: `/no_think` prompt suffix (2026-09).** Qwen3 is separately trained to honor a literal `/no_think` token in the user turn regardless of whether the serving stack exposes an API-level toggle. Appended to the user message in `_hf_chat_extract_json()` (kept `extra_body` too, harmless if ignored, may help other providers/models later). Verified with the debug probe: `REASONING_CONTENT_FULL` went from a full paragraph of chain-of-thought to completely empty, and `FACTS_PARSED: 8` with a real JSON answer (`completion_tokens: 460`, well under budget). This part of the fix is confirmed working.
+
+   **Third finding: a second, real problem underneath the first.** With reasoning now suppressed, a single real query (10 actual retrieval chunks, not the debug probe's 2-line demo) still failed extraction on all 3 iterations: `finish_reason=length`, `completion_tokens=1600` (maxed exactly every time), `prompt_tokens` ~3900-4050. The JSON facts answer itself -- not hidden reasoning -- is large enough on real chunk volume (asking for 10-30 facts with quotes) to exceed 1600 tokens and get cut off mid-object, which then fails to parse (`Expecting ',' delimiter`) and yields 0 usable facts. Added `LOG.info`/`LOG.warning` in `_hf_chat_extract_json()` logging `finish_reason`/`usage` on every call so this is visible going forward without needing a probe.
+
+   **Fix applied (2026-09):** `HF_grounded_facts_max_new_tokens` raised from 1600 to 3200 in both `setup.yaml` and `setup.example.yaml`, with a comment recording the measured cause. This is the same knob goal 2 originally proposed -- it just wasn't reachable until the reasoning-token problem was fixed first (raising it while the model was still spending the whole budget on hidden thinking would not have helped).
+
+   **Separately observed, not a code issue:** the HF eval API returned `402 Payment Required -- monthly included credits depleted` partway through the single-query verification run. That's an account/billing limit on Hugging Face Inference Providers credits, not a bug -- expect `faithfulness: None` and the no-eval fallback path until credits are topped up or reset.
+
+   `python -m pytest -q`: 107 passed throughout all of the above (same 8 pre-existing chromadb-on-network-mount errors, unrelated).
+
+   **Full-batch re-run (2026-09) after both fixes: accept_rate 0.75, then 0.75 again on a repeat run -- promising, but NOT a clean read.** Two queries (of 8) got genuine end-to-end extraction with real fact counts (29, 20 facts, no truncation) -- direct confirmation the /no_think + 3200-token fixes work when the HF facts-extraction call actually runs. But most of both runs' "accepted" stories went through `reasons: ['complete (no eval provider)']` with `average_score: 0.0, faithfulness: None` -- the same completeness-only fallback that inflated the very first measurement, now triggered because **HF credits were depleted again mid-run** (`402 Client Error: Payment Required`). This time the 402 hit the *extraction* call too, not just evaluation, so `extract_grounded_facts()` fell back to the local Ollama model (`_load_facts_llm()`) for most queries -- and that local fallback then failed its own way: `Grounded-facts JSON parse failed` at small, early character offsets (227-2860, one `"Unterminated string"`), nothing like the ~5700-7000 char truncations that pointed to a token-budget problem before. This is a *different, newly-discovered* bug -- the local extraction fallback has no `response_format`/JSON-mode enforcement the way the HF `InferenceClient` call does, so it produces malformed JSON more easily. It was only visible now because credits ran out and forced (almost) every query onto that path.
+
+   **Net effect: this batch's 0.75 accept rate is not a trustworthy measurement of either fix.** It's dominated by the credits outage and the newly-found local-fallback JSON bug, not by the /no_think + token-budget work, which is independently confirmed (by the 2 queries that got real extraction, and by the earlier clean single-query verification runs while HF was reachable).
+
+   **Decision (2026-09): wait for HF credits to reset/be topped up before re-measuring**, rather than guess-fixing the local-fallback JSON issue without clean diagnostic data on it. No further code changes until then.
+
+   **Next step, once HF credits are available again:**
+   ```
+   py scripts/measure_generation_length.py --mode fast --length long 2>&1 | tee generation_run3.log
+   ```
+   Expect this run to avoid the `402`/local-fallback path entirely and give a clean read: `facts_count > 0` on most/all iterations, real (non-`None`) faithfulness scores, and accept rate reflecting genuine grounded acceptance rather than the no-eval fallback. If that comes back healthy, Phase 2's facts-extraction reliability work is done and the standing hard constraint (don't move to a bigger model / 14b until this is confirmed resolved) is satisfied. If `facts_count` is still 0 anywhere with credits available, check `finish_reason` on that call in the log: `length` means 3200 still isn't enough for that query's chunk volume; anything else is a new cause. Separately, if the local Ollama fallback path (`_load_facts_llm`) keeps getting exercised in normal operation (not just during a credits outage) and keeps producing malformed JSON, that is a distinct follow-up worth its own measurement + fix -- not folded into this one.
 6. More ingest diversity and chunk-quality checks (retrieval is still the ceiling) — see [`DATA_PREP.md`](./DATA_PREP.md).
 7. Tune long-form (`length: "long"` / `"13min"`) until Level B accepts consistently under agentic loop — see the Phase 2 plan above (measurement tooling: `scripts/measure_generation_length.py`).
 8. Optional epic / Level C only after stable wall-clock and non-empty generation under Ollama.

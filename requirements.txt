@@ -47,6 +47,11 @@ epub-to-text>=2.0.0,<3   # EPUB extraction (PyPI only publishes 2.0.0+; pre-2.0 
 # --- Vector database ---
 chromadb>=1.4.1,<2
 
+# --- Hybrid retrieval (BM25 + dense RRF fusion in retrieve_docs) ---
+# Required when Hybrid_search_enabled is true; without it BM25 fusion is
+# silently skipped and only dense + rerank run.
+rank-bm25>=0.2.2,<1
+
 # --- LangChain core + integrations ---
 langchain>=0.3.0,<0.4
 langchain-core>=0.3.0,<0.4
@@ -83,9 +88,6 @@ ruff>=0.8.0,<1
 # 4-bit quantization (cuts VRAM usage ~50%; needed for 13B+ models).
 # Windows users: bitsandbytes can be finicky — install only if you need it.
 # bitsandbytes>=0.43.0
-
-# Hybrid BM25 + semantic search (roadmap item 2.3):
-# rank-bm25>=0.2.2
 
 # Structured JSON output via grammar-constrained generation (roadmap item 2.4):
 # outlines>=0.1.0

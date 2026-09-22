@@ -37,7 +37,7 @@ Tests use temporary directories and do not require GPU, Chroma data, or live API
 |-------|---------|-------|
 | Embeddings | `BAAI/bge-base-en-v1.5` | 768-dim, local GPU |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | After Chroma, before Step 2 |
-| Hybrid search | BM25 + dense (RRF) | Optional via `Hybrid_search_enabled` |
+| Hybrid search | BM25 + dense (RRF) | On via `Hybrid_search_enabled`; needs `rank-bm25` from `requirements.txt` |
 | Step 2 facts | `Qwen/Qwen3-8B` (HF API) | Retry + optional JSON mode; local Ollama fallback |
 | Step 3 story | `qwen3.5:9b` (Ollama) | Also supports vLLM or Transformers |
 | Evaluation | HF 7B → Gemini fallback | Used by the agentic loop; `Evaluation_mode: "local"` runs it in-process instead |
@@ -277,10 +277,11 @@ Reports top-1 / top-k accuracy and expected fact coverage.
 The pipeline is functional end-to-end. Active tuning areas:
 
 - Retrieval quality as corpus size grows -- Phase 1 tuning stopped (2026-09) at top1=0.80 / top3=0.90 / fact_coverage=0.77; remaining misses need query reformulation or corpus/chunking work, not another knob (see docs/PROJECT_JOURNEY.md "What I am doing next" for the case-by-case breakdown and why `Hybrid_bm25_weight` is currently a no-op with reranking on)
+- Phase 2 generation reliability -- length targets are fine under agentic `long` (first batch: under-min-words 0.0); active issue is grounded-facts extraction / HF credits masking accept rate. Measurement: `scripts/measure_generation_length.py`. Details in docs/PROJECT_JOURNEY.md
 - Reducing repetitive phrasing in generated prose
 - Retrieval eval fixture (`tests/fixtures/retrieval_eval_cases.example.json`) now has 30 realistic cases incl. "wrong book" traps; `scripts/retrieval_eval.py` was fixed (2026-09) to route through the real hybrid+rerank `retrieve_docs()` pipeline instead of a bare dense-only Chroma query it was silently using before -- use it before/after any retrieval tuning
 
-Recent upgrades: reranked before diversity selection in `retrieve_docs()` instead of after (2026-09; the cross-encoder now scores the full hybrid-fused pool before diversity narrows it to a few titles, not the other way around -- see docs/PROJECT_JOURNEY.md for the retrieval_eval cases this targets and the exact re-measure command), fixed the BGE passage-prefix convention (ingest no longer prefixes passages -- only queries carry the instruction prefix, per BGE's documented recipe; **re-ingest required**, see docs/DATA_PREP.md), BGE explicit ingest, hybrid search, HF extraction retry, Ollama context window (`num_ctx`), unified story-length target (`length` / presets / `Nmin`), shared prompt builders for streaming + non-streaming, section length guardrails, Chroma maintenance scripts, a vLLM generation backend, empty-draft recovery (thinking → fast retry → clear error; length-guard and agentic loop both fall back gracefully), and an optional local evaluation model (`Evaluation_mode: "local"`) that removes the HF/Gemini round-trip from the agentic loop.
+Recent upgrades: `rank-bm25` promoted from optional to required in `requirements.txt` (2026-09; without it, hybrid BM25 fusion was silently skipped), reranked before diversity selection in `retrieve_docs()` instead of after (2026-09; the cross-encoder now scores the full hybrid-fused pool before diversity narrows it to a few titles, not the other way around -- see docs/PROJECT_JOURNEY.md for the retrieval_eval cases this targets and the exact re-measure command), fixed the BGE passage-prefix convention (ingest no longer prefixes passages -- only queries carry the instruction prefix, per BGE's documented recipe; **re-ingest required**, see docs/DATA_PREP.md), BGE explicit ingest, hybrid search, HF extraction retry / `/no_think` + raised `HF_grounded_facts_max_new_tokens`, Ollama context window (`num_ctx`), unified story-length target (`length` / presets / `Nmin`), shared prompt builders for streaming + non-streaming, section length guardrails, Chroma maintenance scripts, a vLLM generation backend, empty-draft recovery (thinking → fast retry → clear error; length-guard and agentic loop both fall back gracefully), Phase 2 length measurement script (`scripts/measure_generation_length.py`), and an optional local evaluation model (`Evaluation_mode: "local"`) that removes the HF/Gemini round-trip from the agentic loop.
 
 ## Related docs
 

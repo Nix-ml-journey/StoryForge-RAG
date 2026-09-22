@@ -55,11 +55,23 @@ Story_generation_n_results: 10
 # --- Step 2: grounded facts (HF API, no local VRAM) ---
 HF_grounded_facts_model: "Qwen/Qwen3-8B"
 # Must fit the 10-30 facts (with quotes) that prompts.yaml asks for; too low
-# truncates the fact list and starves long stories of material.
-HF_grounded_facts_max_new_tokens: 1600
+# truncates the fact list and starves long stories of material. Measured
+# (2026-09) on real 10-chunk retrieval pools (~3900-4050 prompt tokens):
+# 1600 was NOT enough even with thinking disabled -- every call hit
+# finish_reason="length" at exactly 1600 completion tokens, cutting the JSON
+# off mid-object (~10-11 facts in) and making every extraction fail to parse
+# (0 usable facts). Raised to 3200 for headroom up to ~20-25 facts; re-measure
+# with scripts/measure_generation_length.py if extraction still truncates.
+HF_grounded_facts_max_new_tokens: 3200
 HF_grounded_facts_temperature: 0.1
 # Try strict JSON mode for grounded-facts extraction (falls back if unsupported).
 HF_grounded_facts_json_mode: true
+# Qwen3 models emit hidden chain-of-thought reasoning by default, which counts
+# against HF_grounded_facts_max_new_tokens above and can (measured: reliably
+# did, with Qwen/Qwen3-8B) consume the whole budget before the model ever
+# writes the JSON answer -- finish_reason "length", empty content, 0 facts.
+# Keep this true unless you've confirmed your model/provider doesn't need it.
+HF_grounded_facts_disable_thinking: true
 
 # --- Step 3: story generation ---
 # Provider: ollama | vllm | transformers

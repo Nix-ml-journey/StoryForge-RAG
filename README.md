@@ -72,7 +72,7 @@ The comparison table below has the specifics; this section is the "so what."
 |-------|----------------|-------|
 | Embeddings | `BAAI/bge-base-en-v1.5` (768-dim) | Local GPU via `sentence-transformers` |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Local GPU |
-| Hybrid search | BM25 + dense (RRF fusion) | Local |
+| Hybrid search | BM25 + dense (RRF fusion; needs `rank-bm25` from `requirements.txt`) | Local |
 | Step 2 — grounded facts | `Qwen/Qwen3-8B` via HF Inference API | Cloud, no VRAM cost |
 | Step 3 — story generation | `qwen3.5:9b` via Ollama (default) | Local GPU, `localhost:11434` |
 | Evaluation | `Qwen/Qwen2.5-7B-Instruct` via HF API → Gemini fallback (or local) | Cloud, or local GPU/CPU |

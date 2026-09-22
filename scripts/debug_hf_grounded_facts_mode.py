@@ -1,13 +1,20 @@
 """
-Probe Step-2 Hugging Face grounded-facts extraction mode.
+Probe Step-2 Hugging Face grounded-facts extraction (extraction.py).
 
-This script checks whether HF grounded-facts extraction can use strict JSON mode
-(`response_format={"type":"json_object"}`) or must fall back to a normal chat call.
+Calls the real `storyforge.rag.extraction._hf_chat_extract_json()` -- the
+exact function `extract_grounded_facts()` uses in production -- through a
+thin spy around InferenceClient that records the outgoing request kwargs and
+the raw response object, so this probe can never silently drift out of sync
+with what production actually sends (as an earlier version of this script
+did: it hand-built its own request dict and never included `extra_body`,
+so it looked like the enable_thinking fix wasn't taking effect when in fact
+the probe just wasn't using it).
 
 Usage:
   py scripts/debug_hf_grounded_facts_mode.py
   py scripts/debug_hf_grounded_facts_mode.py --query "A warrior monk in the desert"
   py scripts/debug_hf_grounded_facts_mode.py --disable-json-mode
+  py scripts/debug_hf_grounded_facts_mode.py --force-enable-thinking   # compare against thinking left on
   py scripts/debug_hf_grounded_facts_mode.py --show-raw
 """
 
@@ -16,117 +23,121 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-
-from huggingface_hub import InferenceClient
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from storyforge.config.config import load_config, load_prompts  # noqa: E402
+from storyforge.config.config import load_config  # noqa: E402
 from storyforge.rag.attribution import parse_grounded_facts_json  # noqa: E402
 
 
-def _hf_token(cfg: dict) -> str:
-    import os
-
+def _sample_chunks() -> str:
     return (
-        str(cfg.get("facehugging_api") or "").strip()
-        or os.environ.get("HUGGINGFACEHUB_API_TOKEN", "").strip()
-        or os.environ.get("HF_TOKEN", "").strip()
-        or os.environ.get("HUGGINGFACE_API_KEY", "").strip()
-    )
-
-
-def _extract_message_text(resp) -> str:
-    try:
-        return (resp.choices[0].message.content or "").strip()  # type: ignore[attr-defined]
-    except Exception:
-        if isinstance(resp, dict):
-            choices = resp.get("choices") or []
-            if choices and isinstance(choices[0], dict):
-                msg = choices[0].get("message") or {}
-                if isinstance(msg, dict) and msg.get("content"):
-                    return str(msg.get("content") or "").strip()
-        return str(resp).strip()
-
-
-def _build_prompt(query: str) -> tuple[str, str]:
-    prompts = (load_prompts() or {}).get("generation") or {}
-    system = str(prompts.get("grounded_facts_system") or "Return grounded facts as JSON.")
-    user_template = str(
-        prompts.get("grounded_facts_user")
-        or "QUERY:\n{query}\n\nCHUNKS:\n{retrieval_chunks}\n\nReturn JSON facts."
-    )
-    sample_chunks = (
         "[CHUNK demo_1 | The Warrior Monk]\n"
         "Amun trained with the monks in Kongshan Temple after crossing the desert.\n\n"
         "[CHUNK demo_2 | The Warrior Monk]\n"
         "He returned to defend Eldoria when raiders threatened the northern gate."
     )
-    user = user_template.format(query=query, retrieval_chunks=sample_chunks)
-    return system, user
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Debug HF grounded-facts JSON mode/fallback behavior.")
+    parser = argparse.ArgumentParser(
+        description="Debug HF grounded-facts extraction by calling the real extraction.py code path."
+    )
     parser.add_argument("--query", default="A warrior monk who returns to defend Eldoria", help="Probe query.")
-    parser.add_argument("--model", default="", help="Optional HF model override.")
-    parser.add_argument("--disable-json-mode", action="store_true", help="Force no response_format.")
-    parser.add_argument("--show-raw", action="store_true", help="Print full raw model response.")
+    parser.add_argument("--model", default="", help="Optional HF model override (HF_grounded_facts_model).")
+    parser.add_argument("--disable-json-mode", action="store_true", help="Force HF_grounded_facts_json_mode off.")
+    parser.add_argument(
+        "--force-enable-thinking",
+        action="store_true",
+        help="Force HF_grounded_facts_disable_thinking off, to compare against the default (thinking disabled).",
+    )
+    parser.add_argument("--show-raw", action="store_true", help="Print full raw model response / reasoning trace.")
     args = parser.parse_args()
 
-    cfg = load_config()
-    token = _hf_token(cfg)
-    if not token:
-        print("ERROR: Missing Hugging Face token in setup/env.")
+    cfg = dict(load_config())
+    if args.model:
+        cfg["HF_grounded_facts_model"] = args.model
+    if args.disable_json_mode:
+        cfg["HF_grounded_facts_json_mode"] = False
+    if args.force_enable_thinking:
+        cfg["HF_grounded_facts_disable_thinking"] = False
+
+    if not (cfg.get("facehugging_api") or "").strip():
+        print("ERROR: Missing Hugging Face token in setup/env (facehugging_api).")
         return 1
 
-    model_id = args.model or cfg.get("HF_grounded_facts_model") or cfg.get("HF_evaluation_model") or "Qwen/Qwen2.5-1.5B-Instruct"
-    max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or 300)
-    temperature = float(cfg.get("HF_grounded_facts_temperature") or 0.1)
-    config_json_mode = str(cfg.get("HF_grounded_facts_json_mode") or "true").strip().lower() not in ("false", "0", "no")
-    json_mode = config_json_mode and (not args.disable_json_mode)
+    from storyforge.rag.extraction import _get_generation_prompts
 
-    system, user = _build_prompt(args.query)
-    client = InferenceClient(token=token)
-    request = {
-        "model": str(model_id),
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": max_new,
-        "temperature": temperature,
-    }
+    prompts = _get_generation_prompts()
+    system = prompts["facts_system"]
+    user = prompts["facts_user"].format(query=args.query, retrieval_chunks=_sample_chunks())
 
-    mode_used = "disabled"
-    if json_mode:
-        request["response_format"] = {"type": "json_object"}
-        mode_used = "json_mode"
+    # Spy around InferenceClient: forwards every call to a real client so the
+    # HTTP request and response are genuine, but records the outgoing kwargs
+    # and the response object for inspection. This runs through the actual
+    # extraction._hf_chat_extract_json() code (model selection, json_mode
+    # logic, disable_thinking logic, TypeError retry) -- not a reimplementation.
+    from huggingface_hub import InferenceClient as _RealInferenceClient
 
-    try:
-        resp = client.chat_completion(**request)
-    except TypeError:
-        if "response_format" not in request:
-            raise
-        request.pop("response_format", None)
-        resp = client.chat_completion(**request)
-        mode_used = "fallback_no_response_format"
+    captured_requests: list[dict] = []
+    captured_responses: list[object] = []
 
-    raw = _extract_message_text(resp)
+    class _SpyInferenceClient:
+        def __init__(self, token=None, **kw):
+            self._real = _RealInferenceClient(token=token, **kw)
+
+        def chat_completion(self, **kwargs):
+            captured_requests.append(dict(kwargs))
+            resp = self._real.chat_completion(**kwargs)
+            captured_responses.append(resp)
+            return resp
+
+    from storyforge.rag.extraction import _hf_chat_extract_json
+
+    with patch("storyforge.rag.extraction.InferenceClient", _SpyInferenceClient):
+        raw = _hf_chat_extract_json(cfg=cfg, system=system, user=user)
+
     parsed = parse_grounded_facts_json(raw)
 
-    print(f"MODEL: {model_id}")
-    print(f"JSON_MODE_CONFIG: {config_json_mode}")
-    print(f"MODE_USED: {mode_used}")
+    # Diagnostics from the final (last) request/response actually sent.
+    last_request = captured_requests[-1] if captured_requests else {}
+    last_resp = captured_responses[-1] if captured_responses else None
+    finish_reason = None
+    reasoning_content = None
+    usage = None
+    if last_resp is not None:
+        try:
+            choice = last_resp.choices[0]  # type: ignore[attr-defined]
+            finish_reason = getattr(choice, "finish_reason", None)
+            msg = getattr(choice, "message", None)
+            reasoning_content = getattr(msg, "reasoning_content", None) if msg is not None else None
+            usage = getattr(last_resp, "usage", None)
+        except Exception:
+            pass
+
+    print(f"MODEL: {cfg.get('HF_grounded_facts_model')}")
+    print(f"CALLS_MADE: {len(captured_requests)} (>1 means a TypeError retry happened -- see extraction.py)")
+    print(f"REQUEST_HAD_RESPONSE_FORMAT: {'response_format' in last_request}")
+    print(f"REQUEST_HAD_EXTRA_BODY: {last_request.get('extra_body')}")
+    print(f"MAX_TOKENS_REQUESTED: {last_request.get('max_tokens')}")
+    print(f"FINISH_REASON: {finish_reason}")
+    print(f"USAGE: {usage}")
     print(f"FACTS_PARSED: {len(parsed.facts)}")
     print("RAW_PREVIEW:")
     print((raw or "").strip()[:600] or "<empty>")
+    if reasoning_content:
+        print("\nREASONING_CONTENT_PREVIEW (hidden thinking tokens -- not the JSON answer):")
+        print(str(reasoning_content)[:600])
     if args.show_raw:
         print("\nRAW_FULL:")
         print(raw)
+        if reasoning_content:
+            print("\nREASONING_CONTENT_FULL:")
+            print(reasoning_content)
     return 0
 
 
