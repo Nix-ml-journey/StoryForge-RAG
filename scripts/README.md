@@ -13,7 +13,7 @@ After extract, clean and split text **before** these scripts. See [`docs/DATA_PR
 | `enrich_story_records.py` | Re-run enrichment on existing records |
 | `records_to_ingest_manifest.py` | `story_json` → `data/ingest/ingest_manifest.jsonl` |
 | `ingest_manifest.py` | Upsert manifest into Chroma (explicit BGE embeddings) |
-| `reset_and_ingest.py` | Wipe Chroma + re-ingest from `data/stories/` |
+| `reset_and_ingest.py` | Wipe Chroma + re-ingest from `data/stories/`; uses `data/story_json/<Title>.json` when present (reviewed chunks, sections, Author/Summary), warns when a record is stale |
 
 Typical full ingest (only after `data/stories/*.txt` is cleaned):
 
@@ -45,6 +45,7 @@ py scripts/push_section_metadata.py --glob "Jekyll_and_Hyde__*"
 | `check_cuda_compatibility.py` | NVIDIA / PyTorch CUDA check |
 | `list_gemini_models.py` | List Gemini models for your API key |
 | `peek_vector_store.py` | Inspect Chroma collection contents |
+| `validate_chroma_metadata.py` | Read-only metadata report: chunk / Title counts, % Author / Summary / section, missing Title / `chunk_id`, samples (`--json`, `--strict`) |
 | `retrieval_eval.py` | Measure retrieval top-k accuracy against fixture cases |
 | `test_generation.py` | HTTP smoke tests (server must be running) |
 | `debug_hf_grounded_facts_mode.py` | Probe Step 2 HF JSON mode vs fallback |

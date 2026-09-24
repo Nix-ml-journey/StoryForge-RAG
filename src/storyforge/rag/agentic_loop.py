@@ -175,10 +175,16 @@ def decide_action(
     faith = criterion_score(eval_data, "faithfulness")
 
     if not has_eval or not eval_data:
+        # Grounding contract: without an evaluator, completeness is the only
+        # quality signal left, so facts_count is the only evidence the draft is
+        # grounded at all. Check it FIRST -- a complete-looking draft written
+        # from zero extracted facts is retrieval-only / ungrounded prose and must
+        # never be ACCEPTed (it previously was, which let an HF/eval outage
+        # inflate accept_rate with ungrounded stories).
+        if facts_count <= 0:
+            return Decision(RE_RETRIEVE, ("no grounded facts extracted (no eval provider)",), avg, faith)
         if completeness.ok:
             return Decision(ACCEPT, ("complete (no eval provider)",), avg, faith)
-        if facts_count <= 0:
-            return Decision(RE_RETRIEVE, ("no grounded facts to refine from (no eval provider)",), avg, faith)
         return Decision(REFINE, ("incomplete (no eval provider): " + "; ".join(completeness.reasons),), avg, faith)
 
     if faith is not None and faith < min_faith:
@@ -419,6 +425,7 @@ def run_agentic_story_loop(
             "reasons": list(decision.reasons),
             "query": current_query,
             "facts_count": len(parsed.facts),
+            "has_eval": iter_has_eval,
             "scores": eval_data,
         }
         iterations.append(iter_record)
@@ -441,7 +448,10 @@ def run_agentic_story_loop(
             break
 
         if i == max_iter:
-            stop_reason = "max_iterations"
+            # Distinguish "ran out of iterations with nothing grounded to write
+            # from" from an ordinary non-converging loop -- the first is a Step 2
+            # (facts extraction) failure, not a generation-quality one.
+            stop_reason = "max_iterations_no_grounded_facts" if not parsed.facts else "max_iterations"
             break
 
         if decision.action == RE_RETRIEVE:

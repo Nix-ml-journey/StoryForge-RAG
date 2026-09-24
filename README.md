@@ -186,8 +186,12 @@ py scripts/step1_prepare_and_enrich.py
 py scripts/records_to_ingest_manifest.py
 py scripts/ingest_manifest.py
 
-# Or wipe and re-ingest from data/stories/
+# Or wipe and re-ingest from data/stories/ (uses data/story_json/<Title>.json when present:
+# reviewed chunks + sections + Author/Summary; Title stays the filename stem)
 py scripts/reset_and_ingest.py
+
+# Check what landed in Chroma (read-only: coverage %, missing Author/Summary, bad Title/chunk_id)
+py scripts/validate_chroma_metadata.py
 
 # Phase 2 measurement: agentic length / accept rate (needs Ollama + ingested Chroma; no HTTP server)
 py scripts/measure_generation_length.py --mode fast --length long

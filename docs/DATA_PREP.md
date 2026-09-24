@@ -194,6 +194,34 @@ Full wipe + re-ingest from `data/stories/` (use when the corpus changed a lot):
 py scripts/reset_and_ingest.py
 ```
 
+**Both ingest paths now honour `story_json` (2026-09).** `reset_and_ingest.py`
+still walks `data/stories/*.txt`, but for each `<Title>.txt` it looks for
+`data/story_json/<Title>.json`:
+
+| story_json record | What gets embedded | Metadata written |
+|---|---|---|
+| exists, `raw_text` matches the `.txt` (CRLF vs LF ignored) | the record's reviewed `chunks[].text`, `chunk_id`, `section` (empty chunks skipped) | Author, Summary, Display_title, Is_series (+ Series_name) |
+| exists but **stale** (`.txt` edited after the JSON was built) | fresh chunks from the `.txt`; no section tags | story-level fields only (Author, Summary, ...), plus a warning naming the file |
+| missing / unreadable | fresh chunks from the `.txt` | empty Author / Summary (old behaviour) |
+
+The end of the run prints `From story_json / stale story_json / no story_json`
+counts -- if "stale" is non-zero, rebuild those records
+(`py scripts/prepare_story_records.py --overwrite --only "<Title>"`), re-review,
+and re-ingest. Before this fix, `reset_and_ingest.py` wrote `Author=""` /
+`Summary=""` for every chunk and ignored hand-fixed chunk text and section tags
+(only the manifest path used them).
+
+**Title contract.** `Title` metadata is always the **filename stem**
+(`Lovecraft__Cool_Air`): chunk ids (`<Title>_chunk_N`), title diversity, and
+the `retrieval_eval` fixtures all key on it. The human-readable `meta.title`
+from story_json goes to `Display_title`. Renaming a file is therefore a
+re-ingest, not a metadata edit.
+
+**No HF needed for metadata.** Enrichment (`step1_prepare_and_enrich.py`)
+fills `summary` via the HF API. Without HF credits, fill `meta.author`,
+`meta.title`, and `summary` by hand in the JSON -- ingest reads whatever is
+there and does not require the enrichment step to have succeeded.
+
 After small text edits in existing JSON (no new files):
 
 ```powershell
@@ -234,13 +262,23 @@ not repair chunks already sitting in Chroma with the old prefix, so a full
 
 ## How you know the prep was good
 
-1. **Peek a few chunks**
+1. **Check what actually landed in Chroma**
 
 ```powershell
+py scripts/validate_chroma_metadata.py
 py scripts/peek_vector_store.py
 ```
 
-You should see real story sentences, with the Title you chose — not “CONTENTS” or license text.
+`validate_chroma_metadata.py` is read-only. It prints total chunks, unique
+Titles, % non-empty Author / Summary / Display_title / section, stories with no
+Author or Summary, stories whose chunks all share one section tag, and hard
+problems (missing Title, missing `chunk_id`, empty text). `--strict` exits 1 on
+hard problems; `--json` dumps the summary. Author at 0% after a
+`reset_and_ingest.py` means your story_json has no `meta.author` filled (or the
+records are stale / missing).
+
+`peek_vector_store.py` shows raw chunks: you should see real story sentences,
+with the Title you chose — not “CONTENTS” or license text.
 
 2. **Ask a question only that story can answer**
 
@@ -266,6 +304,8 @@ That scores title rank and whether expected words appear in the chunks. It canno
 | Wrong story retrieved for a famous query | Filename/Title does not match the tale; corpus too mixed |
 | Every chunk tagged `setup` | Enrichment repeated one label; fix tags by hand |
 | Eval `fact_coverage` always 0 | Missing `Title` in metadata (usually a bad ingest, not a missing metric) |
+| Author/Summary empty in Chroma after `reset_and_ingest.py` | story_json missing, stale (log says so), or `meta.author` / `summary` never filled |
+| Hand-fixed chunk text not in Chroma | story_json is stale vs the `.txt` -- the `.txt` was re-chunked instead |
 
 ---
 
@@ -288,3 +328,28 @@ py scripts/ingest_manifest.py
 ```
 
 Same steps as orchestration `1_prepare_and_enrich_story_json` → `3_ingest_stories`. Do not skip the manual pass between extract and Step 1.
+
+```powershell
+# 6. Verify (read-only, offline)
+py scripts/validate_chroma_metadata.py
+py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+```
+
+---
+
+## Offline (no HF credits)
+
+Everything in this document works without Hugging Face except the automatic
+`summary` enrichment (fill it by hand). For generation, point Step 2 at the
+local model so it does not try the HF API first on every query -- in
+`setup.yaml`:
+
+```yaml
+Grounded_facts_provider: "local"          # Step 2 facts via Ollama (Generation_provider)
+Local_grounded_facts_json_format: "schema" # "json" if your Ollama is older than ~0.5
+Evaluation_mode: "local"                   # optional: local judge instead of HF/Gemini
+Local_evaluation_device: "cpu"             # keep the GPU for Ollama
+```
+
+Without any working evaluator the agentic loop decides on completeness +
+grounded facts only, and never ACCEPTs a draft with zero extracted facts.

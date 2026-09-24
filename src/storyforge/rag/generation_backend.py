@@ -63,11 +63,20 @@ def build_chat_ollama(
     top_p: float,
     thinking: bool = False,
     model_override: Optional[str] = None,
+    json_format: Any = None,
 ) -> Any:
-    """Build ChatOllama. Use ``reasoning`` (not ``think``) or thinking stays on by default."""
+    """Build ChatOllama. Use ``reasoning`` (not ``think``) or thinking stays on by default.
+
+    ``json_format`` is passed through as Ollama's ``format``: ``"json"`` for
+    JSON mode, or a JSON-schema dict for grammar-constrained structured output
+    (Ollama >= 0.5). ``None`` (default) leaves free-form text generation alone.
+    """
     from langchain_ollama import ChatOllama
 
     repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
+    kwargs: dict[str, Any] = {}
+    if json_format:
+        kwargs["format"] = json_format
     return ChatOllama(
         model=str(model_override or "").strip() or ollama_model_id(cfg),
         base_url=ollama_base_url(cfg),
@@ -76,6 +85,7 @@ def build_chat_ollama(
         num_predict=max_new_tokens,
         options={"repeat_penalty": repeat_penalty, "num_ctx": ollama_num_ctx(cfg)},
         reasoning=thinking,
+        **kwargs,
     )
 
 
@@ -87,13 +97,18 @@ def load_ollama_llm(
     top_p: float,
     thinking: bool = False,
     model_override: Optional[str] = None,
+    json_format: Any = None,
 ) -> GenerationLLM:
     """Cached ChatOllama instance for repeated pipeline calls."""
+    import json as _json
+
     model = str(model_override or "").strip() or ollama_model_id(cfg)
     base_url = ollama_base_url(cfg)
     repeat_penalty = float(cfg.get("Generation_repetition_penalty") or 1.08)
     num_ctx = ollama_num_ctx(cfg)
-    cache_key = (model, base_url, max_new_tokens, temperature, top_p, repeat_penalty, thinking, num_ctx)
+    # A schema dict isn't hashable -- key the cache on its canonical JSON.
+    fmt_key = _json.dumps(json_format, sort_keys=True) if json_format else ""
+    cache_key = (model, base_url, max_new_tokens, temperature, top_p, repeat_penalty, thinking, num_ctx, fmt_key)
     if cache_key not in _OLLAMA_LLM_CACHE:
         _OLLAMA_LLM_CACHE[cache_key] = build_chat_ollama(
             cfg,
@@ -102,6 +117,7 @@ def load_ollama_llm(
             top_p=top_p,
             thinking=thinking,
             model_override=model_override,
+            json_format=json_format,
         )
     return _PromptLLM(_OLLAMA_LLM_CACHE[cache_key])
 

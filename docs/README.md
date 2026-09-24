@@ -48,7 +48,9 @@ Tests use temporary directories and do not require GPU, Chroma data, or live API
 2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors; falls back to local generation (Ollama / vLLM / Transformers, matching `Generation_provider`) if HF is down. Fact-token budget is `HF_grounded_facts_max_new_tokens` (default 1600).
 3. **Step 3 — Generation:** One pass from grounded facts into a 5-section story. A length guard may run one refine pass when the draft is too short.
 
-If extraction returns no usable facts, generation falls back to retrieval-only mode.
+If extraction returns no usable facts, generation falls back to retrieval-only mode -- and the agentic loop will not ACCEPT that draft (it re-retrieves instead), with or without an evaluator.
+
+Offline / no HF credits: set `Grounded_facts_provider: "local"` so Step 2 goes straight to the local model (schema-constrained JSON on Ollama, lenient parsing, citation check against retrieved chunk ids, one compact retry). See [`DATA_PREP.md`](./DATA_PREP.md#offline-no-hf-credits).
 
 ### Story format
 
@@ -242,7 +244,7 @@ Extracted books in `data/raw_extracted/` are **not** ingest-ready. Clean, split 
 2. `py scripts/step1_prepare_and_enrich.py`
 3. Review `data/story_json/*.json` (author/title, chunks, section tags)
 4. `py scripts/records_to_ingest_manifest.py`
-5. `py scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe)
+5. `py scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe -- it also uses `story_json` when present: reviewed chunks, section tags, Author / Summary / Display_title)
 6. Generate via API:
    - `POST /create-eval/story_generate` with `query`, optional `mode`, optional `length`
    - or `POST /orchestration/run_step` with `4_generate_story_3step` / `4_generate_story_agentic`
@@ -255,6 +257,7 @@ See [`DATA_PREP.md`](./DATA_PREP.md) for the post-extract quality checklist.
 |------|--------|
 | Re-embed after editing chunk text | `refresh_chunk_embeddings.py --glob "Author__*"` |
 | Push section metadata only | `push_section_metadata.py --glob "Author__*"` |
+| Check what landed (coverage %, missing Author/Summary, bad Title/chunk_id) | `validate_chroma_metadata.py` |
 
 ## Tests
 
@@ -277,7 +280,7 @@ Reports top-1 / top-k accuracy and expected fact coverage.
 The pipeline is functional end-to-end. Active tuning areas:
 
 - Retrieval quality as corpus size grows -- Phase 1 tuning stopped (2026-09) at top1=0.80 / top3=0.90 / fact_coverage=0.77; remaining misses need query reformulation or corpus/chunking work, not another knob (see docs/PROJECT_JOURNEY.md "What I am doing next" for the case-by-case breakdown and why `Hybrid_bm25_weight` is currently a no-op with reranking on)
-- Phase 2 generation reliability -- length targets are fine under agentic `long` (first batch: under-min-words 0.0); active issue is grounded-facts extraction / HF credits masking accept rate. Measurement: `scripts/measure_generation_length.py`. Details in docs/PROJECT_JOURNEY.md
+- Phase 2 generation reliability -- length targets are fine under agentic `long` (first batch: under-min-words 0.0); active issue is grounded-facts extraction / HF credits masking accept rate. Offline fixes landed (2026-09): no-eval path never ACCEPTs with zero facts (iterations record `has_eval`), hardened local facts provider (`Grounded_facts_provider: "local"`), and `reset_and_ingest.py` now reads story_json metadata; the clean scored re-measure waits for HF credits. Measurement: `scripts/measure_generation_length.py`. Details in docs/PROJECT_JOURNEY.md
 - Reducing repetitive phrasing in generated prose
 - Retrieval eval fixture (`tests/fixtures/retrieval_eval_cases.example.json`) now has 30 realistic cases incl. "wrong book" traps; `scripts/retrieval_eval.py` was fixed (2026-09) to route through the real hybrid+rerank `retrieve_docs()` pipeline instead of a bare dense-only Chroma query it was silently using before -- use it before/after any retrieval tuning
 

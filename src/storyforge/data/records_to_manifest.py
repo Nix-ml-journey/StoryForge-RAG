@@ -25,6 +25,36 @@ def _dumps_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
 
 
+_SUMMARY_MAX_CHARS = 2000
+
+
+def story_level_metadata(rec: dict[str, Any], title: str) -> dict[str, Any]:
+    """Story-wide Chroma metadata from a story_json record.
+
+    Shared by the manifest path (records_to_ingest_manifest) and the direct
+    .txt path (ingest_stories_dir) so both write the same fields. ``Title`` is
+    deliberately the filename stem -- chunk ids, retrieval_eval fixtures, and
+    title diversity all key on it -- while the human title from ``meta.title``
+    goes to ``Display_title``. Author/Summary are top-level (retrieval_eval
+    reads meta["Author"] / meta["Summary"]); fill them by hand in story_json --
+    no HF enrichment is required.
+    """
+    meta = rec.get("meta") if isinstance(rec.get("meta"), dict) else {}
+    series = rec.get("series") if isinstance(rec.get("series"), dict) else {}
+    md: dict[str, Any] = {
+        "Title": title,
+        "id": str(rec.get("id") or title),
+        "Is_series": bool(rec.get("Is_series", False)),
+        "Author": str(meta.get("author") or "").strip(),
+        "Display_title": str(meta.get("title") or "").strip(),
+        "Summary": str(rec.get("summary") or "").strip()[:_SUMMARY_MAX_CHARS],
+        "query_type": "content",
+    }
+    if md["Is_series"]:
+        md["Series_name"] = str(series.get("series_name") or "").strip()
+    return md
+
+
 def records_to_ingest_manifest(*, base_path: str | Path | None = None) -> dict[str, Any]:
     """
     Convert `data/story_json/*.json` into `data/ingest/ingest_manifest.jsonl` (one chunk per line).
@@ -67,11 +97,9 @@ def records_to_ingest_manifest(*, base_path: str | Path | None = None) -> dict[s
                     continue
 
                 md: dict[str, Any] = {
-                    "Title": title,
+                    **story_level_metadata(rec, title),
                     "chunk_id": chunk_id,
                     "id": story_id,
-                    "Is_series": is_series,
-                    "query_type": "content",
                     "section": section,
                     "meta_json": _dumps_json(meta),
                     "chapter_json": _dumps_json(chapter),

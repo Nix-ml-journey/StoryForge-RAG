@@ -19,6 +19,10 @@ Google_book_api_key: ""
 # "api" (default) calls HF/Gemini below. "local" loads a small model
 # in-process instead, removing the API round-trip from every agentic-loop
 # iteration, and falls back to the API chain automatically if it errors.
+# Offline / no HF credits: set Evaluation_mode: "local" (and keep the device on
+# "cpu" so Ollama keeps the GPU). Without ANY working evaluator the agentic loop
+# decides on completeness + facts only, and will not ACCEPT a draft that has
+# zero grounded facts behind it.
 Evaluation_mode: "api"
 Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
 Local_evaluation_device: "cpu"   # "cuda" only if you have VRAM to spare alongside Ollama
@@ -72,6 +76,19 @@ HF_grounded_facts_json_mode: true
 # writes the JSON answer -- finish_reason "length", empty content, 0 facts.
 # Keep this true unless you've confirmed your model/provider doesn't need it.
 HF_grounded_facts_disable_thinking: true
+# "hf" (default): HF API first, local model on failure.
+# "local": skip HF entirely (offline / no HF credits) -- avoids a failed HF
+# request + retries on every query. The local call uses Generation_provider
+# (Ollama by default) with HF_grounded_facts_max_new_tokens / _temperature.
+Grounded_facts_provider: "hf"
+# Ollama output constraint for the LOCAL facts call: "schema" (grammar-constrained
+# JSON, Ollama >= 0.5), "json" (plain JSON mode, older Ollama), or "off".
+# If Ollama rejects the format the call is retried once without it.
+Local_grounded_facts_json_format: "schema"
+# Extra local attempts when an answer yields 0 usable facts (asks for fewer,
+# shorter facts -- truncation is the usual cause). 0 disables the retry.
+Local_grounded_facts_retries: 1
+Local_grounded_facts_compact_max_facts: 12
 
 # --- Step 3: story generation ---
 # Provider: ollama | vllm | transformers

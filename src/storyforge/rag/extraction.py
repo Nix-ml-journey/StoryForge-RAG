@@ -14,7 +14,11 @@ from huggingface_hub import InferenceClient
 
 from storyforge.api_errors import is_retryable_api_error
 from storyforge.config.config import load_prompts
-from storyforge.rag.attribution import ParsedFacts, parse_grounded_facts_json
+from storyforge.rag.attribution import (
+    ParsedFacts,
+    parse_grounded_facts_json,
+    salvage_grounded_facts_json,
+)
 from storyforge.rag.generation_backend import (
     generation_provider,
     load_ollama_llm,
@@ -220,7 +224,59 @@ def _hf_chat_extract_json_with_retry(
     return ""
 
 
-def _load_facts_llm(cfg: dict[str, Any]) -> Any:
+# JSON schema for Ollama structured outputs (``format=<schema>``, Ollama >= 0.5).
+# This is the local equivalent of the HF path's response_format: decoding is
+# grammar-constrained, so the model cannot emit prose, fences, or broken
+# quoting -- only truncation (num_predict) can still cut it short, which
+# salvage_grounded_facts_json() handles.
+FACTS_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string"},
+                    "fact": {"type": "string"},
+                    "source_chunk_ids": {"type": "array", "items": {"type": "string"}},
+                    "quote": {"type": "string"},
+                },
+                "required": ["type", "fact", "source_chunk_ids", "quote"],
+            },
+        }
+    },
+    "required": ["facts"],
+}
+
+_LOCAL_JSON_ONLY_SUFFIX = (
+    "\n\nOUTPUT FORMAT (strict): reply with ONE JSON object and nothing else -- "
+    'no prose, no markdown fences, no <think> block. Start with {"facts": [ and end with ]}. '
+    'Copy each "source_chunk_ids" value exactly from the [CHUNK <id> | title] headers above.'
+)
+_LOCAL_COMPACT_RETRY_SUFFIX = (
+    "\n\nYour previous answer could not be used ({reason}). Return AT MOST {max_facts} facts, "
+    "keep every quote under 10 words, and make sure the JSON object is complete and closed."
+)
+
+
+def _local_json_format(cfg: dict[str, Any]) -> Any:
+    """Ollama ``format`` for the local facts call: schema (default) | json | off."""
+    raw = str(cfg.get("Local_grounded_facts_json_format") or "schema").strip().lower()
+    if raw in ("off", "false", "none", "0", "no"):
+        return None
+    if raw == "json":
+        return "json"
+    return FACTS_JSON_SCHEMA
+
+
+def _grounded_facts_provider(cfg: dict[str, Any]) -> str:
+    """``hf`` (default: HF API, local fallback) or ``local`` (skip HF entirely)."""
+    raw = str(cfg.get("Grounded_facts_provider") or "hf").strip().lower()
+    return "local" if raw in ("local", "ollama", "offline") else "hf"
+
+
+def _load_facts_llm(cfg: dict[str, Any], *, json_format: Any = None) -> Any:
     """Local Ollama / vLLM / Transformers fallback when HF is unavailable."""
     max_new = int(cfg.get("HF_grounded_facts_max_new_tokens") or 300)
     temperature = float(cfg.get("HF_grounded_facts_temperature") or 0.1)
@@ -229,10 +285,20 @@ def _load_facts_llm(cfg: dict[str, Any]) -> Any:
     provider = generation_provider(cfg)
     if provider == "vllm":
         LOG.info("Using vLLM for grounded-facts fallback")
-        return load_vllm_llm(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p)
+        llm = load_vllm_llm(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p)
+        if json_format:
+            # vLLM's OpenAI-compatible server supports JSON mode natively.
+            inner = getattr(llm, "_llm", None)
+            if inner is not None and hasattr(inner, "bind"):
+                llm._llm = inner.bind(response_format={"type": "json_object"})
+        return llm
     if provider == "ollama":
-        LOG.info("Using Ollama for grounded-facts fallback")
-        return load_ollama_llm(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p, thinking=False)
+        LOG.info("Using Ollama for grounded-facts fallback (json_format=%s)",
+                 "schema" if isinstance(json_format, dict) else json_format)
+        return load_ollama_llm(
+            cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p,
+            thinking=False, json_format=json_format,
+        )
 
     from storyforge.rag.generation import _load_or_get_cached_local_model
     from transformers import pipeline  # type: ignore
@@ -254,13 +320,97 @@ def _load_facts_llm(cfg: dict[str, Any]) -> Any:
     return HuggingFacePipeline(pipeline=fact_pipe)
 
 
+def _invoke_local_facts(cfg: dict[str, Any], prompt: str, json_format: Any) -> str:
+    """One local call; if the backend rejects the JSON format, retry once without it."""
+    try:
+        facts_llm = _load_facts_llm(cfg, json_format=json_format)
+        return str(facts_llm.invoke(prompt) or "").strip()
+    except Exception as e:
+        if not json_format:
+            raise
+        LOG.warning(
+            "Local grounded-facts call failed with json_format enabled (%s); retrying without it. "
+            "Ollama < 0.5 does not support schema output -- set Local_grounded_facts_json_format: \"json\".",
+            e,
+        )
+        facts_llm = _load_facts_llm(cfg, json_format=None)
+        return str(facts_llm.invoke(prompt) or "").strip()
+
+
+def _extract_grounded_facts_local(
+    query: str,
+    chunks: list[dict[str, Any]],
+    cfg: dict[str, Any],
+    prompts: dict[str, str],
+) -> tuple[str, ParsedFacts]:
+    """Local (Ollama / vLLM / Transformers) grounded-facts extraction.
+
+    Hardened relative to a bare ``invoke`` + strict ``json.loads``:
+      1. grammar-constrained JSON via Ollama ``format`` (schema by default);
+      2. an explicit JSON-only instruction appended to the prompt;
+      3. lenient salvage parsing (fences, prose, bare lists, truncation) with
+         cited chunk ids validated against the actually-retrieved chunks;
+      4. one compact retry (fewer, shorter facts) when the first answer
+         yields 0 usable facts -- truncation is the most common cause;
+      5. a loud ERROR with the failure category when it still yields nothing.
+    """
+    json_format = _local_json_format(cfg)
+    retries = max(0, int(cfg.get("Local_grounded_facts_retries", 1) or 0))
+    compact_max = int(cfg.get("Local_grounded_facts_compact_max_facts") or 12)
+    known_ids = [str(c.get("chunk_id")) for c in chunks if c.get("chunk_id")]
+
+    base_prompt = (
+        f"{(prompts['facts_system'] or '').strip()}\n\n"
+        + prompts["facts_user"].format(
+            query=query,
+            retrieval_chunks=_format_chunks_for_prompt(chunks),
+        ).strip()
+        + _LOCAL_JSON_ONLY_SUFFIX
+    )
+
+    raw = ""
+    parsed = ParsedFacts(facts=(), raw={})
+    diag: dict[str, Any] = {}
+    prompt = base_prompt
+    for attempt in range(retries + 1):
+        raw = _invoke_local_facts(cfg, prompt, json_format)
+        parsed, diag = salvage_grounded_facts_json(raw, known_chunk_ids=known_ids or None)
+        LOG.info(
+            "Local grounded-facts attempt %d/%d: status=%s raw_fact_objects=%s kept=%d dropped=%s chars=%d",
+            attempt + 1, retries + 1, diag.get("status"), diag.get("raw_fact_objects"),
+            len(parsed.facts), diag.get("dropped"), len(raw),
+        )
+        if parsed.facts:
+            return raw, parsed
+        prompt = base_prompt + _LOCAL_COMPACT_RETRY_SUFFIX.format(
+            reason=diag.get("status"), max_facts=compact_max
+        )
+
+    LOG.error(
+        "LOCAL grounded-facts extraction FAILED for query=%r after %d attempt(s): status=%s "
+        "raw_fact_objects=%s dropped=%s. Step 3 will have NO grounded facts (the agentic loop "
+        "will not ACCEPT this). Raw response (first 300 chars): %r",
+        query, retries + 1, diag.get("status"), diag.get("raw_fact_objects"),
+        diag.get("dropped"), raw[:300],
+    )
+    return raw, parsed
+
+
 def extract_grounded_facts(
     query: str,
     chunks: list[dict[str, Any]],
     cfg: dict[str, Any],
 ) -> tuple[str, ParsedFacts]:
-    """Step 2: extract grounded facts JSON (HF first, local fallback)."""
+    """Step 2: extract grounded facts JSON (HF first, local fallback).
+
+    ``Grounded_facts_provider: "local"`` skips the HF call entirely (offline /
+    no HF credits) instead of paying a failed request + retry on every query.
+    """
     prompts = _get_generation_prompts()
+    if _grounded_facts_provider(cfg) == "local":
+        LOG.info("Grounded_facts_provider=local: skipping HF, using local extraction.")
+        return _extract_grounded_facts_local(query, chunks, cfg, prompts)
+
     try:
         grounded_raw = _hf_chat_extract_json_with_retry(
             cfg=cfg,
@@ -272,15 +422,7 @@ def extract_grounded_facts(
         )
     except Exception as e:
         LOG.warning("HF routed extraction unavailable; falling back to local extraction. Error: %s", e)
-        facts_llm = _load_facts_llm(cfg)
-        facts_prompt = (
-            f"{(prompts['facts_system'] or '').strip()}\n\n"
-            + prompts["facts_user"].format(
-                query=query,
-                retrieval_chunks=_format_chunks_for_prompt(chunks),
-                        ).strip()
-        )
-        grounded_raw = str(facts_llm.invoke(facts_prompt) or "").strip()
+        return _extract_grounded_facts_local(query, chunks, cfg, prompts)
 
     try:
         parsed = parse_grounded_facts_json(grounded_raw)

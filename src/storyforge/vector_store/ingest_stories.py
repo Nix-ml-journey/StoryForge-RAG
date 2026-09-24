@@ -70,6 +70,73 @@ class IngestResult:
     chunks_written: int = 0
     collection_name: str = ""
     error: Optional[str] = None
+    # How each .txt was ingested (see _story_json_plan):
+    from_story_json: int = 0      # reviewed story_json chunks + metadata used
+    stale_story_json: int = 0     # story_json exists but raw_text != .txt -> .txt chunks, story metadata only
+    without_story_json: int = 0   # no story_json record -> .txt chunks, empty Author/Summary
+
+
+def _read_text_keep_newlines(path: Path, *, errors: str = "strict") -> str:
+    """Read UTF-8 text without newline translation (CRLF stays CRLF).
+
+    Path.read_text(newline=...) only exists on Python 3.13+; open(newline="")
+    gives the same result on the 3.10+ versions requirements.txt supports.
+    """
+    with open(path, encoding="utf-8", errors=errors, newline="") as fh:
+        return fh.read()
+
+
+def _norm_text(t: str) -> str:
+    # Normalize CRLF and lone CR (Windows text-mode round-trips can leave \r).
+    return (t or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _load_story_json(records_dir: Optional[Path], title: str) -> Optional[dict]:
+    if records_dir is None:
+        return None
+    fp = records_dir / f"{title}.json"
+    if not fp.is_file():
+        return None
+    try:
+        import json
+
+        rec = json.loads(fp.read_text(encoding="utf-8"))
+    except Exception as e:  # malformed JSON should not kill a whole ingest
+        LOG.warning("Ignoring unreadable story_json %s: %s", fp, e)
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def _story_json_plan(rec: Optional[dict], txt: str, title: str) -> tuple[str, list[dict]]:
+    """Decide how to ingest one story. Returns (mode, reviewed_chunks).
+
+    mode = "story_json": the record's raw_text matches the .txt, so its
+    (possibly hand-fixed) chunks, chunk_ids and section tags are what gets
+    embedded -- matching docs/DATA_PREP.md ("chunks[].text: this is what gets
+    embedded"). mode = "stale": record exists but the .txt changed since it was
+    built, so chunks come from the .txt and only story-level metadata is taken.
+    mode = "none": no record.
+    """
+    if rec is None:
+        return "none", []
+    raw = rec.get("raw_text")
+    if raw is not None and _norm_text(str(raw)) != _norm_text(txt):
+        return "stale", []
+    out: list[dict] = []
+    for i, ch in enumerate(rec.get("chunks") or [], start=1):
+        if not isinstance(ch, dict):
+            continue
+        text = str(ch.get("text") or "").strip()
+        if not text:
+            continue  # DATA_PREP checklist: no empty chunks
+        out.append(
+            {
+                "chunk_id": str(ch.get("chunk_id") or f"{title}_chunk_{i}"),
+                "text": text,
+                "section": str(ch.get("section") or ""),
+            }
+        )
+    return ("story_json", out) if out else ("stale", [])
 
 
 def _iter_story_files(stories_dir: Path) -> Iterable[Path]:
@@ -180,15 +247,32 @@ def ingest_stories_dir(
     collection_name: str = "StoryForgeRag_v1",
     max_chars: int = 1800,
     overlap_chars: int = 200,
+    records_dir: str | Path | None = None,
+    use_story_json: bool = True,
 ) -> IngestResult:
-    """Read Story_input/*.txt, chunk, embed, upsert into Chroma."""
+    """Read Story_input/*.txt, chunk, embed, upsert into Chroma.
+
+    When ``data/story_json/<Title>.json`` exists (``records_dir`` overrides the
+    location) its Author / Summary / Display_title / Is_series are written as
+    metadata, and -- if its raw_text still matches the .txt -- its reviewed
+    chunks and section tags are embedded instead of re-chunking the .txt.
+    Previously this path (used by reset_and_ingest.py) hardcoded Author="" /
+    Summary="" and ignored every manual fix made in story_json.
+    """
     try:
+        from storyforge.data.records_to_manifest import _as_chroma_metadata, story_level_metadata
+
         cfg = load_config()
         root = Path(base_path or cfg.get("BASE_PATH") or Path(__file__).resolve().parents[1])
         # Default must match story_records.py's, or an omitted Story_input
         # silently points ingest at a directory that doesn't exist.
         stories_path = Path(stories_dir) if stories_dir else root / (cfg.get("Story_input") or "data/stories")
         stories_path = stories_path.resolve()
+        rec_dir: Optional[Path] = None
+        if use_story_json:
+            rec_dir = Path(records_dir) if records_dir else root / "data" / "story_json"
+            rec_dir = rec_dir.resolve() if rec_dir.is_dir() else None
+        counts = {"story_json": 0, "stale": 0, "none": 0}
 
         collection = get_or_create_collection(collection_name)
         files = list(_iter_story_files(stories_path))
@@ -215,33 +299,52 @@ def ingest_stories_dir(
 
         for f in files:
             try:
-                text = f.read_text(encoding="utf-8")
+                # newline="" so Windows does not translate CRLF before we normalize
+                # for story_json staleness checks.
+                text = _read_text_keep_newlines(f)
             except UnicodeDecodeError:
-                text = f.read_text(encoding="utf-8", errors="replace")
+                text = _read_text_keep_newlines(f, errors="replace")
 
-            chunks = _chunk_text(text, max_chars=max_chars, overlap_chars=overlap_chars)
-            if not chunks:
+            title = f.stem
+            rec = _load_story_json(rec_dir, title)
+            mode, reviewed = _story_json_plan(rec, text, title)
+            if mode == "story_json":
+                chunk_rows = reviewed
+            else:
+                chunk_rows = [
+                    {"chunk_id": f"{title}_chunk_{i}", "text": ch, "section": ""}
+                    for i, ch in enumerate(
+                        _chunk_text(text, max_chars=max_chars, overlap_chars=overlap_chars), start=1
+                    )
+                ]
+                if mode == "stale":
+                    LOG.warning(
+                        "story_json for %s is stale (raw_text differs from the .txt): ingesting .txt chunks "
+                        "with story-level metadata only (no section tags / chunk edits). Rebuild it with "
+                        "scripts/prepare_story_records.py --overwrite --only \"%s\" and re-review.",
+                        title, title,
+                    )
+            if not chunk_rows:
                 LOG.warning("Skipping empty story file: %s", f.name)
                 continue
+            counts[mode] += 1
 
+            story_md = story_level_metadata(rec or {}, title)
             ids: list[str] = []
             metadatas: list[dict] = []
             documents: list[str] = []
-            title = f.stem
-            for i, ch in enumerate(chunks, start=1):
-                chunk_id = f"{title}_chunk_{i}"
-                ids.append(chunk_id)
+            for row in chunk_rows:
+                ids.append(row["chunk_id"])
                 metadatas.append(
-                    {
-                        "Title": title,
-                        "Author": "",
-                        "Summary": "",
-                        "query_type": "content",
-                        "Is_series": False,
-                        "chunk_id": chunk_id,  # used by grounded-facts attribution
-                    }
+                    _as_chroma_metadata(
+                        {
+                            **story_md,
+                            "chunk_id": row["chunk_id"],  # used by grounded-facts attribution
+                            "section": row["section"],
+                        }
+                    )
                 )
-                documents.append(ch)
+                documents.append(row["text"])
 
             embeddings = _embed_chunks(embed_model, documents, is_bge=is_bge)
             if embeddings is not None:
@@ -251,12 +354,19 @@ def ingest_stories_dir(
                 collection.upsert(ids=ids, metadatas=metadatas, documents=documents)
             chunks_written += len(ids)
 
+        LOG.info(
+            "Ingest sources: %d from story_json, %d stale story_json (.txt chunks), %d without story_json.",
+            counts["story_json"], counts["stale"], counts["none"],
+        )
         return IngestResult(
             success=True,
             files_seen=files_seen,
             chunks_written=chunks_written,
             collection_name=collection.name,
             error=None,
+            from_story_json=counts["story_json"],
+            stale_story_json=counts["stale"],
+            without_story_json=counts["none"],
         )
     except Exception as e:
         LOG.exception("ingest_stories_dir failed")

@@ -159,6 +159,26 @@ def test_decide_no_eval_thin_facts_still_refines():
     assert d.action == REFINE
 
 
+def test_decide_no_eval_complete_but_zero_facts_does_not_accept():
+    # Grounding contract (P0.3): with no evaluator, a complete-looking draft
+    # written from zero grounded facts must NOT be accepted.
+    d = decide_action({}, _complete(), facts_count=0, cfg=CFG, has_eval=False)
+    assert d.action == RE_RETRIEVE
+    assert d.action != ACCEPT
+    assert any("no grounded facts" in r for r in d.reasons)
+
+
+def test_decide_no_eval_complete_negative_facts_does_not_accept():
+    d = decide_action({}, _complete(), facts_count=-1, cfg=CFG, has_eval=False)
+    assert d.action == RE_RETRIEVE
+
+
+def test_decide_eval_dict_empty_treated_as_no_eval_and_requires_facts():
+    # has_eval=True but the eval call returned nothing -> same no-eval branch.
+    d = decide_action({}, _complete(), facts_count=0, cfg=CFG, has_eval=True)
+    assert d.action == RE_RETRIEVE
+
+
 def test_decide_no_eval_zero_facts_re_retrieves():
     # Nothing grounded to refine from -> re-retrieve.
     d = decide_action({}, _incomplete(), facts_count=0, cfg=CFG, has_eval=False)
@@ -291,3 +311,60 @@ def test_generation_failure_after_partial_progress_keeps_best_draft(stub_heavy_d
     assert result.iterations[0]["action"] == "refine"
     assert result.iterations[1]["action"] == "generation_failed"
     assert calls["n"] == 2
+
+
+def _complete_multi_sentence_story(sentences_per_section: int = 6) -> str:
+    """A draft that passes completeness_report for a small length target."""
+    sentence = "Alana walked through the quiet village and listened to the wind in the old trees."
+    body = " ".join([sentence] * sentences_per_section)
+    return "\n\n".join(f"[SECTION {i}: PART]\n{body}" for i in range(1, 6))
+
+
+def test_no_eval_zero_facts_complete_draft_is_never_accepted(stub_heavy_deps, monkeypatch):
+    """End-to-end loop: eval down + facts extraction empty + complete draft.
+
+    Before the P0.3 fix this returned accepted=True on iteration 1 with zero
+    grounded facts behind the story.
+    """
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.rag.generation as generation_mod
+
+    _fake_docs_chain(monkeypatch, facts_json='{"facts": []}')
+    story = _complete_multi_sentence_story()
+    monkeypatch.setattr(generation_mod, "generate_from_facts", lambda *a, **k: story)
+
+    cfg = {"Agentic_loop_max_iterations": 2, "Story_length_presets": {"short": 100}}
+    result = run_agentic_story_loop(
+        "a test query", cfg=cfg, length="short", debug=False, show_progress=False
+    )
+
+    assert result.accepted is False
+    assert result.stop_reason == "max_iterations_no_grounded_facts"
+    assert [it["action"] for it in result.iterations] == [RE_RETRIEVE, RE_RETRIEVE]
+    assert all(it["facts_count"] == 0 for it in result.iterations)
+    assert all(it["has_eval"] is False for it in result.iterations)
+    # Sanity: the draft itself was complete, so ONLY missing facts blocked ACCEPT.
+    assert all(it["completeness_ok"] is True for it in result.iterations)
+    # Best-effort draft is still returned for inspection, just not accepted.
+    assert result.content == story
+
+
+def test_no_eval_with_facts_complete_draft_accepts(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.rag.generation as generation_mod
+
+    _fake_docs_chain(
+        monkeypatch,
+        facts_json='{"facts":[{"type":"who","fact":"Alana fights Zoruk","source_chunk_ids":["c1"]}]}',
+    )
+    story = _complete_multi_sentence_story()
+    monkeypatch.setattr(generation_mod, "generate_from_facts", lambda *a, **k: story)
+
+    cfg = {"Agentic_loop_max_iterations": 2, "Story_length_presets": {"short": 100}}
+    result = run_agentic_story_loop(
+        "a test query", cfg=cfg, length="short", debug=False, show_progress=False
+    )
+
+    assert result.accepted is True
+    assert result.stop_reason == "accepted"
+    assert result.iterations[0]["has_eval"] is False

@@ -95,6 +95,8 @@ def main() -> None:
         print(f"      Files seen    : {result.files_seen}")
         print(f"      Chunks written: {result.chunks_written}")
         print(f"      Collection    : {result.collection_name}")
+        print(f"      From story_json: {result.from_story_json}  |  stale story_json: "
+              f"{result.stale_story_json}  |  no story_json: {result.without_story_json}")
     else:
         print(f"[FAIL] Ingest failed: {result.error}")
         sys.exit(1)
