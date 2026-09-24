@@ -1,7 +1,8 @@
 # Evidence & Code Locations for StoryForge-RAG Audit
 
 **Original audit:** 2026-09-24  
-**Verification update:** 2026-09-24 — P0.1 / P0.2 / P0.3 implemented and tested (`156 passed`).
+**Verification update:** 2026-09-24 — P0.1 / P0.2 / P0.3 implemented and tested; owner's `.venv`: **`163 passed`**.
+**Machine verification:** P0.1 rebuild ingest run on the real corpus (72 story_json / 0 stale / 0 missing, 2138 chunks); `validate_chroma_metadata.py` and `retrieval_eval.py` run via `.\.venv\Scripts\python.exe`.
 
 ---
 
@@ -9,20 +10,21 @@
 
 | Finding | Was | Now |
 |---------|-----|-----|
-| P0.1 rebuild ingest ignores story_json | True for `ingest_stories_dir` / `reset_and_ingest` | **Fixed** — loads story_json; stale detection; aligned manifest metadata |
+| P0.1 rebuild ingest ignores story_json | True for `ingest_stories_dir` / `reset_and_ingest` | **Fixed + verified on machine** — 72/0/0 story_json ingest, Author 93.6% in Chroma |
 | P0.1 “manifest never used” | Overstated — manifest path existed | Corrected: gap was rebuild path, not all ingest |
 | P0.2 local JSON fallback fragile | True | **Fixed** — schema/format, salvage, citation filter, retry, provider=local |
 | P0.3 no-eval ACCEPT with 0 facts | True | **Fixed** — facts checked first; `has_eval` on iterations |
 | P0.4 embed mismatch | Process risk, not proven live breakage | **Still open** as P1 health-check |
+| Offline follow-up (docs + `validate_chroma_metadata.py`) | — | **Verified** — 163 passed; report run on the 2138-chunk collection, `PROBLEMS: none` |
 
 ---
 
-## P0.1: story_json Metadata — FIXED
+## P0.1: story_json Metadata — FIXED + VERIFIED ON MACHINE
 
 ### Where the fix lives
 | File | What to look at |
 |------|-----------------|
-| `src/storyforge/vector_store/ingest_stories.py` | `_load_story_json`, `_story_json_plan`, `_norm_text`, `ingest_stories_dir(..., records_dir=..., use_story_json=True)`, `IngestResult.from_story_json` / `stale_story_json` |
+| `src/storyforge/vector_store/ingest_stories.py` | `_load_story_json`, `_story_json_plan`, `_norm_text`, `_read_text_keep_newlines` (Py3.10-safe CRLF-preserving read), `ingest_stories_dir(..., records_dir=..., use_story_json=True)`, `IngestResult.from_story_json` / `stale_story_json` |
 | `src/storyforge/data/records_to_manifest.py` | Same Author / Summary / Display_title / Is_series contract; Title = filename stem |
 | `tests/test_ingest_story_json_metadata.py` | 8 regression tests (CRLF uses `write_bytes`) |
 
@@ -33,6 +35,25 @@
 
 ### Still true
 - `Title` metadata remains the **filename stem** (chunk ids + retrieval_eval fixtures depend on it). Human title goes to `Display_title`.
+
+### Machine evidence (2026-09-24)
+| Check | Result |
+|---|---|
+| `reset_and_ingest.py` | `From story_json: 72 · stale: 0 · no story_json: 0`, Files 72, Chunks 2138 |
+| `validate_chroma_metadata.py` | `PROBLEMS: none` · Author 93.6% · Display_title 93.6% · Summary 6.4% · section 45.8% |
+| `retrieval_eval.py --k 3` (venv) | top1 0.80 · top3 0.833 · fact_coverage 0.733 (Phase 1 baseline 0.80 · 0.90 · 0.77) |
+| Ops | `WinError 32` deleting `data/chroma_db` (locked file) → Chroma API reset fallback, rebuild OK. Not a P0 |
+
+**Where the percentages come from** (read from `data/story_json/*.json`):
+- 35 classics (Kafka, Lovecraft, Frankenstein, Jekyll, Wells, Doyle) → `meta.author` + `meta.title` set, **`summary` empty** → 2002 chunks = the 93.6% Author / Display_title and the 93.6% missing Summary.
+- 37 Firestone Idle RPG wiki pages (Amun … Zoruk) → **`summary` set, `meta.author` / `meta.title` empty** → 136 chunks = 6.4%. They also carry template placeholders: all 37 share `id: "id_01"` and have `Is_series: true` with an empty `series_name`. Nothing in `rag/` or `evaluation/` reads the `id` metadata, so this is hygiene, not a retrieval bug.
+- 16 stories have no `section` tags at all → section 45.8% (P2).
+
+**Interpretation:** the remaining gaps are content, not code. Firestone pages use a fixed convention (`meta.author: "Firestone Idle"`, `meta.title` = page name, `id` = stem, `Is_series: false`) instead of looking up a novelist; the recipe was dry-run on a copy (37 updated, re-run 0, all 72 still `story_json`, not stale). Classic summaries wait for HF enrich or stay empty. Recipe: `P0_CRITICAL_ISSUES_CHECKLIST.md` → "Firestone metadata recipe".
+
+**Tooling limits found:** `scripts/push_section_metadata.py` refreshes `section` / `meta_json` only, **not** top-level `Author` / `Display_title` / `Summary` → after metadata edits, rebuild with `reset_and_ingest.py`. Bare `py scripts\...` runs system Python (`ModuleNotFoundError: langchain_chroma`) → use `.\.venv\Scripts\python.exe`.
+
+**retrieval_eval shift:** top1 held; top3 −2 cases of 30 and coverage −0.037 after switching the collection to reviewed story_json chunks. Expected; follow up as corpus/chunk work (compare `Evaluation/retrieval_eval_report.json` per case), not retrieval-knob tuning.
 
 ---
 
@@ -114,7 +135,15 @@ Not a live P0 if you already re-ingested after the 2026-09 BGE fix.
 ## After HF credits renew
 
 1. Set `Grounded_facts_provider: "hf"` again  
-2. `py scripts/measure_generation_length.py --mode fast --length long`  
+2. `.\.venv\Scripts\python.exe scripts\measure_generation_length.py --mode fast --length long`  
 3. Split accept rate by iteration `has_eval`  
 4. Compare HF vs local `facts_count` on the same queries  
 5. Optionally run salvage parser on HF truncated answers too
+6. Classic `summary` enrich for the 35 books (or keep empty offline)
+
+## Still open (not HF-dependent)
+
+- P1: collection embedding fingerprint (old P0.4)
+- Optional now: Firestone metadata fill → rebuild → validate (expect Author 100%)
+- Optional now: P0.2 Ollama smoke probe with `Grounded_facts_provider: "local"`
+- P2: section tags for 16 untagged stories

@@ -156,6 +156,8 @@ See `data/story_json/sample/demo_village.json`. Minimum you should fill:
 | `chunks[].text` | This is what gets embedded. Fix OCR here if you missed it in the `.txt` |
 | `chunks[].section` | Tags like `setup`, `climax`, `resolution`. Wrong tags are better than empty, but a whole file tagged `setup` is a bad labeler run |
 
+**Non-book sources (game wiki pages, e.g. Firestone Idle characters).** There is no novelist to look up — use one consistent convention instead: `meta.author` = the source name (`"Firestone Idle"` for every page), `meta.title` = the character / page name (usually the filename stem), `id` = the filename stem (not the template's `id_01`), and `Is_series: false` unless the pages really are chapters of a named series. `summary` is optional. Editing only these fields leaves `raw_text` / `chunks` alone, so the record does not go stale; rebuild with `reset_and_ingest.py` afterwards (`push_section_metadata.py` does not refresh top-level Author / Display_title).
+
 Allowed section tags: `setup`, `inciting_incident`, `rising_action`, `confrontation`, `twist`, `climax`, `fallout`, `resolution`, `epilogue`, `setting`, `negotiation`.
 
 ### JSON checklist (do this before ingest)

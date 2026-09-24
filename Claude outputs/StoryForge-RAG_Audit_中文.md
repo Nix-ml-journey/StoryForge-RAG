@@ -6,22 +6,64 @@
 
 ---
 
-## 验证更新（2026-09-24，无 HF 积分期间）
+## 验证更新（2026-09-24，无 HF 积分期间 · 已在本机验证）
 
-| 项 | 原判定 | 验证后 |
-|----|--------|--------|
-| **P0.1** story_json ↔ ingest | 关键缺陷 | **已修复**（重建路径 `ingest_stories_dir` / `reset_and_ingest`；manifest 路径原本可用，审计略夸大） |
-| **P0.2** 本地 Ollama JSON | 关键缺陷 | **已修复（代码）**；需在本机用 Ollama 冒烟确认 |
-| **P0.3** 无评估 ACCEPT 且 facts=0 | 关键缺陷 | **已修复**（`decide_action` 先查 facts；迭代记录 `has_eval`） |
-| **P0.4** 嵌入前缀不匹配检测 | 标为 P0 | **降为 P1**（BGE 修复后已要求 re-ingest；缺的是自动指纹检测） |
+| 项 | 原判定 | 当前状态 |
+|----|--------|----------|
+| **P0.1** story_json ↔ 重建 ingest | 关键缺陷 | ✅ **已修复 + 本机验证**：`reset_and_ingest.py` 输出 `From story_json: 72 · stale: 0 · no story_json: 0`，72 个文件 / 2138 chunks，`validate_chroma_metadata.py` 报告 `PROBLEMS: none`。（原审计说“manifest 从未被用”是夸大；真正缺口只在重建路径。） |
+| **P0.2** 本地 Ollama 提事实 JSON | 关键缺陷 | ✅ **已修复（代码 + 测试）**；⏳ 本机 Ollama 冒烟探针尚未记录结果 |
+| **P0.3** 无评估时 facts=0 仍 ACCEPT | 关键缺陷 | ✅ **已修复**（`decide_action` 先查 facts；迭代记录 `has_eval`） |
+| **P0.4** 嵌入模型/前缀不匹配检测 | 标为 P0 | **降为 P1，仍未做**（BGE 修复后已整库重建；缺的是集合指纹自动检测） |
+| 离线后续（文档 + 校验脚本） | — | ✅ **已验证**：本机 `.\.venv\Scripts\python.exe -m pytest -q` → **163 passed**；`validate_chroma_metadata.py` 已在真实库上跑通 |
 
-**本机 pytest（项目 `.venv`）：`156 passed`**（含 P0 回归 + CRLF stale 修复）。
+### 本机重建后的元数据（`validate_chroma_metadata.py`）
 
-**你现在还要做的（仍不需要 HF）：**
-1. `setup.yaml` 设 `Grounded_facts_provider: "local"`（可选 `Evaluation_mode: "local"`）
-2. Ollama 冒烟测本地提事实
-3. 填好 `story_json` 后跑 `reset_and_ingest.py` + `peek` / `retrieval_eval`
-4. HF 积分恢复后再跑干净的 `measure_generation_length.py`
+| 字段 | 非空占比（按 chunk） | 解释 |
+|------|------------------|------|
+| Author | **93.6%** | 35 个经典作品（Kafka / Lovecraft / Frankenstein / Jekyll …）已填作者 = 2002 chunks |
+| Display_title | **93.6%** | 同上 |
+| Summary | **6.4%** | 恰好相反：只有 37 个 Firestone 故事有 summary（136 chunks / 2138）；经典作品 summary 为空（HF 自动摘要离线不可用） |
+| section | **45.8%** | 16 个故事完全没有 section 标签 |
+
+**缺 Author 的 37 个标题不是“作者不详的书”**，而是 **Firestone Idle RPG** 游戏 wiki 的角色 / 故事页（Amun、Anzo、Arvie、Asmondai、Astrid、Belien …）。不需要“去查作者”，用统一约定即可（见下文“Firestone 元数据约定”）。另外这 37 条记录都带着模板占位值：`id: "id_01"`（37 条重复）和 `Is_series: true` 但 `series_name` 为空，建议顺手改掉（检索/评估不读取 `id`，属于元数据卫生，不是 bug）。
+
+### 重建后的 retrieval_eval（必须用 venv 运行）
+
+| | top1 | top3 | fact_coverage |
+|---|---|---|---|
+| Phase 1 基线（rerank-before-diversity） | 0.80 | 0.90 | 0.77 |
+| 重建后（嵌入经人工审阅的 story_json chunks） | **0.80** | **0.833** | **0.733** |
+
+top1 持平；top3 / fact_coverage 小幅下降，原因是重建后嵌入的是 story_json 中审阅过的 chunk（切分和文本与旧 `.txt` 重新切块不同）。**这是预期内的变化，不是紧急回归**；如果之后要追回 top3，属于 corpus / chunk 质量工作（逐案看 `Evaluation/retrieval_eval_report.json` 中哪 1 个 case 从 top3 掉出），不是调检索旋钮。
+
+### 运维提示（不是 P0）
+- **一定用 venv 跑脚本**：`.\.venv\Scripts\python.exe scripts\...`（或先激活 `.venv`）。裸 `py scripts\retrieval_eval.py` 用的是系统 Python，会报 `ModuleNotFoundError: langchain_chroma`。本文后面历史部分里的 `py scripts/...` 命令都应按此替换。
+- `reset_and_ingest.py` 删除 `data/chroma_db` 时可能报 **WinError 32（文件被占用）**——通常是 API 服务或其它 Python 进程还开着 Chroma。脚本会改用 Chroma API 重置集合，重建照样成功；想彻底删目录就先停掉 `python main.py` 再跑。
+- `push_section_metadata.py` 只刷新 `section` / `meta_json`，**不会**刷新顶层 `Author` / `Display_title` / `Summary`。改了作者/标题后请用 `reset_and_ingest.py` 重建。
+
+### Firestone 元数据约定（可选，离线即可做）
+- `meta.author` → **`"Firestone Idle"`**（所有 Firestone 页面用同一个字符串）
+- `meta.title`（→ Chroma 的 `Display_title`）→ 角色/页面名，一般等于文件名（`Amun`、`Anzo` …）
+- `id` → 文件名（替换模板值 `id_01`）；`Is_series` → `false`（角色页不是某个命名系列的章节）
+- `summary` → 已有，保留；以后想改再改，**不阻塞**
+- 只改 meta 不改 `raw_text` / `chunks`，所以重建时不会被判为 stale
+- 具体可复制的步骤见 `P0_CRITICAL_ISSUES_CHECKLIST.md` → “Firestone metadata recipe”。完成后预期：Author / Display_title → **100%**，Summary 仍为 6.4%。
+
+### 现在该做什么
+
+**已完成：** P0.1–P0.3 代码与测试 · 重建 ingest（72/0/0）· `validate_chroma_metadata.py` 报告 · retrieval_eval（venv）
+
+**现在可选（离线）：**
+1. 按上面约定补齐 37 个 Firestone 的 `meta.author` / `meta.title`（+ `id` / `Is_series`），再 `reset_and_ingest.py` + `validate_chroma_metadata.py`
+2. 跑一次 P0.2 的本地 Ollama 提事实冒烟探针（`Grounded_facts_provider: "local"`），记录 `status=ok kept=N`
+3. section 覆盖率 45.8% → **P2 可选**（16 个无标签故事可手工补，或等 enrich）
+
+**仍等 HF 积分：**
+- `measure_generation_length.py` 真实测量（按 `has_eval` 拆分 accept rate）
+- 经典作品的 Summary 自动 enrich（或离线保持为空——不影响检索和生成）
+- HF vs 本地提事实数量/质量对比
+
+**仍未做的 P1：** 嵌入指纹检测（原 P0.4）
 
 详细勾选清单见同目录 `P0_CRITICAL_ISSUES_CHECKLIST.md`。
 
@@ -30,7 +72,7 @@
 ## 一句话诊断
 
 **（审计当时）** Phase 2 中后期：检索稳定，但 grounding 在无评估回退下可被绕过，本地提事实脆弱，重建 ingest 丢掉 story_json 元数据。  
-**（验证后）** P0.1–P0.3 代码已落地；离线路径可用。剩余：本机 Ollama/re-ingest 确认，以及下月 HF 复测。原「一句话」中的 grounding / ingest 断裂已不再是当前代码状态。
+**（本机验证后）** P0.1–P0.3 已落地并通过 163 个测试；重建 ingest 已在真实语料上验证（72/0/0，Author 93.6%）。剩下的是可选的元数据补齐（Firestone 约定）、P0.2 冒烟探针、P0.4 指纹检测，以及下月 HF 复测——都不是 P0。
 
 ---
 
@@ -59,6 +101,8 @@
 ---
 
 ## 数据与 Ingest 专项审查
+
+> **（2026-09-24 本机验证后）** 本节是**审计当时**的状态，保留作历史记录。现在 `reset_and_ingest.py` 已读取 story_json（本机 72/0/0，Author 93.6%），下文中“ingest 不读 story_json”“Author 应为 0%”“`ingest_manifest.py` 不使用 manifest”等描述已**不再成立**。当前流程见 `docs/DATA_PREP.md`；命令请一律用 `.\.venv\Scripts\python.exe scripts\...`。
 
 ### 现在的流程对不对？
 
@@ -224,9 +268,10 @@ py scripts/validate_chroma_metadata.py
 # 应输出：
 #   - 总 chunks 数
 #   - 不同标题数
-#   - Author 非空的 chunks 占比（当前应该是 0%）
+#   - Author 非空的 chunks 占比（审计当时 0%；本机重建后 93.6%）
 #   - 任何名为"Unknown"的标题
-#   - 摘要非空的 chunks 占比（当前应该是 0%）
+#   - 摘要非空的 chunks 占比（审计当时 0%；本机重建后 6.4%，只有 Firestone 故事有 summary）
+# ✅ 已实现：scripts/validate_chroma_metadata.py（本机已运行，PROBLEMS: none）
 ```
 
 ---
@@ -732,27 +777,14 @@ not the scored path"
 
 ## English Summary
 
-**Verification (2026-09-24):** P0.1–P0.3 **implemented**. Local pytest: **156 passed**. P0.4 demoted to P1 (fingerprint still missing). Remaining user work: Ollama smoke for local facts, `reset_and_ingest` after filling story_json, clean HF re-measure next month.
+**Verification (2026-09-24, on the owner's machine, no HF credits):** P0.1–P0.3 implemented; `.venv` pytest **163 passed**. **P0.1 verified live:** `reset_and_ingest.py` → story_json 72 / stale 0 / none 0, 2138 chunks, `validate_chroma_metadata.py` → `PROBLEMS: none`, Author 93.6%, Display_title 93.6%, Summary 6.4%, section 45.8%. retrieval_eval (venv) after the rebuild: top1 0.80 / top3 0.833 / fact_coverage 0.733 vs Phase 1 0.80 / 0.90 / 0.77 — an expected shift from embedding the reviewed story_json chunks, not a regression emergency. P0.4 is now P1 (no embed fingerprint yet).
 
-**Original maturity snapshot:** End-to-end functional, Phase 2 mid-stage. Retrieval stable (top1 0.80 / top3 0.90). Pre-fix gaps: no-eval could ACCEPT with zero facts; local Ollama facts JSON fragile; rebuild ingest dropped story_json metadata.
+**Metadata gaps are content, not code:** the 37 stories without Author/Display_title are Firestone Idle RPG wiki pages → set `meta.author: "Firestone Idle"`, `meta.title` = page name, `id` = stem (replaces shared placeholder `id_01`), `Is_series: false`, then rebuild (recipe in `P0_CRITICAL_ISSUES_CHECKLIST.md`). The 35 classics have Author but no Summary → wait for HF enrich or leave empty. Section coverage 45.8% (16 untagged stories) is P2.
 
-**Strengths (still true):**
-1. Clean 3-step RAG (retrieve → grounded facts → generate)
-2. Unified LengthProfile
-3. Hybrid BM25+dense+rerank-before-diversity
-4. Empty-draft recovery
-5. Config-driven providers; rank-bm25 required
-6. Qwen3 HF thinking-token mitigations (`/no_think` + token budget)
+**Ops:** always run scripts with `.\.venv\Scripts\python.exe` (bare `py` lacks `langchain_chroma`). `WinError 32` on deleting `data/chroma_db` is a file lock; the API reset fallback still rebuilds correctly. `push_section_metadata.py` does not refresh top-level Author/Display_title — rebuild instead.
 
-**P0 status now:**
-1. **P0.1 FIXED** — rebuild ingest reads story_json (Title=stem; Display_title/Author/Summary wired)
-2. **P0.2 FIXED (code)** — local schema/salvage/retry; set `Grounded_facts_provider: "local"` offline
-3. **P0.3 FIXED** — no-eval cannot ACCEPT with `facts_count=0`; iterations expose `has_eval`
-4. **P0.4 OPEN (P1)** — add collection embed fingerprint later
+**Optional now (offline):** Firestone metadata fill → rebuild → validate (expect Author 100%); P0.2 Ollama smoke probe with `Grounded_facts_provider: "local"`.
+**Waits for HF:** clean `measure_generation_length.py` run split by `has_eval`; classic Summary enrich; HF vs local facts comparison.
+**Still open P1:** collection embedding fingerprint (old P0.4); lazy-init of the `chromadb.py` import side-effect.
 
-**Do now (no HF):** local provider + Ollama probe → reset_and_ingest → peek/retrieval_eval.  
-**After HF renews:** `measure_generation_length.py` with provider=hf; compare has_eval splits and HF vs local facts_count.
-
-**Anti-patterns (still):** Don't upgrade to 14B yet; don't reopen Phase 1 retrieval knobs; don't treat offline accept_rate as the final truth run.
-
-**Optional later:** collection embed fingerprint (old P0.4); lazy-init chromadb import side-effect; optional `validate_chroma_metadata.py` helper.
+**Anti-patterns (still):** don't upgrade to 14B yet; don't reopen Phase 1 retrieval knobs; don't treat offline accept_rate as the final truth run.
