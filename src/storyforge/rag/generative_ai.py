@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from storyforge.config.config import load_config
 
@@ -34,22 +34,6 @@ def parse_story_type(value: Optional[str]) -> StoryType:
     if v in {"series", "chapter", "chapters"}:
         return StoryType.SERIES
     return StoryType.MIX
-
-
-def get_mode_sampling(mode: Gen_mode) -> Tuple[float, float]:
-    """DEPRECATED -- hardcoded sampling defaults that do NOT drive generation.
-
-    These values were only ever echoed back in API `gen_params` responses while
-    generation itself read Generation_fast_* / Generation_thinking_* from
-    setup.yaml, so the two disagreed and the API misreported what actually ran.
-    Callers now use rag.generation._mode_generation_params(cfg, mode=mode),
-    which returns the real (max_new_tokens, temperature, top_p).
-
-    Kept only so external/manual callers do not break; do not use in new code.
-    """
-    if mode == Gen_mode.THINKING:
-        return (0.6, 0.9)
-    return (0.7, 0.95)
 
 
 # Dialogue quote characters (straight and curly Unicode).
@@ -127,7 +111,6 @@ __all__ = [
     "StoryType",
     "parse_gen_mode",
     "parse_story_type",
-    "get_mode_sampling",
     "clean_story_output",
     "save_generated_story",
 ]

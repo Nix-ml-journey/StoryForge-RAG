@@ -32,7 +32,6 @@ LOG = logging.getLogger(__name__)
 
 _LOCAL_MODEL_CACHE: dict = {}     # (model_id, precision, use_cuda) -> (tokenizer, model)
 
-_format_facts_for_prompt = format_facts_for_prompt
 
 
 def _resolve_generation_dtype(*, cfg: dict[str, Any], use_cuda: bool):
@@ -308,7 +307,7 @@ def generate_from_facts(
 ) -> str:
     """Step 3: write or refine a 5-section story from grounded facts."""
     profile = profile or resolve_length_profile(cfg, length=length, mode=mode)
-    formatted_facts = _format_facts_for_prompt(parsed)
+    formatted_facts = format_facts_for_prompt(parsed)
     facts_for_prompt = formatted_facts if formatted_facts else grounded_raw
 
     gen_llm = _load_generation_llm(

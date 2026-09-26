@@ -32,8 +32,6 @@ _EXTRACTION_RETRY_MAX_ATTEMPTS = 3
 _EXTRACTION_RETRY_BASE_DELAY_SEC = 2
 _EXTRACTION_RETRY_BACKOFF_FACTOR = 2
 
-_is_retryable_api_error = is_retryable_api_error
-
 
 def _hf_token(cfg: dict[str, Any]) -> str:
     return (cfg.get("facehugging_api") or "").strip()
@@ -211,7 +209,7 @@ def _hf_chat_extract_json_with_retry(
             return _hf_chat_extract_json(cfg=cfg, system=system, user=user)
         except Exception as e:
             last_exc = e
-            if not _is_retryable_api_error(e) or attempt == _EXTRACTION_RETRY_MAX_ATTEMPTS - 1:
+            if not is_retryable_api_error(e) or attempt == _EXTRACTION_RETRY_MAX_ATTEMPTS - 1:
                 raise
             delay = _EXTRACTION_RETRY_BASE_DELAY_SEC * (_EXTRACTION_RETRY_BACKOFF_FACTOR**attempt)
             LOG.warning(

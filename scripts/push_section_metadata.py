@@ -24,22 +24,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 
-def _dumps_json(value) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
-
-
-def _as_chroma_metadata(md: dict) -> dict:
-    out = {}
-    for k, v in (md or {}).items():
-        if v is None:
-            continue
-        if isinstance(v, (bool, int, float, str)):
-            out[str(k)] = v
-        elif isinstance(v, list) and all(isinstance(x, str) for x in v):
-            out[str(k)] = ", ".join([x for x in v if (x or "").strip()])
-        else:
-            out[str(k)] = str(v)
-    return out
+# Same serializers the manifest / rebuild ingest paths use (were copy-pasted here).
+from storyforge.data.records_to_manifest import _as_chroma_metadata, _dumps_json  # noqa: E402
 
 
 def main() -> None:

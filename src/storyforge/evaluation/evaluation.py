@@ -34,9 +34,8 @@ EVAL_RETRY_BASE_DELAY_SEC = 2
 EVAL_RETRY_BACKOFF_FACTOR = 2
 
 
-# Shared with rag/extraction.py so both HF call sites classify errors identically.
-# Aliased rather than imported under its own name to keep existing call sites intact.
-_is_retryable_api_error = is_retryable_api_error
+# is_retryable_api_error (storyforge.api_errors) is shared with rag/extraction.py so
+# both HF call sites classify errors identically.
 
 
 def _normalise_provider_priority(value) -> list[str]:
@@ -237,7 +236,7 @@ def _invoke_hf_with_retry(evaluator: dict[str, Any], prompt: str) -> str:
             return _invoke_huggingface_once(evaluator, prompt)
         except Exception as e:
             last_exc = e
-            if not _is_retryable_api_error(e) or attempt == EVAL_RETRY_MAX_ATTEMPTS - 1:
+            if not is_retryable_api_error(e) or attempt == EVAL_RETRY_MAX_ATTEMPTS - 1:
                 break
             delay = EVAL_RETRY_BASE_DELAY_SEC * (EVAL_RETRY_BACKOFF_FACTOR**attempt)
             logging.warning(
@@ -257,7 +256,7 @@ def _invoke_gemini_with_retry(model, prompt: str):
             return model.invoke(prompt)
         except Exception as e:
             last_exc = e
-            if not _is_retryable_api_error(e) or attempt == EVAL_RETRY_MAX_ATTEMPTS - 1:
+            if not is_retryable_api_error(e) or attempt == EVAL_RETRY_MAX_ATTEMPTS - 1:
                 break
             delay = EVAL_RETRY_BASE_DELAY_SEC * (EVAL_RETRY_BACKOFF_FACTOR**attempt)
             logging.warning(
@@ -291,7 +290,7 @@ def _invoke_with_retry(model, prompt: str):
     try:
         return _invoke_gemini_with_retry(model, prompt)
     except Exception as e:
-        if not _is_retryable_api_error(e) or not fallback:
+        if not is_retryable_api_error(e) or not fallback:
             raise
         logging.warning(
             "Primary evaluation model exhausted retries. Switching to fallback: %s", fallback,
