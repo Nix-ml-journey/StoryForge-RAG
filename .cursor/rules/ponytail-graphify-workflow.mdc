@@ -1,0 +1,33 @@
+---
+description: Code-change order (ponytail trim, then graphify update) and the output-quality lock ponytail must respect
+alwaysApply: true
+---
+
+# Change workflow: ponytail first, graph update last
+
+For any change to code files (`src/`, `scripts/`, `tests/`, `main.py`), in this order:
+
+1. **Ponytail.** Apply the ladder in `ponytail.mdc` before writing anything; for a trim pass use the `ponytail-review` (diff) or `ponytail-audit` (repo) skill, then apply only cuts that pass the quality lock below.
+2. **Verify** (gates below). A cut that fails a gate is reverted, not "fixed forward".
+3. **Graph update, last and once:** `.\.venv\Scripts\python.exe scripts/update_graph.py`. Only use `--no-label` if Ollama is down (it re-clusters and leaves new communities unnamed; rerun without it later). Skip the update entirely if no code file changed. Never refresh the graph mid-trim; it would re-parse code ponytail is about to delete.
+
+## Quality lock: ponytail may not change pipeline output
+
+Trimming is behavior-preserving only: same inputs must give the same retrieval, facts, prompts, and generation settings. Do not delete, simplify, or "one-line" these without an explicit user request:
+
+- Retrieval: `retrieve_docs()` in `src/storyforge/rag/retrieval.py` (dense pool → BM25 RRF → cross-encoder rerank → title diversity), its ordering, and all `setup.yaml` retrieval knobs.
+- BGE convention: `QUERY_PREFIX` in `src/storyforge/vector_store/embeddings.py` on queries only; passages stay unprefixed.
+- Facts: `extraction.py`, `attribution.py` (`salvage_grounded_facts_json`, citation filtering), JSON schema format and retries in `generation_backend.py`.
+- Agentic loop: `decide_action()` thresholds and branches, `stop_reason` values in `agentic_loop.py`.
+- Length: `LengthProfile` / `resolve_length_profile()` in `length_profile.py`.
+- Prompts: `prompts.yaml` wording; model choices in `setup.yaml` / `setup.example.yaml`.
+- Ingest metadata: `ingest_stories.py` story_json handling, `_norm_text`, newline-preserving reads.
+- Error handling that prevents data loss, input validation, and existing tests/asserts (ponytail never deletes a test to make a cut pass).
+
+Fair game: dead code with zero callers (grep every caller first), duplicate helpers where one already exists, unused imports/aliases/exports, hand-rolled stdlib, wrappers that only delegate.
+
+## Gates (all must hold before the graph update)
+
+- `.\.venv\Scripts\python.exe -m pytest -q`: no fewer passing tests than before the trim (baseline 163 passed).
+- `.\.venv\Scripts\python.exe -m ruff check src scripts tests`: clean.
+- If anything under `src/storyforge/rag/` or `src/storyforge/vector_store/` changed: `.\.venv\Scripts\python.exe scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3` (needs the local Chroma DB) must not drop below top1 0.80, top3 0.833, fact_coverage 0.733.
