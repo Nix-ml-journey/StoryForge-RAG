@@ -1,0 +1,11 @@
+{
+  "ollama-gemma4": {
+    "base_url": "http://localhost:11434/v1",
+    "default_model": "gemma4-graphify",
+    "env_key": "OLLAMA_API_KEY",
+    "temperature": 0,
+    "reasoning_effort": "none",
+    "max_tokens": 8192,
+    "extra_body": {"options": {"num_ctx": 32768}, "keep_alive": "0"}
+  }
+}

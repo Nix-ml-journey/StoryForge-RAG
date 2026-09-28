@@ -57,6 +57,16 @@ When smoke-testing generation, pass `length` if you want a specific target (pres
 py scripts/measure_generation_length.py --mode fast --length long
 ```
 
+## Code graph (graphify)
+
+| Script | Purpose |
+|--------|---------|
+| `update_graph.py` | Refresh `graphify-out/` (code-only AST) and name communities with local Ollama `gemma4-graphify` (gemma4:12b, 32k ctx, thinking off via `.graphify/providers.json`); unloads the model afterwards. `--full` rebuilds from scratch, `--no-label` skips Ollama |
+
+```powershell
+.\.venv\Scripts\python.exe scripts/update_graph.py
+```
+
 ## Text prep
 
 | Script | Purpose |
