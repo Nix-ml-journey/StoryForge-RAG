@@ -123,6 +123,13 @@ STORY_FORMAT_GUIDE.md
 /Book_search/
 /Evaluation/
 
+# --- Graphify knowledge graph (rebuild with: graphify update .) ---
+# Only the latest graph is tracked; caches and machine-specific state stay local.
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/graph.html
+
 # --- Accidental / scratch ---
 str
 *.log

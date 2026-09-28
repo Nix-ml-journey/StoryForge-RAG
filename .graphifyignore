@@ -1,0 +1,13 @@
+# Graphify scope: code only (src/, scripts/, tests/, main.py). Merged with .gitignore.
+.venv/
+.cursor/
+.github/
+data/
+Downloaded_Books/
+Evaluation/
+Claude outputs/
+docs/
+str/
+graphify-out/
+setup.yaml
+*.md
