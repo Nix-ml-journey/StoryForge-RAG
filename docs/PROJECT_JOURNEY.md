@@ -471,6 +471,17 @@ round-trip (extraction already uses one) from every agentic-loop iteration when 
 
 ---
 
+## Session: developer tooling + lean pass (2026-09/10)
+
+No pipeline behavior changed in this session; retrieval, facts, prompts, length, and the agentic loop are untouched.
+
+- **Agent skills:** [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (25 skills + shared checklists) and [ponytail](https://github.com/DietrichGebert/ponytail) (rule + `ponytail`, `ponytail-review`, `ponytail-audit`) live in `.cursor/`.
+- **Code knowledge graph:** graphify builds a code-only graph (`graphify-out/`, AST only, no corpus or docs). Community names come from local Ollama `gemma4-graphify` (gemma4:12b, 32k ctx). Gemma 4 thinks by default and returned empty labels through graphify's stock Ollama backend; only `reasoning_effort: "none"` disables thinking on Ollama's OpenAI endpoint, so `.graphify/providers.json` defines a localhost provider that sends it. `scripts/update_graph.py` runs refresh → label → unload (frees VRAM for `qwen3.5:9b`); only the latest graph is kept.
+- **Change workflow:** `.cursor/rules/ponytail-graphify-workflow.mdc` orders every code change as ponytail trim → gates (pytest, ruff, retrieval_eval when retrieval/vector-store code changes) → one graph update, with a quality lock listing what trimming may not touch.
+- **Lean pass:** graph + `rg` scan found no dead functions in `src/` (the only zero-caller hits are FastAPI route handlers) and no unimported modules. Removed 9 unused/duplicate imports (tests + `update_graph.py`) and two stale already-deduped pairs from `debug_cleanup_inventory.py`; ruff now also enforces `F401`/`F811`. Remaining look-alike helpers (`_get_embed_model` vs `get_embed_model`, `_hf_token` vs `get_hf_token`, `strip_thinking_tags` vs `_strip_think_blocks`) behave differently and stay. pytest 163 passed.
+
+---
+
 ## Repo and docs
 
 - **Code:** https://github.com/Nix-ml-journey/StoryForge-RAG  

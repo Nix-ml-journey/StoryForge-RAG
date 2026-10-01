@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from storyforge.data.records_to_manifest import records_to_ingest_manifest
 from storyforge.data.story_records import create_story_records
@@ -159,8 +158,6 @@ def test_records_to_ingest_manifest_omits_series_fields_when_not_series(monkeypa
     assert "series_json" not in md
     assert "volume_json" not in md
 
-import json
-from pathlib import Path
 
 
 def _read_json(path: Path) -> dict:

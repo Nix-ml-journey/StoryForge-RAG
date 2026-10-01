@@ -50,6 +50,7 @@ py scripts/push_section_metadata.py --glob "Jekyll_and_Hyde__*"
 | `test_generation.py` | HTTP smoke tests (server must be running) |
 | `debug_hf_grounded_facts_mode.py` | Probe Step 2 HF JSON mode vs fallback |
 | `measure_generation_length.py` | Batch-run agentic generation, log requested vs. actual word count and accept rate (no server needed -- calls the orchestrator directly) |
+| `debug_cleanup_inventory.py` | Read-only cleanup report: unused `rag` exports, same-named / look-alike helpers (with DO NOT TOUCH labels), no-op aliases, script bootstraps |
 
 When smoke-testing generation, pass `length` if you want a specific target (presets / `"12min"` / word count). Defaults follow mode (`fast` → short, `thinking` → long). See `docs/README.md`.
 

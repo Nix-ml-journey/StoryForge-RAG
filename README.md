@@ -221,6 +221,18 @@ py scripts/push_section_metadata.py --glob "Lovecraft__*"
 | `tests/` | Pytest suite |
 | `data/*/sample/` | Public demo corpus only |
 | `docs/` | Architecture, demo path, roadmaps |
+| `.cursor/` | Cursor rules + agent skills (ponytail, graphify, [agent-skills](https://github.com/addyosmani/agent-skills)) |
+| `graphify-out/` | Code knowledge graph (`graph.json`, `GRAPH_REPORT.md`, `graph.html`; latest only) |
+
+---
+
+## Developer workflow (code changes)
+
+Enforced by `.cursor/rules/ponytail-graphify-workflow.mdc`:
+
+1. **Ponytail trim** -- YAGNI ladder; cuts must not change pipeline output (retrieval order, BGE query prefix, facts/salvage, `decide_action`, `LengthProfile`, `prompts.yaml`, ingest metadata are locked).
+2. **Gates** -- `python -m pytest -q` (163 passed baseline), `ruff check src scripts tests` (includes unused-import checks), plus `retrieval_eval.py` if `rag/` or `vector_store/` changed.
+3. **Graph update, once** -- `.\.venv\Scripts\python.exe scripts/update_graph.py` (graphify AST refresh + community names from local Ollama `gemma4-graphify`, no API cost).
 
 ---
 

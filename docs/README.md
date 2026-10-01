@@ -215,11 +215,15 @@ Prompt templates live in `prompts.yaml` under `generation`. Story / refine promp
 - `tests/` — pytest suite (includes `test_length_profile.py`)
 - `data/*/sample/` — public demo corpus only
 - `docs/` — architecture, demo path, roadmaps
+- `.cursor/` — Cursor rules (ponytail, graphify, change workflow) + agent skills
+- `.graphify/` — graphify Ollama provider (`gemma4-graphify`, thinking off) + Modelfile
+- `graphify-out/` — code knowledge graph, latest only (refresh: `scripts/update_graph.py`)
 
 **Local only (gitignored)**
 
 - Full corpus: `data/stories/`, `data/story_json/`, `data/ingest/ingest_manifest.jsonl`
 - Runtime: `data/chroma_db/`, `data/outputs/`, `setup.yaml`, `.env`
+- Graph caches: `graphify-out/cache/`, `manifest.json`, `.graphify_*`
 
 ## Quick start
 
@@ -264,6 +268,8 @@ See [`DATA_PREP.md`](./DATA_PREP.md) for the post-extract quality checklist.
 ```bash
 python -m pytest
 ```
+
+Lint: `ruff check src scripts tests` (syntax/undefined names + unused/duplicate imports, `F401`/`F811`). Code changes follow the ponytail → gates → `scripts/update_graph.py` order in `.cursor/rules/ponytail-graphify-workflow.mdc`.
 
 Covers: config loading, length-profile resolution, evaluation provider selection (including `Evaluation_mode: "local"`), empty-draft recovery (`tests/test_empty_draft_recovery.py` + agentic failure paths in `tests/test_agentic_loop.py`), retrieval metrics, agentic loop decisions, prompt contracts, story cleanup, API route contracts.
 

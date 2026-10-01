@@ -31,12 +31,6 @@ EXTRA_FILES = [ROOT / "main.py"]
 
 # Hand-maintained risk labels for pairs a name-based scan can't judge.
 KNOWN_PAIRS = [
-    (("scripts/push_section_metadata.py", "_as_chroma_metadata"),
-     ("src/storyforge/data/records_to_manifest.py", "_as_chroma_metadata"),
-     "SAFE", "pure serializer; import the shared one if IDENTICAL"),
-    (("scripts/push_section_metadata.py", "_dumps_json"),
-     ("src/storyforge/data/records_to_manifest.py", "_dumps_json"),
-     "SAFE", "pure serializer; import the shared one if IDENTICAL"),
     (("src/storyforge/vector_store/ingest_stories.py", "_get_embed_model"),
      ("src/storyforge/vector_store/embeddings.py", "get_embed_model"),
      "DO NOT TOUCH", "device policy differs (ingest auto-CUDA vs query-side configurable device); needs an explicit decision"),
