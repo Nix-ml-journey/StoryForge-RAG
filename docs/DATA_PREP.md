@@ -106,7 +106,7 @@ The chunker splits on **blank lines** (paragraphs), then packs them to ~1800 cha
 Optional helper if your file uses `---` between blocks:
 
 ```powershell
-py scripts/merge_paragraphs.py "data/raw_extracted\My_Story.txt"
+.\.venv\Scripts\python.exe scripts/merge_paragraphs.py "data/raw_extracted\My_Story.txt"
 ```
 
 That merges each `---`-separated block onto one line. It does **not** remove Gutenberg junk.
@@ -131,7 +131,7 @@ data/raw_extracted/cleaned pieces  →  data/stories/<Title>.txt
 ## Step C — Prepare JSON, then check it
 
 ```powershell
-py scripts/step1_prepare_and_enrich.py
+.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py
 ```
 
 This:
@@ -175,10 +175,10 @@ Re-run only what you need:
 
 ```powershell
 # Rebuild JSON from .txt (overwrites existing records)
-py scripts/prepare_story_records.py --overwrite --only "Lovecraft__The_Call_of_Cthulhu"
+.\.venv\Scripts\python.exe scripts/prepare_story_records.py --overwrite --only "Lovecraft__The_Call_of_Cthulhu"
 
 # Re-label / re-summarize without recreating files
-py scripts/enrich_story_records.py --overwrite-summary --overwrite-sections
+.\.venv\Scripts\python.exe scripts/enrich_story_records.py --overwrite-summary --overwrite-sections
 ```
 
 ---
@@ -186,14 +186,14 @@ py scripts/enrich_story_records.py --overwrite-summary --overwrite-sections
 ## Step D — Ingest only after the JSON looks right
 
 ```powershell
-py scripts/records_to_ingest_manifest.py
-py scripts/ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/ingest_manifest.py
 ```
 
 Full wipe + re-ingest from `data/stories/` (use when the corpus changed a lot):
 
 ```powershell
-py scripts/reset_and_ingest.py
+.\.venv\Scripts\python.exe scripts/reset_and_ingest.py
 ```
 
 **Both ingest paths now honour `story_json` (2026-09).** `reset_and_ingest.py`
@@ -208,7 +208,7 @@ still walks `data/stories/*.txt`, but for each `<Title>.txt` it looks for
 
 The end of the run prints `From story_json / stale story_json / no story_json`
 counts -- if "stale" is non-zero, rebuild those records
-(`py scripts/prepare_story_records.py --overwrite --only "<Title>"`), re-review,
+(`.\.venv\Scripts\python.exe scripts/prepare_story_records.py --overwrite --only "<Title>"`), re-review,
 and re-ingest. Before this fix, `reset_and_ingest.py` wrote `Author=""` /
 `Summary=""` for every chunk and ignored hand-fixed chunk text and section tags
 (only the manifest path used them).
@@ -227,13 +227,13 @@ there and does not require the enrichment step to have succeeded.
 After small text edits in existing JSON (no new files):
 
 ```powershell
-py scripts/refresh_chunk_embeddings.py --glob "Lovecraft__*"
+.\.venv\Scripts\python.exe scripts/refresh_chunk_embeddings.py --glob "Lovecraft__*"
 ```
 
 After you only changed section tags:
 
 ```powershell
-py scripts/push_section_metadata.py --glob "Lovecraft__*"
+.\.venv\Scripts\python.exe scripts/push_section_metadata.py --glob "Lovecraft__*"
 ```
 
 If you change the embedding model, you must re-ingest. Old vectors will not match new queries.
@@ -252,7 +252,7 @@ for anything not re-ingested. Any collection ingested before this fix must be
 rebuilt from scratch:
 
 ```powershell
-py scripts/reset_and_ingest.py
+.\.venv\Scripts\python.exe scripts/reset_and_ingest.py
 ```
 
 `refresh_chunk_embeddings.py` and `ingest_manifest.py` pick up the fix too
@@ -267,8 +267,8 @@ not repair chunks already sitting in Chroma with the old prefix, so a full
 1. **Check what actually landed in Chroma**
 
 ```powershell
-py scripts/validate_chroma_metadata.py
-py scripts/peek_vector_store.py
+.\.venv\Scripts\python.exe scripts/validate_chroma_metadata.py
+.\.venv\Scripts\python.exe scripts/peek_vector_store.py
 ```
 
 `validate_chroma_metadata.py` is read-only. It prints total chunks, unique
@@ -289,7 +289,7 @@ Query Chroma (API `POST /vector_store/query` or generate with `debug: true`) usi
 3. **Optional retrieval report**
 
 ```powershell
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+.\.venv\Scripts\python.exe scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 ```
 
 That scores title rank and whether expected words appear in the chunks. It cannot save you if the `.txt` was never cleaned.
@@ -320,21 +320,21 @@ That scores title rank and whether expected words appear in the chunks. It canno
 #    (one story = one .txt = one Title)
 
 # 3. Build + enrich JSON
-py scripts/step1_prepare_and_enrich.py
+.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py
 
 # 4. Open data/story_json/*.json and fill author/title; fix bad chunks/tags
 
 # 5. Ingest
-py scripts/records_to_ingest_manifest.py
-py scripts/ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/ingest_manifest.py
 ```
 
 Same steps as orchestration `1_prepare_and_enrich_story_json` → `3_ingest_stories`. Do not skip the manual pass between extract and Step 1.
 
 ```powershell
 # 6. Verify (read-only, offline)
-py scripts/validate_chroma_metadata.py
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+.\.venv\Scripts\python.exe scripts/validate_chroma_metadata.py
+.\.venv\Scripts\python.exe scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 ```
 
 ---
@@ -349,8 +349,8 @@ local model so it does not try the HF API first on every query -- in
 ```yaml
 Grounded_facts_provider: "local"          # Step 2 facts via Ollama (Generation_provider)
 Local_grounded_facts_json_format: "schema" # "json" if your Ollama is older than ~0.5
-Evaluation_mode: "local"                   # optional: local judge instead of HF/Gemini
-Local_evaluation_device: "cpu"             # keep the GPU for Ollama
+Evaluation_mode: "ollama"                  # local Ollama judge; no HF/Gemini fallback
+# Ollama_evaluation_model: "qwen3.5:9b"  # optional; defaults to Generative_model
 ```
 
 Without any working evaluator the agentic loop decides on completeness +

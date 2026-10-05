@@ -75,12 +75,6 @@ class Orchestrator:
     def vector_store_query(self, query: str, n_results: int = 5, collection: str = "") -> dict:
         return self.query_vector_store(query, n_results, collection or self.chroma_collection_name)
 
-    def vector_store_insert(self, collection: str, ids: list[str], metadata: dict) -> dict:
-        return parameters.vector_insert_result(ids, metadata)
-
-    def vector_store_update(self, collection: str, ids: list[str], metadata: dict) -> dict:
-        return parameters.vector_update_result(ids, metadata)
-
     def vector_store_delete(self, collection: str, ids: list[str], metadata: dict) -> dict:
         return parameters.vector_delete_result(ids)
 

@@ -1,6 +1,6 @@
 # StoryForge-RAG
 
-End-to-end RAG for **grounded stories**, not Q&A chat: ingest public-domain text → Chroma retrieval → extract attributable facts → write a 5-section narrative on a local GPU → score and optionally refine.
+End-to-end RAG for **grounded stories**, not Q&A chat: ingest public-domain text → Chroma retrieval → extract attributable facts → write a 5-section narrative on a local GPU (Ollama) → score and optionally refine.
 
 Most RAG demos retrieve chunks and dump them into a prompt. This one treats generation as a **controlled pipeline**: facts must cite source chunks, length is one request field (not three knobs that disagree), and an agentic loop decides refine vs re-retrieve instead of always restarting.
 
@@ -70,15 +70,15 @@ The comparison table below has the specifics; this section is the "so what."
 
 | Stage | Model / Service | Where |
 |-------|----------------|-------|
-| Embeddings | `BAAI/bge-base-en-v1.5` (768-dim) | Local GPU via `sentence-transformers` |
-| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Local GPU |
+| Embeddings | `BAAI/bge-base-en-v1.5` (768-dim) | Local via `sentence-transformers`; CPU at query time by default (`Embedding_device`) |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Local; CPU by default (`Reranker_device`) |
 | Hybrid search | BM25 + dense (RRF fusion; needs `rank-bm25` from `requirements.txt`) | Local |
 | Step 2 — grounded facts | `Qwen/Qwen3-8B` via HF Inference API | Cloud, no VRAM cost |
 | Step 3 — story generation | `qwen3.5:9b` via Ollama (default) | Local GPU, `localhost:11434` |
 | Evaluation | `Qwen/Qwen2.5-7B-Instruct` via HF API → Gemini fallback (or local) | Cloud, or local GPU/CPU |
 
 Step 3 can also use **vLLM** or **Transformers** — set `Generation_provider` in `setup.yaml`.
-Evaluation can run **in-process** instead of calling an API — set `Evaluation_mode: "local"` to remove the HF/Gemini round-trip from every agentic-loop iteration.
+Evaluation can run on your **local Ollama** instead of an API — set `Evaluation_mode: "ollama"` (alias `local`). It judges with `Ollama_evaluation_model` (default: `Generative_model`), never falls back to HF/Gemini, and fails loudly if Ollama is down.
 
 ---
 
@@ -162,7 +162,7 @@ curl -N http://localhost:8000/orchestration/generate_stream \
   -d '{"query": "A warrior monk faces his greatest trial", "mode": "fast", "length": "medium"}'
 ```
 
-When `Agentic_loop_enabled: true`, step 4 uses evaluate → refine / re-retrieve → accept automatically. Completeness uses the resolved length target.
+`/create-eval/story_generate` and `run_step` with `4_generate_story_3step` always run the single-pass 3-step path (retrieve, facts, generate, one length-guard refine) with no evaluation. The evaluate → refine / re-retrieve → accept loop runs only for `4_generate_story_agentic`, or for the default step list of `/orchestration/run_pipeline` when `Agentic_loop_enabled: true`. Completeness uses the resolved length target.
 
 ---
 
@@ -173,34 +173,34 @@ Manifest ingest computes **BGE embeddings explicitly** so Chroma does not fall b
 Step 1 retrieval is **hybrid BM25 + dense (RRF) → cross-encoder rerank → title diversity**. Measure it with the real pipeline (not bare Chroma):
 
 ```powershell
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+.\.venv\Scripts\python.exe scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 ```
 
-Phase 1 retrieval tuning (2026-09) stopped at about **top1 0.80 / top3 0.90 / fact_coverage 0.77** on that harness. Details: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md).
+Phase 1 retrieval tuning (2026-09) peaked at top1 0.80 / top3 0.90 / fact_coverage 0.77, then stopped. The current baseline, after rebuilding the collection from reviewed `story_json` chunks (2026-09-24, `Evaluation/retrieval_eval_report.json`), is **top1 0.80 / top3 0.833 / fact_coverage 0.733**; that is also the floor the change workflow gates on. (A 2026-10-05 experiment with whole-corpus BM25 candidates scored fact_coverage 0.717, below the floor, so it ships disabled: [ADR-0002](docs/decisions/0002-global-bm25-candidates.md).) Details: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md).
 
 Extracted text in `data/raw_extracted/` is scratch. Clean and split it into `data/stories/` first — [`docs/DATA_PREP.md`](docs/DATA_PREP.md).
 
 ```powershell
 # Full pipeline: cleaned stories → story_json → review JSON → manifest → Chroma
-py scripts/step1_prepare_and_enrich.py
-py scripts/records_to_ingest_manifest.py
-py scripts/ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py
+.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/ingest_manifest.py
 
 # Or wipe and re-ingest from data/stories/ (uses data/story_json/<Title>.json when present:
 # reviewed chunks + sections + Author/Summary; Title stays the filename stem)
-py scripts/reset_and_ingest.py
+.\.venv\Scripts\python.exe scripts/reset_and_ingest.py
 
 # Check what landed in Chroma (read-only: coverage %, missing Author/Summary, bad Title/chunk_id)
-py scripts/validate_chroma_metadata.py
+.\.venv\Scripts\python.exe scripts/validate_chroma_metadata.py
 
 # Phase 2 measurement: agentic length / accept rate (needs Ollama + ingested Chroma; no HTTP server)
-py scripts/measure_generation_length.py --mode fast --length long
+.\.venv\Scripts\python.exe scripts/measure_generation_length.py --mode fast --length long
 
 # After editing chunk text in story_json (re-embed only, keep metadata)
-py scripts/refresh_chunk_embeddings.py --glob "Lovecraft__*"
+.\.venv\Scripts\python.exe scripts/refresh_chunk_embeddings.py --glob "Lovecraft__*"
 
 # After enrich adds section tags (update metadata only, no re-embed)
-py scripts/push_section_metadata.py --glob "Lovecraft__*"
+.\.venv\Scripts\python.exe scripts/push_section_metadata.py --glob "Lovecraft__*"
 ```
 
 ---
@@ -231,7 +231,7 @@ py scripts/push_section_metadata.py --glob "Lovecraft__*"
 Enforced by `.cursor/rules/ponytail-graphify-workflow.mdc`:
 
 1. **Ponytail trim** -- YAGNI ladder; cuts must not change pipeline output (retrieval order, BGE query prefix, facts/salvage, `decide_action`, `LengthProfile`, `prompts.yaml`, ingest metadata are locked).
-2. **Gates** -- `python -m pytest -q` (163 passed baseline), `ruff check src scripts tests` (includes unused-import checks), plus `retrieval_eval.py` if `rag/` or `vector_store/` changed.
+2. **Gates** -- `python -m pytest -q` (179 passed baseline; CI runs the same two commands on every push/PR), `ruff check src scripts tests` (includes unused-import checks), plus `retrieval_eval.py` if `rag/` or `vector_store/` changed.
 3. **Graph update, once** -- `.\.venv\Scripts\python.exe scripts/update_graph.py` (graphify AST refresh + community names from local Ollama `gemma4-graphify`, no API cost).
 
 ---
@@ -248,8 +248,8 @@ Enforced by `.cursor/rules/ponytail-graphify-workflow.mdc`:
 | `Generation_fast_*` / `Generation_thinking_*` | Sampling and token floors per mode |
 | `Agentic_loop_*` | Evaluate/refine/re-retrieve loop thresholds |
 | `HF_grounded_facts_json_mode` | Strict JSON for Step 2 (falls back if unsupported) |
-| `Evaluation_mode` | `api` (default, HF → Gemini) or `local` (in-process, no API round-trip) |
-| `Local_evaluation_model` / `_device` | Local judge (default `Qwen/Qwen2.5-3B-Instruct` on CPU) |
+| `Evaluation_mode` | `api` (default, HF → Gemini) or `ollama` / `local` (local Ollama judge, no API fallback) |
+| `Ollama_evaluation_model` | Optional judge model for `ollama` mode (default: `Generative_model`) |
 
 Copy `setup.example.yaml` → `setup.yaml` and edit locally. Secrets stay out of git.
 
@@ -278,7 +278,7 @@ GOOGLE_BOOKS_API_KEY
 - [Project journey](docs/PROJECT_JOURNEY.md)
 - [Upgrade roadmap](docs/UPGRADE_ROADMAP_5060Ti.md)
 - [Production notes](docs/PRODUCTION_NOTES.md)
-- [Pattern audit (historical)](StoryForge_pattern_audit.md)
+- [Pattern audit (historical, archived)](docs/archive/StoryForge_pattern_audit.md)
 - [GitHub](https://github.com/Nix-ml-journey/StoryForge-RAG)
 
 ## License

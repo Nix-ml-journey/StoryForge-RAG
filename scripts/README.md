@@ -2,6 +2,8 @@
 
 Optional CLI helpers. Run from the **repo root** unless noted.
 
+Always use the project venv (`.\.venv\Scripts\python.exe scripts/<name>.py`). Bare `py` is the system Python, which lacks the dependencies (`ModuleNotFoundError: langchain_chroma`).
+
 After extract, clean and split text **before** these scripts. See [`docs/DATA_PREP.md`](../docs/DATA_PREP.md).
 
 ## Story pipeline (Step 1 → ingest)
@@ -18,10 +20,10 @@ After extract, clean and split text **before** these scripts. See [`docs/DATA_PR
 Typical full ingest (only after `data/stories/*.txt` is cleaned):
 
 ```powershell
-py scripts/step1_prepare_and_enrich.py
+.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py
 # then open data/story_json/*.json and fill author/title; drop bad chunks
-py scripts/records_to_ingest_manifest.py
-py scripts/ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/ingest_manifest.py
 ```
 
 ## Chroma maintenance
@@ -34,8 +36,8 @@ py scripts/ingest_manifest.py
 Examples:
 
 ```powershell
-py scripts/refresh_chunk_embeddings.py --glob "Lovecraft__*"
-py scripts/push_section_metadata.py --glob "Jekyll_and_Hyde__*"
+.\.venv\Scripts\python.exe scripts/refresh_chunk_embeddings.py --glob "Lovecraft__*"
+.\.venv\Scripts\python.exe scripts/push_section_metadata.py --glob "Jekyll_and_Hyde__*"
 ```
 
 ## Diagnostics
@@ -47,15 +49,13 @@ py scripts/push_section_metadata.py --glob "Jekyll_and_Hyde__*"
 | `peek_vector_store.py` | Inspect Chroma collection contents |
 | `validate_chroma_metadata.py` | Read-only metadata report: chunk / Title counts, % Author / Summary / section, missing Title / `chunk_id`, samples (`--json`, `--strict`) |
 | `retrieval_eval.py` | Measure retrieval top-k accuracy against fixture cases |
-| `test_generation.py` | HTTP smoke tests (server must be running) |
 | `debug_hf_grounded_facts_mode.py` | Probe Step 2 HF JSON mode vs fallback |
 | `measure_generation_length.py` | Batch-run agentic generation, log requested vs. actual word count and accept rate (no server needed -- calls the orchestrator directly) |
-| `debug_cleanup_inventory.py` | Read-only cleanup report: unused `rag` exports, same-named / look-alike helpers (with DO NOT TOUCH labels), no-op aliases, script bootstraps |
 
 When smoke-testing generation, pass `length` if you want a specific target (presets / `"12min"` / word count). Defaults follow mode (`fast` → short, `thinking` → long). See `docs/README.md`.
 
 ```powershell
-py scripts/measure_generation_length.py --mode fast --length long
+.\.venv\Scripts\python.exe scripts/measure_generation_length.py --mode fast --length long
 ```
 
 ## Code graph (graphify)
@@ -78,19 +78,16 @@ py scripts/measure_generation_length.py --mode fast --length long
 
 ```powershell
 # Full reset + ingest
-py scripts/reset_and_ingest.py
-
-# Smoke test generation (server must be running)
-py scripts/test_generation.py --test 1
+.\.venv\Scripts\python.exe scripts/reset_and_ingest.py
 
 # Check HF grounded-facts JSON mode
-py scripts/debug_hf_grounded_facts_mode.py
+.\.venv\Scripts\python.exe scripts/debug_hf_grounded_facts_mode.py
 
 # Retrieval quality report
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+.\.venv\Scripts\python.exe scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 
 # Phase 2: agentic length / accept-rate measurement (no HTTP server; needs Ollama + Chroma)
-py scripts/measure_generation_length.py --mode fast --length long
+.\.venv\Scripts\python.exe scripts/measure_generation_length.py --mode fast --length long
 ```
 
 ## Docs

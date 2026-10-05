@@ -35,26 +35,26 @@ Tests use temporary directories and do not require GPU, Chroma data, or live API
 
 | Stage | Default | Notes |
 |-------|---------|-------|
-| Embeddings | `BAAI/bge-base-en-v1.5` | 768-dim, local GPU |
+| Embeddings | `BAAI/bge-base-en-v1.5` | 768-dim, local; CPU by default (`Embedding_device`) |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | After Chroma, before Step 2 |
 | Hybrid search | BM25 + dense (RRF) | On via `Hybrid_search_enabled`; needs `rank-bm25` from `requirements.txt` |
 | Step 2 facts | `Qwen/Qwen3-8B` (HF API) | Retry + optional JSON mode; local Ollama fallback |
 | Step 3 story | `qwen3.5:9b` (Ollama) | Also supports vLLM or Transformers |
-| Evaluation | HF 7B → Gemini fallback | Used by the agentic loop; `Evaluation_mode: "local"` runs it in-process instead |
+| Evaluation | HF 7B → Gemini fallback | Used by the agentic loop; `Evaluation_mode: "ollama"` judges with local Ollama instead (no API fallback) |
 
 ## Grounded story generation
 
-1. **Step 1 — Retrieval:** Chroma search (+ hybrid BM25 + reranker). Diverse story titles when multiple sources match. Chunk count is controlled by `Story_generation_n_results` (default 10).
-2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors; falls back to local generation (Ollama / vLLM / Transformers, matching `Generation_provider`) if HF is down. Fact-token budget is `HF_grounded_facts_max_new_tokens` (default 1600).
+1. **Step 1 — Retrieval:** Chroma search (+ hybrid BM25 + reranker). Order is dense -> BM25 fusion (RRF) -> cross-encoder rerank of the whole pool -> title diversity (up to `n_stories` titles x `chunks_per_story`, then backfilled in rerank order up to `Story_generation_n_results`, so the final set can span more than 3 titles). Chunk count is controlled by `Story_generation_n_results` (default 10).
+2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors; falls back to local generation (Ollama / vLLM / Transformers, matching `Generation_provider`) if HF is down. Fact-token budget is `HF_grounded_facts_max_new_tokens` (3200 in `setup.example.yaml`; 1600 truncated the JSON on real 10-chunk pools).
 3. **Step 3 — Generation:** One pass from grounded facts into a 5-section story. A length guard may run one refine pass when the draft is too short.
 
-If extraction returns no usable facts, generation falls back to retrieval-only mode -- and the agentic loop will not ACCEPT that draft (it re-retrieves instead), with or without an evaluator.
+If extraction returns no usable facts, Step 3 is prompted with the raw (unparsed) extraction text instead of the numbered fact list (`generation.py`, `generate_from_facts`). Retrieved chunks are never pasted into the Step 3 prompt, so that draft is effectively ungrounded -- the agentic loop will not ACCEPT it (it re-retrieves instead), with or without an evaluator.
 
 Offline / no HF credits: set `Grounded_facts_provider: "local"` so Step 2 goes straight to the local model (schema-constrained JSON on Ollama, lenient parsing, citation check against retrieved chunk ids, one compact retry). See [`DATA_PREP.md`](./DATA_PREP.md#offline-no-hf-credits).
 
 ### Story format
 
-- 5 section headers in order (see `prompts.yaml`)
+- 5 section headers in order (hardcoded in `generation.py::_flow_section_headers`; `prompts.yaml` only holds the `{section_headers}` slot)
 - Grounded in extracted facts — no invented named characters / places
 - Per-section sentence and word minimums come from the **length target** (below)
 - `mode` selects sampling / thinking; `length` selects how much prose to write
@@ -93,15 +93,17 @@ Omit `length` and the default for the mode applies:
 
 When `Agentic_loop_enabled: true`:
 
+- **RE_RETRIEVE** when there are no grounded facts, or a complete draft has low faithfulness / thin facts (it widens the pool and grows `n_stories`; the reranker stays on)
+- **REFINE** when the draft is incomplete or short, checked *before* faithfulness so a truncated draft is finished, not discarded. A refine that shrinks the draft (under 80% of the words, or fewer sections) is rejected and the prior draft kept
 - **ACCEPT** when scores + completeness pass (completeness uses the resolved length target)
-- **REFINE** when the draft is incomplete but grounding is good
-- **RE_RETRIEVE** when faithfulness is low or facts are thin
+
+The judge receives the grounded facts, so its faithfulness score checks the story against them. See [ADR-0006](decisions/0006-agentic-loop-decision-order.md).
 
 Minimum word count and minimum sentences per section are **no longer hardcoded** in config. They come from the length profile.
 
 ## Generate API examples
 
-### Create-eval (recommended)
+### Create-eval (3-step generate; no evaluation, no agentic loop)
 
 ```bash
 # Short / fast draft
@@ -164,7 +166,7 @@ Streaming uses the same length guidance in the prompt. It cannot retry mid-strea
 | `Story_generation_n_results` | Chunks passed to Step 2 (default 10) |
 | `Story_generation_rerank_top_n` | Keep ≥ `Story_generation_n_results` |
 | `HF_grounded_facts_json_mode` | Strict JSON for Step 2 |
-| `HF_grounded_facts_max_new_tokens` | Fact-list token budget (default 1600) |
+| `HF_grounded_facts_max_new_tokens` | Fact-list token budget (3200 in the example config) |
 | `Story_length_presets` | Named length targets (name → word count) |
 | `Story_length_default_fast` / `_thinking` | Default target per mode |
 | `Story_length_words_per_minute` | Pace for `"Nmin"` targets (default 140) |
@@ -172,8 +174,10 @@ Streaming uses the same length guidance in the prompt. It cannot retry mid-strea
 | `Generation_fast_*` / `Generation_thinking_*` | Sampling + token floors |
 | `Generation_repetition_penalty` | Anti-loop decoding |
 | `Agentic_loop_*` | Loop thresholds (scores / re-retrieve / refine boost) |
-| `Evaluation_mode` | `api` (default, HF → Gemini) or `local` (in-process, no per-iteration API round-trip) |
-| `Local_evaluation_model` / `_device` | Local judge model (default `Qwen/Qwen2.5-3B-Instruct` on CPU) |
+| `Evaluation_mode` | `api` (default, HF → Gemini) or `ollama` / `local` (local Ollama judge; no API fallback, fails loudly if Ollama is down) |
+| `Ollama_evaluation_model` | Optional judge model for `ollama` mode (default: `Generative_model`); `qwen3.5:4b` recommended |
+| `Hybrid_bm25_pool` | BM25 candidates taken from the whole collection and added to the rerank pool (default 0 = off; 12 tested and rejected, see ADR-0002) |
+| `Agentic_loop_late_accept_slack` | From iteration 2, accept a complete grounded draft this far below `Agentic_loop_accept_score` (default 0.5) |
 | `Generated_story_output` / `Evaluated_stories_output` | Output folders under `data/outputs/` |
 | `Host` / `Port` | API bind address |
 
@@ -188,7 +192,7 @@ Prompt templates live in `prompts.yaml` under `generation`. Story / refine promp
 - Retrieves relevant context, extracts grounded facts, generates stories
 - Enforces a configurable length target across prompt, tokens, and accept gate
 - Retries empty thinking-mode drafts once with fast sampling; length-guard refine falls back to the pre-refine draft
-- Evaluates output with rubric scoring (HF → Gemini, or `Evaluation_mode: "local"`)
+- Evaluates output with rubric scoring (HF → Gemini, or `Evaluation_mode: "ollama"`)
 - Optional book search / PDF-EPUB extraction for public-domain sources
 
 ## Tech stack
@@ -212,7 +216,8 @@ Prompt templates live in `prompts.yaml` under `generation`. Story / refine promp
   - `evaluation/` — rubric scoring + retrieval eval
   - `config/` — YAML config + env secret overlay
 - `scripts/` — CLI helpers (see [`../scripts/README.md`](../scripts/README.md))
-- `tests/` — pytest suite (includes `test_length_profile.py`)
+- `tests/` — pytest suite (includes `test_length_profile.py` and `test_integration_pipeline.py`: real in-memory Chroma + a fake Ollama server)
+- `decisions/` — architecture decision records (ADRs)
 - `data/*/sample/` — public demo corpus only
 - `docs/` — architecture, demo path, roadmaps
 - `.cursor/` — Cursor rules (ponytail, graphify, change workflow) + agent skills
@@ -245,10 +250,10 @@ After changing `setup.yaml` or `prompts.yaml`, restart `python main.py` — conf
 Extracted books in `data/raw_extracted/` are **not** ingest-ready. Clean, split (one story per file), then:
 
 1. Put cleaned story `.txt` files in `data/stories/`
-2. `py scripts/step1_prepare_and_enrich.py`
+2. `.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py`
 3. Review `data/story_json/*.json` (author/title, chunks, section tags)
-4. `py scripts/records_to_ingest_manifest.py`
-5. `py scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe -- it also uses `story_json` when present: reviewed chunks, section tags, Author / Summary / Display_title)
+4. `.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py`
+5. `.\.venv\Scripts\python.exe scripts/ingest_manifest.py` (or `reset_and_ingest.py` for a full wipe -- it also uses `story_json` when present: reviewed chunks, section tags, Author / Summary / Display_title)
 6. Generate via API:
    - `POST /create-eval/story_generate` with `query`, optional `mode`, optional `length`
    - or `POST /orchestration/run_step` with `4_generate_story_3step` / `4_generate_story_agentic`
@@ -276,7 +281,7 @@ Covers: config loading, length-profile resolution, evaluation provider selection
 ## Retrieval evaluation
 
 ```bash
-py scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
+.\.venv\Scripts\python.exe scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 ```
 
 Reports top-1 / top-k accuracy and expected fact coverage.
@@ -285,8 +290,8 @@ Reports top-1 / top-k accuracy and expected fact coverage.
 
 The pipeline is functional end-to-end. Active tuning areas:
 
-- Retrieval quality as corpus size grows -- Phase 1 tuning stopped (2026-09) at top1=0.80 / top3=0.90 / fact_coverage=0.77; remaining misses need query reformulation or corpus/chunking work, not another knob (see docs/PROJECT_JOURNEY.md "What I am doing next" for the case-by-case breakdown and why `Hybrid_bm25_weight` is currently a no-op with reranking on)
-- Phase 2 generation reliability -- length targets are fine under agentic `long` (first batch: under-min-words 0.0); active issue is grounded-facts extraction / HF credits masking accept rate. Offline fixes landed (2026-09): no-eval path never ACCEPTs with zero facts (iterations record `has_eval`), hardened local facts provider (`Grounded_facts_provider: "local"`), and `reset_and_ingest.py` now reads story_json metadata; the clean scored re-measure waits for HF credits. Measurement: `scripts/measure_generation_length.py`. Details in docs/PROJECT_JOURNEY.md
+- Retrieval quality as corpus size grows -- Phase 1 tuning peaked (2026-09) at top1=0.80 / top3=0.90 / fact_coverage=0.77 and then stopped; current baseline after the story_json rebuild is top1=0.80 / top3=0.833 / fact_coverage=0.733 (a 2026-10-05 whole-corpus BM25 experiment, `Hybrid_bm25_pool: 12`, did not move top-k and cost fact coverage, so it is off; see ADR-0002); remaining misses need query reformulation or corpus/chunking work, not another knob (see docs/PROJECT_JOURNEY.md "What I am doing next" for the case-by-case breakdown and why `Hybrid_bm25_weight` is currently a no-op with reranking on)
+- Phase 2 generation reliability -- length targets are fine under agentic `long` (first batch: under-min-words 0.0); active issue is grounded-facts extraction / HF credits masking accept rate. Offline fixes landed (2026-09): no-eval path never ACCEPTs with zero facts (iterations record `has_eval`), hardened local facts provider (`Grounded_facts_provider: "local"`), and `reset_and_ingest.py` now reads story_json metadata; the clean scored re-measure was done 2026-10-05 on Ollama (accept 0.75, 1.75 avg iterations, 1670 avg words, 0.12 under-min; details and next steps in docs/PROJECT_JOURNEY.md). Measurement: `scripts/measure_generation_length.py`. Details in docs/PROJECT_JOURNEY.md
 - Reducing repetitive phrasing in generated prose
 - Retrieval eval fixture (`tests/fixtures/retrieval_eval_cases.example.json`) now has 30 realistic cases incl. "wrong book" traps; `scripts/retrieval_eval.py` was fixed (2026-09) to route through the real hybrid+rerank `retrieve_docs()` pipeline instead of a bare dense-only Chroma query it was silently using before -- use it before/after any retrieval tuning
 
@@ -299,7 +304,8 @@ Recent upgrades: `rank-bm25` promoted from optional to required in `requirements
 - [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md) — hardware-focused upgrade plan
 - [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) — production boundaries
 - [`QUICK_DEMO.md`](./QUICK_DEMO.md) — how to use / fast path
-- [`../StoryForge_pattern_audit.md`](../StoryForge_pattern_audit.md) — historical bug audit (read the banner first)
+- [`archive/StoryForge_pattern_audit.md`](./archive/StoryForge_pattern_audit.md) — archived historical bug audit (read the banner first)
+- [`archive/PROJECT_UPDATE_ROADMAP.md`](./archive/PROJECT_UPDATE_ROADMAP.md) — archived hiring-readiness roadmap (historical)
 - Root [`../README.md`](../README.md) — short overview that points here
 
 ## Security

@@ -58,7 +58,9 @@ def _build_stubs() -> dict[str, types.ModuleType]:
 
     # Populate the specific attributes that storyforge source files import by name.
     def _set(mod_name: str, **attrs: object) -> None:
-        m = stubs.get(mod_name) or sys.modules.get(mod_name)
+        # Only touch stubs we created: mutating a REAL, already-imported module here
+        # leaked fake classes into every later test (never restored).
+        m = stubs.get(mod_name)
         if m is not None:
             for k, v in attrs.items():
                 setattr(m, k, v)

@@ -9,6 +9,7 @@ Internal helpers also exported for use by extraction.py / langchain_rag.py:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from langchain_chroma import Chroma
@@ -34,7 +35,7 @@ def _resolve_device(requested: str) -> str:
             if not torch.cuda.is_available():
                 LOG.warning("cuda requested but unavailable; using cpu.")
                 return "cpu"
-        except Exception:
+        except (ImportError, RuntimeError):
             return "cpu"
     return device
 
@@ -210,6 +211,61 @@ def _select_diverse_stories(
     return picked
 
 
+_BM25_INDEX_CACHE: dict = {}  # hash of corpus ids -> (BM25Okapi, [Document])
+
+
+def _bm25_tokens(text: str) -> list[str]:
+    """Lowercase word tokens (punctuation stripped, unlike ``str.split``)."""
+    return re.findall(r"[a-z0-9']+", text.lower())
+
+
+def _bm25_global_docs(
+    vectorstore: Any,
+    query: str,
+    where: Optional[dict[str, Any]],
+    top_n: int,
+) -> Optional[list[Document]]:
+    """Top ``top_n`` chunks by BM25 over the WHOLE (filtered) collection.
+
+    Dense retrieval can miss a story entirely (the retrieval eval's "never
+    retrieved" cases); pool-only BM25 cannot add what dense missed. Searching
+    the full corpus lexically recovers chunks that share rare names/terms with
+    the query. Returns None when unavailable so the caller keeps the legacy path.
+    """
+    getter = getattr(vectorstore, "get", None)
+    if getter is None or top_n <= 0:
+        return None
+    try:
+        from rank_bm25 import BM25Okapi  # type: ignore
+    except ImportError:
+        LOG.warning("rank-bm25 not installed — global BM25 disabled. Run: pip install rank-bm25")
+        return None
+    try:
+        res = getter(where=where, include=["documents", "metadatas"]) if where else getter(
+            include=["documents", "metadatas"]
+        )
+    except (ValueError, RuntimeError, AttributeError) as e:
+        LOG.warning("[RETRIEVAL] global BM25 unavailable (%s); using dense pool only.", e)
+        return None
+    texts = list(res.get("documents") or [])
+    if not texts:
+        return None
+    metas = list(res.get("metadatas") or [{}] * len(texts))
+    key = hash(tuple(res.get("ids") or range(len(texts))))
+    cached = _BM25_INDEX_CACHE.get(key)
+    if cached is None:
+        corpus = [
+            Document(page_content=t, metadata=dict(m or {})) for t, m in zip(texts, metas)
+        ]
+        cached = (BM25Okapi([_bm25_tokens(t) for t in texts]), corpus)
+        _BM25_INDEX_CACHE.clear()  # keep one index: the corpus rarely changes between calls
+        _BM25_INDEX_CACHE[key] = cached
+    bm25, corpus = cached
+    scores = bm25.get_scores(_bm25_tokens(query))
+    order = sorted(range(len(corpus)), key=lambda i: scores[i], reverse=True)
+    return [corpus[i] for i in order[:top_n] if scores[i] > 0]
+
+
 def _bm25_rank_docs(query: str, docs: list[Document]) -> list[Document]:
     """Re-rank docs by BM25 over the candidate pool (requires rank-bm25)."""
     try:
@@ -221,9 +277,9 @@ def _bm25_rank_docs(query: str, docs: list[Document]) -> list[Document]:
         )
         return docs
 
-    tokenized_corpus = [d.page_content.lower().split() for d in docs]
+    tokenized_corpus = [_bm25_tokens(d.page_content) for d in docs]
     bm25 = BM25Okapi(tokenized_corpus)
-    scores = bm25.get_scores(query.lower().split())
+    scores = bm25.get_scores(_bm25_tokens(query))
     ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
     return [d for _, d in ranked]
 
@@ -257,6 +313,23 @@ def _rrf_fuse(
     return [all_docs[k] for k in ranked]
 
 
+def story_type_filter(story_type: Any) -> Optional[dict[str, Any]]:
+    """Chroma ``where`` clause for a StoryType: single -> Is_series False, series -> True."""
+    value = str(getattr(story_type, "value", story_type) or "").strip().lower()
+    if value == "single":
+        return {"Is_series": False}
+    if value == "series":
+        return {"Is_series": True}
+    return None
+
+
+def _merge_filters(*filters: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    active = [f for f in filters if f]
+    if len(active) > 1:
+        return {"$and": active}
+    return active[0] if active else None
+
+
 def retrieve_docs(
     query: str,
     cfg: dict[str, Any],
@@ -266,11 +339,14 @@ def retrieve_docs(
     k_boost: float = 1.0,
     use_reranker: Optional[bool] = None,
     filter_metadata: Optional[dict[str, Any]] = None,
+    story_type: Any = None,
 ) -> list[Document]:
     """Step 1: Chroma search, optional BM25 hybrid + rerank.
 
     ``k_boost`` widens the pool (agentic re-retrieve). ``filter_metadata`` is a
-    Chroma ``where`` filter.
+    Chroma ``where`` filter. ``story_type`` ("single" / "series" / "mix") adds an
+    ``Is_series`` filter; if it matches nothing, retrieval falls back to the
+    unfiltered corpus (logged) rather than returning no context.
     """
     vectorstore = _build_vectorstore(cfg)
 
@@ -279,25 +355,37 @@ def retrieve_docs(
     k = max(target_chunks * 4, n_stories * max(1, chunks_per_story) * 4)
     k = int(round(k * max(1.0, float(k_boost))))
 
+    where = _merge_filters(filter_metadata, story_type_filter(story_type))
     search_kwargs: dict[str, Any] = {"k": k}
-    if filter_metadata:
-        search_kwargs["filter"] = filter_metadata
+    if where:
+        search_kwargs["filter"] = where
 
     docs = vectorstore.as_retriever(search_kwargs=search_kwargs).invoke(query)
+    if not docs and where and where != filter_metadata:
+        LOG.warning("[RETRIEVAL] story_type=%s matched no chunks; retrying without it.", story_type)
+        search_kwargs.pop("filter", None)
+        if filter_metadata:
+            search_kwargs["filter"] = filter_metadata
+        docs = vectorstore.as_retriever(search_kwargs=search_kwargs).invoke(query)
 
     hybrid_on = str(cfg.get("Hybrid_search_enabled") or "").strip().lower() not in ("false", "0", "no", "")
     if hybrid_on and docs:
         bm25_weight = float(cfg.get("Hybrid_bm25_weight") or 0.3)
-        bm25_ranked = _bm25_rank_docs(query, docs)
+        # Lexical candidates from the WHOLE corpus (not just the dense pool): these
+        # can add chunks dense retrieval missed outright. They join the pool that
+        # the cross-encoder reranks below, so they only surface if truly relevant.
+        bm25_pool = int(cfg.get("Hybrid_bm25_pool", 0) or 0)
+        global_bm25 = _bm25_global_docs(vectorstore, query, where, bm25_pool)
+        bm25_ranked = global_bm25 if global_bm25 is not None else _bm25_rank_docs(query, docs)
         docs = _rrf_fuse(docs, bm25_ranked, bm25_weight=bm25_weight)
-        LOG.debug("Hybrid BM25+dense fusion applied (bm25_weight=%.2f)", bm25_weight)
-        # NOTE: fusion only reorders this same candidate set (BM25 reranks the
-        # already dense-retrieved pool; it can't add corpus chunks dense missed),
-        # and when Reranker_enabled is true (the default) the block below rescores
-        # every candidate from scratch and sorts purely on that score -- so
-        # Hybrid_bm25_weight does not affect the final top-1/top-k order in the
-        # default config. It only matters with reranking disabled, where diversity
-        # selection below reads this fused order directly. See setup.example.yaml.
+        LOG.debug(
+            "Hybrid BM25+dense fusion applied (bm25_weight=%.2f, global_bm25=%s)",
+            bm25_weight, global_bm25 is not None,
+        )
+        # NOTE: when Reranker_enabled is true (the default) the block below rescores
+        # every candidate from scratch, so Hybrid_bm25_weight does not affect the
+        # final order -- but the global BM25 candidates DO affect which chunks are
+        # in the pool at all. With reranking off, diversity reads this fused order.
 
     # Rerank BEFORE diversity selection (not after). Diversity used to run on the
     # raw dense/BM25-fused order and pick whichever 3 titles happened to lead that
@@ -327,8 +415,11 @@ def retrieve_docs(
         target=target_chunks,
     )
 
-    LOG.debug(
-        "Retrieval: pool k=%d -> %d chunks (target=%d, rerank=%s)",
-        k, len(docs), target_chunks, reranker_on,
+    LOG.info(
+        "[RETRIEVAL] Chroma+%s%s -> %d chunks (k=%d, story_type=%s, embed=%s)",
+        "BM25 " if hybrid_on else "",
+        f"rerank {cfg.get('Reranker_model') or 'cross-encoder/ms-marco-MiniLM-L-6-v2'}" if reranker_on else "no-rerank",
+        len(docs), k, getattr(story_type, "value", story_type) or "mix",
+        cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5",
     )
     return docs

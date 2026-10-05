@@ -90,8 +90,6 @@ def _load_or_get_cached_local_model(model_id: str, cfg: dict[str, Any]):
     return tok, model
 
 
-_is_thinking_mode = is_thinking_mode
-
 
 def _mode_generation_params(
     cfg: dict[str, Any],
@@ -141,7 +139,7 @@ def _load_generation_llm(
 
     if provider == "vllm":
         from storyforge.rag.generation_backend import vllm_model_id
-        LOG.info("Using vLLM for story generation (model=%s)", vllm_model_id(cfg))
+        LOG.info("[GENERATION] Served by vLLM: %s", vllm_model_id(cfg))
         return load_vllm_llm(
             cfg,
             max_new_tokens=default_max_new,
@@ -150,16 +148,13 @@ def _load_generation_llm(
         )
 
     if provider == "ollama":
-        LOG.info(
-            "Using Ollama for story generation (model=%s)",
-            cfg.get("Generative_model") or cfg.get("Ollama_model") or "qwen3.5:9b",
-        )
+        LOG.info("[GENERATION] Served by Ollama: %s", cfg.get("Generative_model") or cfg.get("Ollama_model") or "qwen3.5:9b")
         return load_ollama_llm(
             cfg,
             max_new_tokens=default_max_new,
             temperature=temperature,
             top_p=top_p,
-            thinking=_is_thinking_mode(mode),
+            thinking=is_thinking_mode(mode),
         )
 
     model_id = cfg.get("Generative_model") or cfg.get("GENERATIVE_MODEL") or "Qwen/Qwen2.5-7B-Instruct"
@@ -169,6 +164,7 @@ def _load_generation_llm(
     from transformers import pipeline  # type: ignore
     from langchain_huggingface import HuggingFacePipeline
 
+    LOG.info("[GENERATION] Served by in-process Transformers: %s", model_id)
     tok, model = _load_or_get_cached_local_model(model_id, cfg)
     gen_pipe = pipeline(
         "text-generation",
@@ -186,7 +182,7 @@ def _load_generation_llm(
     return HuggingFacePipeline(pipeline=gen_pipe)
 
 
-def _flow_section_headers(cfg: dict[str, Any]) -> str:
+def _flow_section_headers() -> str:
     """Fixed 5-section outline used by every generation and refine pass."""
     return "\n".join(
         [
@@ -215,7 +211,7 @@ def build_story_prompt(
         + prompts["story_user"]
         .format(
             query=query,
-            section_headers=_flow_section_headers(cfg),
+            section_headers=_flow_section_headers(),
             grounded_facts=facts_for_prompt,
             length_guidance=profile.guidance_text(),
         )
@@ -241,7 +237,7 @@ def build_refine_prompt(
         + prompts["refine_user"]
         .format(
             query=query,
-            section_headers=_flow_section_headers(cfg),
+            section_headers=_flow_section_headers(),
             grounded_facts=facts_for_prompt,
             prior_draft=prior_draft.strip(),
             feedback=feedback.strip(),
@@ -335,7 +331,7 @@ def generate_from_facts(
 
     # Thinking mode occasionally returns an empty body (model emits only <think>…</think>).
     # Retry once with fast-mode sampling before giving up.
-    if not story and _is_thinking_mode(mode):
+    if not story and is_thinking_mode(mode):
         LOG.warning(
             "Empty draft from thinking mode — retrying once with fast sampling (query=%r).",
             (query or "")[:80],

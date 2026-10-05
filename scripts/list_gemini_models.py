@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """
-CLI wrapper for `storyforge.scripts.list_gemini_models`.
+List Gemini models for the configured API key.
 
 Run:
-  py scripts/list_gemini_models.py
+  .venv/Scripts/python.exe scripts/list_gemini_models.py
 """
+
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -15,13 +15,40 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from storyforge.config.config import load_config  # noqa: E402
-from storyforge.scripts.list_gemini_models import list_gemini_models  # noqa: E402
+
+def list_gemini_models(*, api_key: str) -> list[str]:
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    EXCLUDE_PREFIXES = ("embedding", "text-embedding", "gemini-embedding", "imagen", "veo", "aqa", "deep-research")
+    EXCLUDE_SUBSTRINGS = (
+        "-tts",
+        "image-generation",
+        "-image",
+        "native-audio",
+        "robotics",
+        "computer-use",
+        "nano-banana",
+    )
+    try:
+        names: list[str] = []
+        models = client.models.list()
+        for model in models:
+            base = model.name.replace("models/", "", 1).lower()
+            if any(base.startswith(p) for p in EXCLUDE_PREFIXES):
+                continue
+            if any(s in base for s in EXCLUDE_SUBSTRINGS):
+                continue
+            names.append(model.name)
+        return names
+    finally:
+        client.close()
 
 
 def main() -> None:
-    cfg = load_config()
-    api_key = str(cfg.get("Gemini_api_key") or "").strip()
+    from storyforge.config.config import load_config
+
+    api_key = str(load_config().get("Gemini_api_key") or "").strip()
     if not api_key:
         raise SystemExit("Missing Gemini_api_key in setup.yaml (or set it via env overlay).")
     for name in list_gemini_models(api_key=api_key):

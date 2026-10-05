@@ -21,7 +21,7 @@ from storyforge.rag.generation import _mode_generation_params
 from storyforge.rag.langchain_rag import generate_story_3step_langchain
 from storyforge.rag.length_profile import resolve_length_profile
 from storyforge.config.config import load_config
-from storyforge.vector_store.chromadb import Collection, delete_data, query_data, update_data
+from storyforge.vector_store.chromadb import delete_data, query_data
 from storyforge.vector_store.chromadb import reset_vector_store_dir, set_active_collection
 from storyforge.vector_store.ingest_stories import ingest_stories_dir
 """
@@ -174,12 +174,10 @@ def step1_prepare_and_enrich_result(
     """Run prepare + enrich on data/story_json (see scripts/prepare_story_records.py)."""
     try:
         run_step1_prepare_and_enrich(
-            root=Path(__file__).resolve().parents[3],
             limit=limit,
             overwrite_summary=overwrite_summary,
             overwrite_sections=overwrite_sections,
             dry_run=dry_run,
-            enable_tqdm=True,
         )
         return {"success": True}
     except Exception as e:
@@ -221,36 +219,6 @@ def query_vector_result(
     except Exception as e:
         LOG.exception("query_vector_result failed")
         return {"success": False, "results": [], "error": str(e)}
-
-
-def vector_insert_result(ids: list[str], metadata: dict) -> dict:
-    try:
-        if not ids:
-            return {"success": False}
-        doc = metadata.get("document", metadata.get("content", ""))
-        meta = {
-            "Author": metadata.get("Author", ""),
-            "Title": metadata.get("Title", ""),
-            "Summary": metadata.get("Summary", ""),
-            # Must be "content" or rows are invisible to every read path.
-            "query_type": "content",
-        }
-        Collection.add(ids=ids, metadatas=[meta] * len(ids), documents=[doc] * len(ids))
-        return {"success": True}
-    except Exception as e:
-        LOG.exception("vector_insert_result failed")
-        return {"success": False, "ids": ids, "metadata": metadata, "error": str(e)}
-
-
-def vector_update_result(ids: list[str], metadata: dict) -> dict:
-    try:
-        new_data = metadata.get("document", metadata.get("content", ""))
-        for id in ids:
-            update_data(id, new_data)
-        return {"success": True}
-    except Exception as e:
-        LOG.exception("vector_store_update failed")
-        return {"success": False, "ids": ids, "metadata": metadata, "error": str(e)}
 
 
 def vector_delete_result(ids: list[str]) -> dict:
@@ -298,7 +266,7 @@ def generate_story_result(
             length=length,
             n_stories=3,
             chunks_per_story=2,
-            show_progress=True,
+            story_type=story_type,
             debug=debug,
         )
         content = out.content

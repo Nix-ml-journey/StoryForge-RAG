@@ -99,15 +99,6 @@ def get_data(id: str):
         return None
 
 
-def update_data(id: str, new_data: str):
-    try:
-        Collection.update(ids=[id], documents=[new_data])
-        return True
-    except Exception as e:
-        logging.error(f"Error updating data: {e}")
-        return False
-
-
 def get_all_data():
     try:
         results = Collection.get(include=["documents", "metadatas"])

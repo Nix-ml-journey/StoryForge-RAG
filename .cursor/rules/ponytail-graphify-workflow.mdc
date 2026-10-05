@@ -17,7 +17,7 @@ Trimming is behavior-preserving only: same inputs must give the same retrieval, 
 
 - Retrieval: `retrieve_docs()` in `src/storyforge/rag/retrieval.py` (dense pool → BM25 RRF → cross-encoder rerank → title diversity), its ordering, and all `setup.yaml` retrieval knobs.
 - BGE convention: `QUERY_PREFIX` in `src/storyforge/vector_store/embeddings.py` on queries only; passages stay unprefixed.
-- Facts: `extraction.py`, `attribution.py` (`salvage_grounded_facts_json`, citation filtering), JSON schema format and retries in `generation_backend.py`.
+- Facts: `extraction.py`, `attribution.py` (`salvage_grounded_facts_json`, citation filtering), `FACTS_JSON_SCHEMA` and the local retry loop in `extraction.py` (`generation_backend.py` only passes `format=` through).
 - Agentic loop: `decide_action()` thresholds and branches, `stop_reason` values in `agentic_loop.py`.
 - Length: `LengthProfile` / `resolve_length_profile()` in `length_profile.py`.
 - Prompts: `prompts.yaml` wording; model choices in `setup.yaml` / `setup.example.yaml`.

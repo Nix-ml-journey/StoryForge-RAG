@@ -265,7 +265,7 @@ def test_generation_failure_on_first_iteration_stops_gracefully(stub_heavy_deps,
 
     cfg = {"Agentic_loop_max_iterations": 3}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, debug=False, show_progress=False
+        "a test query", cfg=cfg, debug=False
     )
 
     assert result.content == ""
@@ -301,7 +301,7 @@ def test_generation_failure_after_partial_progress_keeps_best_draft(stub_heavy_d
 
     cfg = {"Agentic_loop_max_iterations": 3}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, debug=False, show_progress=False
+        "a test query", cfg=cfg, debug=False
     )
 
     assert result.content == first_draft
@@ -335,7 +335,7 @@ def test_no_eval_zero_facts_complete_draft_is_never_accepted(stub_heavy_deps, mo
 
     cfg = {"Agentic_loop_max_iterations": 2, "Story_length_presets": {"short": 100}}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, length="short", debug=False, show_progress=False
+        "a test query", cfg=cfg, length="short", debug=False
     )
 
     assert result.accepted is False
@@ -362,9 +362,46 @@ def test_no_eval_with_facts_complete_draft_accepts(stub_heavy_deps, monkeypatch)
 
     cfg = {"Agentic_loop_max_iterations": 2, "Story_length_presets": {"short": 100}}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, length="short", debug=False, show_progress=False
+        "a test query", cfg=cfg, length="short", debug=False
     )
 
     assert result.accepted is True
     assert result.stop_reason == "accepted"
     assert result.iterations[0]["has_eval"] is False
+
+
+def test_late_iteration_accepts_slightly_below_bar():
+    # avg 6.6 < 7.0 but >= 7.0 - 0.5 slack: iteration 1 refines, iteration 2 accepts.
+    ev = _good_eval(faith=8, others=6.6)
+    assert decide_action(ev, _complete(), facts_count=10, cfg=CFG, has_eval=True, iteration=1).action == REFINE
+    assert decide_action(ev, _complete(), facts_count=10, cfg=CFG, has_eval=True, iteration=2).action == ACCEPT
+
+
+def test_truncated_draft_feedback_asks_for_tighter_sections():
+    fb = build_feedback({}, _incomplete(), words_per_section=300)
+    assert "cut off" in fb and "300" in fb
+
+# --- Item 1-4 behaviour -------------------------------------------------------
+def test_incomplete_draft_refines_even_when_faithfulness_is_low():
+    # Truncated drafts get noisy faithfulness; refine first, do not throw them away.
+    d = decide_action(_good_eval(faith=2, others=8), _incomplete(), facts_count=10, cfg=CFG, has_eval=True)
+    assert d.action == REFINE
+
+
+def test_complete_draft_with_low_faithfulness_still_re_retrieves():
+    d = decide_action(_good_eval(faith=2, others=8), _complete(), facts_count=10, cfg=CFG, has_eval=True)
+    assert d.action == RE_RETRIEVE
+
+
+def test_zero_facts_re_retrieves_before_refining():
+    d = decide_action(_good_eval(), _incomplete(), facts_count=0, cfg=CFG, has_eval=True)
+    assert d.action == RE_RETRIEVE
+
+
+def test_refine_regressed_detects_shrunk_or_section_losing_draft():
+    from storyforge.rag.agentic_loop import refine_regressed
+
+    prior = _five_section_story(extra_words=100)
+    assert refine_regressed(prior, "[SECTION 1: WHO]\nshort.") is True
+    assert refine_regressed(prior, _five_section_story(extra_words=95)) is False
+    assert refine_regressed(prior, _five_section_story(extra_words=120)) is False

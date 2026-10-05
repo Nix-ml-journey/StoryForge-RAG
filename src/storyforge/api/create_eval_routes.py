@@ -55,7 +55,7 @@ class StoryGenerateRequest(BaseModel):
     )
     story_type: Optional[str] = Field(
         default="mix",
-        description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both). Defaults to 'mix'.",
+        description="Filters retrieval by the Is_series metadata: 'single' = standalone stories only, 'series' = series chapters only, 'mix' = no filter (default).",
     )
     model_config = ConfigDict(
         json_schema_extra={

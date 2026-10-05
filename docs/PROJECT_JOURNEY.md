@@ -304,7 +304,7 @@ prior draft to fall back to. Tests in `tests/test_agentic_loop.py`.
 ### Structural cleanup
 
 A pass through the whole `src/storyforge/` tree against an earlier internal audit
-(`StoryForge_pattern_audit.md`) found most high-severity findings already fixed in prior
+(`docs/archive/StoryForge_pattern_audit.md`) found most high-severity findings already fixed in prior
 sessions. What was still live:
 
 - Removed ~90 lines of dead code in `book_search/fetch_book.py`
@@ -482,10 +482,49 @@ No pipeline behavior changed in this session; retrieval, facts, prompts, length,
 
 ---
 
+## Session: offline hardening and retrieval recall (2026-10)
+
+Decisions are recorded in [`decisions/`](decisions/README.md).
+
+- **Evaluation on Ollama** (ADR-0001): `Evaluation_mode: "ollama"` / `local`; no CPU Transformers path, no silent HF/Gemini fallback.
+- **Retrieval recall** (ADR-0002): BM25 over the whole collection was added as an optional rerank-pool feed (`Hybrid_bm25_pool`). Offline it ranked Frankenstein and Haunter of the Dark first, but the live eval showed no gain (top-1 0.80 / top-3 0.833 unchanged, fact_coverage 0.733 -> 0.717), so it ships **off** (`0`).
+- **`story_type` is real** (ADR-0003) and the unsafe vector-store insert/update routes are gone (ADR-0004).
+- **Agentic loop**: the Sep-22 baseline's non-accepts were truncated drafts (missing SECTION 5), not low scores. Refine token boosts raised to 900/1200, a "cut off, tighten earlier sections" hint was added to refine feedback, and from iteration 2 a complete grounded draft is accepted `Agentic_loop_late_accept_slack` (0.5) under the bar.
+- **Prompts**: facts prompt asks for exact chunk ids and one fact per named entity; story prompts add pacing so SECTION 5 fits; judge prompts use strict 1-10 anchors and actionable per-section suggestions.
+- **Hygiene**: step-1 runner now lives in `src` (no `runpy` into `scripts/`), per-request tqdm bars removed, unused langchain deps removed, GitHub Actions CI (`ruff` + `pytest`), 8 integration tests (real in-memory Chroma + fake Ollama server), and a conftest fix that stopped stubs leaking onto real modules.
+
+### Measured results, 2026-10-05 (Ollama judge `qwen3.5:4b`, local facts, generator `qwen3.5:9b`)
+
+| Metric | 2026-09-22 (broken HF eval) | 2026-10-05 |
+|---|---|---|
+| accept_rate | 0.75 | 0.75 (6/8) |
+| avg iterations | 2.12 | 1.75 |
+| avg words (target 1500) | 1755 | 1670 |
+| under-min-words rate | 0.0 | 0.12 (1/8) |
+| avg seconds / query | 111 | 99.7 |
+| retrieval top-1 / top-3 / fact coverage | 0.80 / 0.833 / 0.733 | 0.80 / 0.833 / 0.717 (BM25 pool on; 0.733 expected with it off) |
+
+This is the first clean scored run: every iteration had a real judge score and non-empty facts, so the earlier
+accept rates (which were inflated or masked by the HF outage) are not comparable. What the iteration records show:
+
+- Four of eight queries were accepted on iteration 1 (scores 7.8-8.4). The two non-accepts (huntress, lawyer) were both
+  sent to RE_RETRIEVE by `faithfulness < 6` and never recovered.
+- **RE_RETRIEVE weakens grounding.** It turns the reranker off; facts fell from 27 to 5 (doctor) and 12 to 2 (goblin), and
+  both drafts were still accepted on thinner evidence.
+- **The judge's faithfulness is blind.** The evaluator only sees the story, not the grounded facts, so the 4B judge's
+  faithfulness swings from 2 to 10. Short drafts (821-928 words) got faithfulness 2-5 and triggered a re-retrieve when a
+  refine was the right move.
+- **Refine can shrink a draft.** The lawyer query went 1088 -> 513 words (sections 3-5 missing) on refine and ended under
+  the minimum.
+
+Steps (1)-(4) below were implemented afterwards (ADR-0006, not yet re-measured): the judge now gets the grounded facts;
+`decide_action` checks completeness before faithfulness; RE_RETRIEVE keeps the reranker on; a refine that shrinks the draft is
+rejected. Still open: (5) the per-stage retrieval diagnostic described in ADR-0002 before touching the reranker.
+
 ## Repo and docs
 
 - **Code:** https://github.com/Nix-ml-journey/StoryForge-RAG  
 - **Overview:** `docs/README.md`  
 - **Data prep after extract:** `docs/DATA_PREP.md`  
 - **Quick test path:** `docs/QUICK_DEMO.md`  
-- **Roadmap:** `docs/PROJECT_UPDATE_ROADMAP.md`, `docs/UPGRADE_ROADMAP_5060Ti.md`
+- **Roadmap:** `docs/UPGRADE_ROADMAP_5060Ti.md` (the older `docs/archive/PROJECT_UPDATE_ROADMAP.md` is archived)

@@ -115,44 +115,6 @@ class VectorStoreQueryRequest(BaseModel):
     )
 
 
-class VectorStoreInsertRequest(BaseModel):
-    vector_store: dict = Field(default_factory=dict)
-    collection: str = "StoryForgeRag_v1"
-    ids: list[str]
-    metadata: dict
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "ids": ["id_01"],
-                "metadata": {
-                    "Title": "The Adventures of Sherlock Holmes",
-                    "Author": "Arthur Conan Doyle",
-                    "Summary": "A detective mystery collection.",
-                    "document": "Mr. Sherlock Holmes, who was usually very late in the mornings...",
-                },
-            }
-        }
-    )
-
-
-class VectorStoreUpdateRequest(BaseModel):
-    vector_store: dict = Field(default_factory=dict)
-    collection: str = "StoryForgeRag_v1"
-    ids: list[str]
-    metadata: dict
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "ids": ["id_01"],
-                "metadata": {
-                    "document": "Updated story content goes here.",
-                    "Summary": "Updated summary text.",
-                },
-            }
-        }
-    )
-
-
 class VectorStoreDeleteRequest(BaseModel):
     vector_store: dict = Field(default_factory=dict)
     collection: str = "StoryForgeRag_v1"
@@ -172,22 +134,6 @@ class VectorStoreQueryResponse(BaseModel):
     vector_store: dict = Field(default_factory=dict)
     collection: str = ""
     results: list = Field(default_factory=list)
-
-
-class VectorStoreInsertResponse(BaseModel):
-    success: bool
-    vector_store: dict
-    collection: str
-    ids: list[str]
-    metadata: dict
-
-
-class VectorStoreUpdateResponse(BaseModel):
-    success: bool
-    vector_store: dict
-    collection: str
-    ids: list[str]
-    metadata: dict
 
 
 class VectorStoreDeleteResponse(BaseModel):
@@ -359,44 +305,6 @@ async def vector_store_query(request: VectorStoreQueryRequest):
         )
     except Exception as e:
         logging.exception("vector_store_query failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@vector_store_router.post("/insert", response_model=VectorStoreInsertResponse)
-async def vector_store_insert(request: VectorStoreInsertRequest):
-    try:
-        await asyncio.to_thread(set_active_collection, request.collection)
-        doc = request.metadata.get("document", request.metadata.get("content", ""))
-        meta = {k: v for k, v in request.metadata.items() if k not in {"document", "content"}}
-        await asyncio.to_thread(Collection.add, ids=request.ids, metadatas=[meta] * len(request.ids), documents=[doc] * len(request.ids))
-        return VectorStoreInsertResponse(
-            success=True,
-            vector_store=request.vector_store,
-            collection=request.collection,
-            ids=request.ids,
-            metadata=request.metadata,
-        )
-    except Exception as e:
-        logging.exception("vector_store_insert failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@vector_store_router.post("/update", response_model=VectorStoreUpdateResponse)
-async def vector_store_update(request: VectorStoreUpdateRequest):
-    try:
-        await asyncio.to_thread(set_active_collection, request.collection)
-        new_doc = request.metadata.get("document", request.metadata.get("content", None))
-        if new_doc is not None:
-            await asyncio.to_thread(Collection.update, ids=request.ids, documents=[str(new_doc)] * len(request.ids))
-        return VectorStoreUpdateResponse(
-            success=True,
-            vector_store=request.vector_store,
-            collection=request.collection,
-            ids=request.ids,
-            metadata=request.metadata,
-        )
-    except Exception as e:
-        logging.exception("vector_store_update failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

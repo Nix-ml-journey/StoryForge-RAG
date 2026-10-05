@@ -90,115 +90,62 @@ def _build_gemini_evaluator(temperature: float = 0.3, model_name: Optional[str] 
     return llm
 
 
-_LOCAL_EVAL_CACHE: dict[tuple, Any] = {}  # (model_id, device) -> (tokenizer, model)
+_OLLAMA_EVAL_MODES = {"local", "ollama"}
 
 
-def _local_evaluation_device(cfg: dict[str, Any]) -> str:
-    device = str(cfg.get("Local_evaluation_device") or "cpu").strip().lower() or "cpu"
-    if device == "cuda":
-        try:
-            import torch
-            if not torch.cuda.is_available():
-                logging.warning("Local_evaluation_device=cuda requested but unavailable; using cpu.")
-                return "cpu"
-        except Exception:
-            return "cpu"
-    return device
+def _check_ollama_ready(base_url: str, model: str) -> None:
+    """Fail loudly (no silent fallback) if Ollama is down or the model is not pulled."""
+    import requests
+
+    try:
+        resp = requests.get(f"{base_url}/api/tags", timeout=5)
+        resp.raise_for_status()
+        names = {str(m.get("name") or "") for m in (resp.json().get("models") or [])}
+    except (requests.exceptions.RequestException, ValueError) as e:
+        raise RuntimeError(
+            f"[EVALUATION] Ollama is unreachable at {base_url} ({e}). "
+            "Start Ollama, or set Evaluation_mode: \"api\" to use HF/Gemini."
+        ) from e
+    if model not in names and f"{model}:latest" not in names:
+        raise RuntimeError(
+            f"[EVALUATION] Ollama model '{model}' is not pulled (run: ollama pull {model})."
+        )
 
 
-def _load_local_evaluator_model(model_id: str, device: str):
-    """Load (or return cached) a small local causal LM used only for scoring drafts."""
-    cache_key = (model_id, device)
-    if cache_key in _LOCAL_EVAL_CACHE:
-        return _LOCAL_EVAL_CACHE[cache_key]
+def _build_ollama_evaluator(temperature: float = 0.1, model_name: Optional[str] = None) -> dict[str, Any]:
+    from storyforge.rag.generation_backend import ollama_base_url, ollama_model_id
 
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-
-    logging.info("Loading local evaluation model (first use): %s on %s", model_id, device)
-    tok = AutoTokenizer.from_pretrained(model_id)
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        device_map="cuda" if device == "cuda" else None,
-        torch_dtype=(torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else None),
-    )
-    if device != "cuda":
-        model = model.to(device)
-
-    _LOCAL_EVAL_CACHE[cache_key] = (tok, model)
-    return tok, model
-
-
-def _build_local_evaluator(temperature: float = 0.1, model_name: Optional[str] = None) -> dict[str, Any]:
     cfg = _cfg()
-    model_id = model_name or str(cfg.get("Local_evaluation_model") or "Qwen/Qwen2.5-3B-Instruct")
-    device = _local_evaluation_device(cfg)
-    logging.info("Initialized StoryEvaluator with local model: %s (%s)", model_id, device)
-    return {"provider": "local", "model": model_id, "device": device, "temperature": float(temperature)}
+    model = model_name or str(cfg.get("Ollama_evaluation_model") or "").strip() or ollama_model_id(cfg)
+    base_url = ollama_base_url(cfg)
+    _check_ollama_ready(base_url, model)
+    logging.info("[EVALUATION] Judge: Ollama %s @ %s", model, base_url)
+    return {"provider": "ollama", "model": model, "base_url": base_url, "temperature": float(temperature)}
 
 
-def _invoke_local_once(evaluator: dict[str, Any], prompt: str) -> str:
+def _invoke_ollama_once(evaluator: dict[str, Any], prompt: str) -> str:
+    """One Ollama evaluation call. No API fallback: connection errors propagate."""
+    import httpx
+
+    from storyforge.rag.generation_backend import load_ollama_llm
+
     cfg = _cfg()
     max_new = int(cfg.get("Local_evaluation_max_new_tokens") or cfg.get("HF_evaluation_max_new_tokens") or 700)
-    tok, model = _load_local_evaluator_model(evaluator["model"], evaluator["device"])
-
-    import torch
-
-    messages = [{"role": "user", "content": prompt}]
+    llm = load_ollama_llm(
+        cfg,
+        max_new_tokens=max_new,
+        temperature=float(evaluator.get("temperature") or 0.1),
+        top_p=0.9,
+        thinking=False,
+        model_override=evaluator["model"],
+        json_format="json",
+    )
     try:
-        input_ids = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
-    except Exception:
-        # Tokenizer has no chat template — fall back to raw text.
-        input_ids = tok(prompt, return_tensors="pt").input_ids
-    input_ids = input_ids.to(model.device)
-
-    temperature = float(evaluator.get("temperature") or 0.1)
-    with torch.no_grad():
-        out = model.generate(
-            input_ids,
-            max_new_tokens=max_new,
-            do_sample=temperature > 0,
-            temperature=max(temperature, 0.01),
-            pad_token_id=(tok.pad_token_id or tok.eos_token_id),
-        )
-    generated = out[0][input_ids.shape[-1] :]
-    return tok.decode(generated, skip_special_tokens=True).strip()
-
-
-def _invoke_local_with_fallback(evaluator: dict[str, Any], prompt: str) -> str:
-    """Try the local model; on any failure (e.g. OOM), fall back to the API chain.
-
-    Keeps the agentic loop moving even if the local model can't be loaded or
-    run on this machine, rather than failing every evaluation for the rest of
-    the run.
-    """
-    try:
-        return _invoke_local_once(evaluator, prompt)
-    except Exception as e:
-        logging.warning(
-            "Local evaluation model failed (%s); falling back to the API provider chain.", e
-        )
-        cfg = _cfg()
-        providers = _normalise_provider_priority(
-            cfg.get("Evaluation_provider_priority") or ["huggingface", "gemini"]
-        )
-        temperature = evaluator.get("temperature")
-        errors = [f"local: {e}"]
-        for candidate in providers:
-            try:
-                if candidate in {"hf", "huggingface", "hugging_face"}:
-                    hf_evaluator = _build_huggingface_evaluator(temperature=temperature)
-                    return _invoke_hf_with_retry(hf_evaluator, prompt)
-                if candidate == "gemini":
-                    gemini = _build_gemini_evaluator(temperature=temperature)
-                    return _invoke_gemini_with_retry(gemini, prompt)
-            except Exception as e2:
-                errors.append(f"{candidate}: {e2}")
+        return str(llm.invoke(prompt) or "").strip()
+    except (httpx.HTTPError, ConnectionError) as e:
         raise RuntimeError(
-            "Local evaluation failed and no API fallback succeeded: " + " | ".join(errors)
+            f"[EVALUATION] Ollama call to {evaluator['model']} failed ({e}). "
+            "No API fallback is used in Evaluation_mode local/ollama."
         ) from e
 
 
@@ -219,7 +166,7 @@ def _invoke_huggingface_once(evaluator: dict[str, Any], prompt: str) -> str:
     )
     try:
         return (resp.choices[0].message.content or "").strip()
-    except Exception:
+    except (AttributeError, IndexError, TypeError):
         if isinstance(resp, dict):
             choices = resp.get("choices") or []
             if choices and isinstance(choices[0], dict):
@@ -273,8 +220,10 @@ def _invoke_with_retry(model, prompt: str):
     cfg = _cfg()
     primary = str(cfg.get("Gemini_evaluation_model") or "").strip()
     fallback = str(cfg.get("Gemini_evaluation_fallback_model") or "").strip()
-    if isinstance(model, dict) and model.get("provider") == "local":
-        return _invoke_local_with_fallback(model, prompt)
+    if isinstance(model, dict):
+        logging.info("[EVALUATION] Served by %s: %s", model.get("provider"), model.get("model"))
+    if isinstance(model, dict) and model.get("provider") == "ollama":
+        return _invoke_ollama_once(model, prompt)
 
     if isinstance(model, dict) and model.get("provider") == "huggingface":
         try:
@@ -282,7 +231,7 @@ def _invoke_with_retry(model, prompt: str):
         except Exception as e:
             try:
                 gemini = _build_gemini_evaluator(model_name=fallback or primary)
-            except Exception:
+            except (ValueError, ImportError):
                 raise e
             logging.warning("HF evaluation failed (%s); falling back to Gemini.", e)
             return _invoke_gemini_with_retry(gemini, prompt)
@@ -324,13 +273,12 @@ def evaluate_model(
         except (TypeError, ValueError):
             temperature = 0.1
 
-    # Evaluation_mode: "local" short-circuits the API provider priority below --
-    # it's a separate in-process backend (Transformers), not another HTTP
-    # provider to race against huggingface/gemini. Removes the HF/Gemini API
-    # round-trip (and rate-limit risk) from every agentic-loop iteration.
+    # Evaluation_mode "ollama" (alias "local") short-circuits the API provider
+    # priority below: the judge is served by the same Ollama instance as
+    # generation, with NO HF/Gemini fallback. If Ollama is down this raises.
     eval_mode = str(cfg.get("Evaluation_mode") or "api").strip().lower()
-    if eval_mode == "local":
-        return _build_local_evaluator(temperature=temperature, model_name=model_name)
+    if eval_mode in _OLLAMA_EVAL_MODES:
+        return _build_ollama_evaluator(temperature=temperature, model_name=model_name)
 
     providers = [provider.lower()] if provider else _normalise_provider_priority(
         cfg.get("Evaluation_provider_priority") or ["huggingface", "gemini"]
@@ -342,7 +290,7 @@ def evaluate_model(
                 return _build_huggingface_evaluator(temperature=temperature, model_name=model_name)
             if candidate == "gemini":
                 return _build_gemini_evaluator(temperature=temperature, model_name=model_name)
-        except Exception as e:
+        except (ValueError, ImportError) as e:
             errors.append(f"{candidate}: {e}")
             logging.warning("Evaluation provider unavailable (%s): %s", candidate, e)
     raise ValueError("No evaluation provider could be initialized. " + " | ".join(errors))
@@ -382,21 +330,35 @@ def evaluate_generated_story(model, file_path) -> dict[str, Any]:
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             story = file.read()
-        prompt = _eval_prompts()["with_story"].format(story=story)
+        prompt = _story_eval_prompt(story)
         response = _invoke_with_retry(model, prompt)
         return _parse_json_response(response)
-    except Exception as e:
+    except RuntimeError:
+        raise  # explicit provider failure (e.g. Ollama down): surface it, do not mask as {}
+    except (ValueError, KeyError, TypeError, OSError) as e:
         logging.error(f"Error evaluating generated story: {e}")
         return {}
 
 
-def evaluate_story_text(model, story_text: str) -> dict[str, Any]:
-    """Score a story string in memory (used by the agentic loop each iteration)."""
+def _story_eval_prompt(story: str, facts: str = "") -> str:
+    """Judge prompt; with ``facts`` the faithfulness score is checkable against them."""
+    section = f"## Grounded facts (source of truth):\n{facts.strip()}\n\n" if facts and facts.strip() else ""
+    return _eval_prompts()["with_story"].format(story=story, facts_section=section)
+
+
+def evaluate_story_text(model, story_text: str, facts: str = "") -> dict[str, Any]:
+    """Score a story string in memory (used by the agentic loop each iteration).
+
+    ``facts`` (formatted grounded facts) lets the judge check faithfulness instead of
+    guessing from the prose alone.
+    """
     try:
-        prompt = _eval_prompts()["with_story"].format(story=story_text)
+        prompt = _story_eval_prompt(story_text, facts)
         response = _invoke_with_retry(model, prompt)
         return _parse_json_response(response)
-    except Exception as e:
+    except RuntimeError:
+        raise  # explicit provider failure (e.g. Ollama down): surface it, do not mask as {}
+    except (ValueError, KeyError, TypeError, OSError) as e:
         logging.error(f"Error evaluating story text: {e}")
         return {}
 
@@ -412,7 +374,9 @@ def evaluate_generated_summary(model, summary_path, story_path=None) -> dict[str
         prompt = _eval_prompts()["with_summary"].format(summary=summary, story=story_text)
         response = _invoke_with_retry(model, prompt)
         return _parse_json_response(response)
-    except Exception as e:
+    except RuntimeError:
+        raise  # explicit provider failure (e.g. Ollama down): surface it, do not mask as {}
+    except (ValueError, KeyError, TypeError, OSError) as e:
         logging.error(f"Error evaluating generated summary: {e}")
         return {}
 

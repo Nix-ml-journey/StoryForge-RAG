@@ -286,6 +286,8 @@ Generation_precision: "bf16"
 
 ### 3.5 ✅ Replace `requests`-based HF evaluation with a local evaluator
 
+> **Superseded 2026-10-05 by [ADR-0001](decisions/0001-ollama-evaluation-no-api-fallback.md):** the Transformers/CPU evaluator and its API fallback described below were removed; `Evaluation_mode: "ollama"` (alias `local`) now judges via Ollama. The text below is kept as history.
+
 The evaluation step previously always called the HuggingFace Inference API (remote,
 rate-limited, can fail) — twice per agentic-loop iteration when combined with Step 2's
 own HF call. `Evaluation_mode: "local"` loads a small model in-process instead,
@@ -348,7 +350,7 @@ iterations, and across HTTP requests within the same running server) reuses it.
 2. **Tune accept rate** — run agentic loop with `length: "long"` / `"13min"` and track word count vs target; adjust `Agentic_loop_accept_score` if stories are over-refined.
 3. **Re-evaluate vLLM (3.1)** — relevant if you add concurrent users or want batch evaluation.
 4. **INT4 quantization (3.2)** — if you want to run a 13B model with the same VRAM budget.
-5. **Turn on local evaluation** — set `Evaluation_mode: "local"` in `setup.yaml` if HF API rate limits or latency are a bottleneck; keep `Local_evaluation_device: "cpu"` unless you've confirmed VRAM headroom alongside Ollama.
+5. **Turn on local evaluation** — set `Evaluation_mode: "ollama"` in `setup.yaml` if HF API rate limits or latency are a bottleneck; keep `Local_evaluation_device: "cpu"` unless you've confirmed VRAM headroom alongside Ollama.
 6. ~~**Fix BGE passage-prefix convention**~~ — done (2026-09): ingest no longer prefixes passages, only queries do (BGE's documented recipe). Requires a one-time `py scripts/reset_and_ingest.py`; see docs/DATA_PREP.md.
 
 > **Before any upgrade:** run `python -m pytest -q` as a regression check.

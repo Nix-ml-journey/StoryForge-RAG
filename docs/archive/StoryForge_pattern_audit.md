@@ -1,5 +1,7 @@
 # StoryForge RAG — Pattern Audit
 
+> **Archived.** Kept for history only; moved to `docs/archive/` on 2026-10-05. Current docs live in `docs/README.md`.
+
 > **Status: historical audit snapshot (2026-08-20), largely resolved.** Findings were true at
 > audit time; most are no longer current. As of the last review pass:
 > - **All 7 High-severity findings (H1–H7) are fixed** — collection-name wiring, the
@@ -28,7 +30,7 @@
 >   resolves the repo root correctly. Still rotate any token that was pasted into chat.
 > - The sections below are kept as-written for the historical record of what was found and why —
 >   do not treat individual H/M/L items as current bugs without checking the code first.
-> - Prefer [`docs/README.md`](docs/README.md) and [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md) for current truth.
+> - Prefer [`docs/README.md`](../README.md) and [`docs/PROJECT_JOURNEY.md`](../PROJECT_JOURNEY.md) for current truth.
 
 **Date:** 2026-08-20
 **Scope:** all 36 Python files under `src/storyforge/`, `main.py`, `scripts/`, `setup.yaml`, `setup.example.yaml`, `prompts.yaml`

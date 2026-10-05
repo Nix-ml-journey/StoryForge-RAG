@@ -16,16 +16,19 @@ Gemini_api_key: ""
 Google_book_api_key: ""
 
 # --- Evaluation (agentic loop uses these scores) ---
-# "api" (default) calls HF/Gemini below. "local" loads a small model
-# in-process instead, removing the API round-trip from every agentic-loop
-# iteration, and falls back to the API chain automatically if it errors.
-# Offline / no HF credits: set Evaluation_mode: "local" (and keep the device on
-# "cpu" so Ollama keeps the GPU). Without ANY working evaluator the agentic loop
-# decides on completeness + facts only, and will not ACCEPT a draft that has
-# zero grounded facts behind it.
+# "api" (default) calls HF/Gemini below. "ollama" (alias "local") judges drafts
+# with the local Ollama server (Ollama_evaluation_model, default Generative_model)
+# and NEVER falls back to HF/Gemini: if Ollama is down, evaluation fails loudly.
+# Offline / no HF credits: set Evaluation_mode: "ollama". Without ANY working
+# evaluator the agentic loop decides on completeness + facts only, and will not
+# ACCEPT a draft that has zero grounded facts behind it.
 Evaluation_mode: "api"
-Local_evaluation_model: "Qwen/Qwen2.5-3B-Instruct"
-Local_evaluation_device: "cpu"   # "cuda" only if you have VRAM to spare alongside Ollama
+# VRAM budget (RTX 5060 Ti, 16 GB): qwen3.5:9b (~6.6 GB) + qwen3.5:4b judge (~3.3 GB)
+# + KV cache at Model_max_prompt_tokens fits together (~11-12 GB). Embeddings and the
+# reranker run on CPU. qwen3.5:27b / qwen3:30b+ do NOT fit; qwen3:14b fits alone but is
+# older than qwen3.5:9b. To trim further, start Ollama with OLLAMA_FLASH_ATTENTION=1 and
+# OLLAMA_KV_CACHE_TYPE=q8_0. If you see OOM, lower Model_max_prompt_tokens first.
+# Ollama_evaluation_model: "qwen3.5:4b"   # optional small judge (ollama pull qwen3.5:4b); defaults to Generative_model
 Local_evaluation_max_new_tokens: 700
 
 Evaluation_provider_priority:
@@ -95,7 +98,7 @@ Local_grounded_facts_compact_max_facts: 12
 #   ollama       — Ollama Docker container (default, easiest to run)
 #   vllm         — vLLM OpenAI-compatible server (higher throughput, run alongside FastAPI):
 #                    python -m vllm.entrypoints.openai.api_server \
-#                      --model Qwen/Qwen2.5-7B-Instruct \
+#                      --model Qwen/Qwen3.5-9B \
 #                      --dtype bfloat16 --max-model-len 8192 --port 8001
 #   transformers — local HuggingFace pipeline (single-process, lower throughput)
 Generation_provider: ollama
@@ -103,7 +106,7 @@ Generative_model: "qwen3.5:9b"
 Ollama_base_url: "http://localhost:11434"
 # vLLM settings (only used when Generation_provider: vllm)
 vLLM_base_url: "http://localhost:8001/v1"
-vLLM_model: "Qwen/Qwen2.5-7B-Instruct"
+vLLM_model: "Qwen/Qwen3.5-9B"
 # Precision for Transformers only (ignored when Generation_provider: ollama or vllm)
 Generation_precision: "auto"
 Model_max_prompt_tokens: 12288
@@ -169,6 +172,16 @@ Hybrid_search_enabled: true
 # results whenever Reranker_enabled is true. It still matters if you disable
 # reranking, since diversity then reads directly off this fused order.
 Hybrid_bm25_weight: 0.3
+# Chunks added from a BM25 search over the WHOLE collection (not just the dense
+# pool) so stories dense retrieval missed outright can still reach the reranker.
+# 0 (default) = old behaviour (BM25 only reorders the dense pool). 12 was tried on
+# 2026-10-05: no top-1/top-3 change and fact_coverage fell 0.733 -> 0.717, so it is
+# off until the reranker stage is fixed (docs/decisions/0002-global-bm25-candidates.md).
+Hybrid_bm25_pool: 0
+
+# Enrichment for data/story_json (scripts/enrich_story_records.py)
+HF_summary_model: "sshleifer/distilbart-cnn-12-6"
+Section_label_model: "qwen3.5:9b"   # Ollama tag used to label chunk sections
 
 # --- Agentic loop ---
 Agentic_loop_enabled: true
@@ -176,10 +189,11 @@ Agentic_loop_max_iterations: 3
 Agentic_loop_accept_score: 7.0
 Agentic_loop_min_faithfulness: 6
 Agentic_loop_min_facts: 3
+Agentic_loop_late_accept_slack: 0.5   # from iteration 2 on, accept a complete grounded draft this far under accept_score
 Agentic_loop_reretrieve_k_boost: 2.0
 Agentic_loop_reretrieve_n_results: 5
-Agentic_loop_refine_token_boost: 600
-Agentic_loop_refine_token_boost_thinking: 900
+Agentic_loop_refine_token_boost: 900
+Agentic_loop_refine_token_boost_thinking: 1200
 # Minimum word count and minimum sentences per section come from the story
 # length target above, so the loop cannot accept a draft shorter than the
 # prompt asked for.

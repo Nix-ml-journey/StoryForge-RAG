@@ -23,6 +23,7 @@ from storyforge.rag.generation_backend import (
     generation_provider,
     load_ollama_llm,
     load_vllm_llm,
+    ollama_model_id,
 )
 from storyforge.rag.retrieval import _format_chunks_for_prompt
 
@@ -181,12 +182,12 @@ def _hf_chat_extract_json(
                 "HF_grounded_facts_max_new_tokens (currently %s), not to change the prompt.",
                 getattr(resp, "usage", None), max_new,
             )
-    except Exception:
+    except (AttributeError, IndexError, TypeError):
         pass
 
     try:
         return (resp.choices[0].message.content or "").strip()  # type: ignore[attr-defined]
-    except Exception:
+    except (AttributeError, IndexError, TypeError):
         if isinstance(resp, dict):
             choices = resp.get("choices") or []
             if choices and isinstance(choices[0], dict):
@@ -268,6 +269,35 @@ def _local_json_format(cfg: dict[str, Any]) -> Any:
     return FACTS_JSON_SCHEMA
 
 
+def _provider_error_types() -> tuple[type[BaseException], ...]:
+    """Errors a remote/local model provider can raise (network, HTTP, bad payload)."""
+    errs: list[type[BaseException]] = [OSError, ValueError, RuntimeError]
+    try:
+        import httpx
+
+        errs.append(httpx.HTTPError)
+    except ImportError:
+        pass
+    return tuple(errs)
+
+
+_PROVIDER_ERRORS = _provider_error_types()
+
+
+def _local_call_error_types() -> tuple[type[BaseException], ...]:
+    errs = list(_PROVIDER_ERRORS)
+    try:
+        from ollama import ResponseError  # Ollama rejecting `format` / unknown model
+
+        errs.append(ResponseError)
+    except ImportError:
+        pass
+    return tuple(errs)
+
+
+_LOCAL_CALL_ERRORS = _local_call_error_types()
+
+
 def _grounded_facts_provider(cfg: dict[str, Any]) -> str:
     """``hf`` (default: HF API, local fallback) or ``local`` (skip HF entirely)."""
     raw = str(cfg.get("Grounded_facts_provider") or "hf").strip().lower()
@@ -282,7 +312,7 @@ def _load_facts_llm(cfg: dict[str, Any], *, json_format: Any = None) -> Any:
 
     provider = generation_provider(cfg)
     if provider == "vllm":
-        LOG.info("Using vLLM for grounded-facts fallback")
+        LOG.info("[FACTS] Served by vLLM: %s", cfg.get("vLLM_model"))
         llm = load_vllm_llm(cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p)
         if json_format:
             # vLLM's OpenAI-compatible server supports JSON mode natively.
@@ -291,7 +321,7 @@ def _load_facts_llm(cfg: dict[str, Any], *, json_format: Any = None) -> Any:
                 llm._llm = inner.bind(response_format={"type": "json_object"})
         return llm
     if provider == "ollama":
-        LOG.info("Using Ollama for grounded-facts fallback (json_format=%s)",
+        LOG.info("[FACTS] Served by Ollama: %s (json_format=%s)", ollama_model_id(cfg),
                  "schema" if isinstance(json_format, dict) else json_format)
         return load_ollama_llm(
             cfg, max_new_tokens=max_new, temperature=temperature, top_p=top_p,
@@ -323,7 +353,7 @@ def _invoke_local_facts(cfg: dict[str, Any], prompt: str, json_format: Any) -> s
     try:
         facts_llm = _load_facts_llm(cfg, json_format=json_format)
         return str(facts_llm.invoke(prompt) or "").strip()
-    except Exception as e:
+    except _LOCAL_CALL_ERRORS as e:
         if not json_format:
             raise
         LOG.warning(
@@ -418,13 +448,14 @@ def extract_grounded_facts(
                 retrieval_chunks=_format_chunks_for_prompt(chunks),
             ),
         )
-    except Exception as e:
-        LOG.warning("HF routed extraction unavailable; falling back to local extraction. Error: %s", e)
+    except _PROVIDER_ERRORS as e:
+        LOG.warning("[FACTS] HF routed extraction unavailable (%s); falling back to local extraction.", e)
         return _extract_grounded_facts_local(query, chunks, cfg, prompts)
+    LOG.info("[FACTS] Served by HF: %s", cfg.get("HF_grounded_facts_model"))
 
     try:
         parsed = parse_grounded_facts_json(grounded_raw)
-    except Exception as e:
+    except (ValueError, KeyError, TypeError) as e:
         LOG.warning(
             "Grounded-facts JSON parse failed (%s). Raw response (first 300 chars): %r",
             e, grounded_raw[:300],

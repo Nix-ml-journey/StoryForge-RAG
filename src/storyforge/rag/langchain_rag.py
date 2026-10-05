@@ -48,29 +48,19 @@ def generate_story_3step_langchain(
     length: Any = None,
     n_stories: int = 3,
     chunks_per_story: int = 2,
-    show_progress: bool = True,
+    story_type: Any = None,
     debug: bool = False,
 ) -> RAG3StepResult:
     cfg = cfg or load_config()
     profile = resolve_length_profile(cfg, length=length, mode=mode)
 
-    pbar = None
-    if show_progress:
-        try:
-            from tqdm import tqdm
-            pbar = tqdm(total=3, desc="RAG 3-step", unit="step")
-        except Exception:
-            pbar = None
-
-    docs = retrieve_docs(query, cfg, n_stories=n_stories, chunks_per_story=chunks_per_story)
+    docs = retrieve_docs(
+        query, cfg, n_stories=n_stories, chunks_per_story=chunks_per_story, story_type=story_type
+    )
     chunks = _docs_to_chunks(docs)
     retrieval_context = _docs_to_context(docs)
-    if pbar:
-        pbar.update(1)
 
     grounded_raw, parsed = extract_grounded_facts(query, chunks, cfg)
-    if pbar:
-        pbar.update(1)
 
     story = generate_from_facts(query, parsed, grounded_raw, cfg, mode=mode, profile=profile)
     min_sentences = profile.min_sentences_per_section
@@ -118,9 +108,6 @@ def generate_story_3step_langchain(
                 _refine_err, len(original_story.split()),
             )
             story = original_story
-    if pbar:
-        pbar.update(1)
-        pbar.close()
 
     facts = parsed.facts
     debug_payload = None

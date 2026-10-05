@@ -170,7 +170,7 @@ def test_length_guard_falls_back_to_original_when_refine_raises(monkeypatch):
          patch("storyforge.rag.langchain_rag._docs_to_chunks", return_value=[]), \
          patch("storyforge.rag.langchain_rag._docs_to_context", return_value=""):
         from storyforge.rag.langchain_rag import generate_story_3step_langchain
-        result = generate_story_3step_langchain("A warrior", cfg=_cfg(), show_progress=False)
+        result = generate_story_3step_langchain("A warrior", cfg=_cfg())
 
     assert result.content == short_story, (
         f"Expected fallback to original short story, got: {result.content!r}"

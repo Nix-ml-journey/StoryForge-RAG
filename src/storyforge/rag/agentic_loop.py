@@ -31,6 +31,7 @@ __all__ = [
     "decide_action",
     "build_feedback",
     "reformulate_query",
+    "refine_regressed",
     "run_agentic_story_loop",
 ]
 
@@ -165,9 +166,17 @@ def decide_action(
     cfg: dict[str, Any],
     *,
     has_eval: bool = True,
+    iteration: int = 1,
 ) -> Decision:
-    """Choose ACCEPT, REFINE, or RE_RETRIEVE from scores + completeness."""
+    """Choose ACCEPT, REFINE, or RE_RETRIEVE from scores + completeness.
+
+    From the 2nd iteration on, the accept bar drops by ``Agentic_loop_late_accept_slack``
+    (default 0.5): a complete, grounded draft that is only marginally under the
+    bar is accepted instead of paying another ~100 s refine pass for noise-level gain.
+    """
     accept_score = float(cfg.get("Agentic_loop_accept_score") or 7.0)
+    if iteration >= 2:
+        accept_score -= float(cfg.get("Agentic_loop_late_accept_slack", 0.5) or 0.0)
     min_faith = float(cfg.get("Agentic_loop_min_faithfulness") or 6)
     min_facts = int(cfg.get("Agentic_loop_min_facts") or 3)
 
@@ -187,17 +196,18 @@ def decide_action(
             return Decision(ACCEPT, ("complete (no eval provider)",), avg, faith)
         return Decision(REFINE, ("incomplete (no eval provider): " + "; ".join(completeness.reasons),), avg, faith)
 
-    if faith is not None and faith < min_faith:
-        return Decision(RE_RETRIEVE, (f"faithfulness {faith} < {min_faith}",), avg, faith)
     if facts_count <= 0:
         return Decision(RE_RETRIEVE, ("no grounded facts extracted",), avg, faith)
-
-    if avg >= accept_score and completeness.ok:
-        return Decision(ACCEPT, (f"avg {avg} >= {accept_score}, complete, grounded",), avg, faith)
-
+    # Finish an incomplete/short draft BEFORE judging faithfulness: a truncated draft
+    # scores noisy faithfulness, and re-retrieving would throw away its good sections.
     if not completeness.ok:
         reasons = tuple(completeness.reasons) or ("incomplete",)
         return Decision(REFINE, reasons, avg, faith)
+    if faith is not None and faith < min_faith:
+        return Decision(RE_RETRIEVE, (f"faithfulness {faith} < {min_faith}",), avg, faith)
+
+    if avg >= accept_score and completeness.ok:
+        return Decision(ACCEPT, (f"avg {avg} >= {accept_score}, complete, grounded",), avg, faith)
 
     if facts_count < min_facts:
         return Decision(
@@ -209,7 +219,20 @@ def decide_action(
     return Decision(REFINE, (f"avg {avg} < {accept_score}",), avg, faith)
 
 
-def build_feedback(eval_data: Optional[dict[str, Any]], completeness: CompletenessReport) -> str:
+def refine_regressed(prior: str, new: str, *, min_ratio: float = 0.8) -> bool:
+    """True when a refine pass made the draft worse: much shorter, or fewer sections."""
+    count = lambda s: len({int(n) for n in re.findall(r"\[SECTION\s+(\d+)", s or "", flags=re.IGNORECASE)})  # noqa: E731
+    if len((new or "").split()) < min_ratio * len((prior or "").split()):
+        return True
+    return count(new) < count(prior)
+
+
+def build_feedback(
+    eval_data: Optional[dict[str, Any]],
+    completeness: CompletenessReport,
+    *,
+    words_per_section: int = 0,
+) -> str:
     """Merge evaluator notes and completeness gaps into text for the refine prompt."""
     parts: list[str] = []
     if eval_data:
@@ -224,6 +247,13 @@ def build_feedback(eval_data: Optional[dict[str, Any]], completeness: Completene
                     parts.append(f"- {s}")
     if not completeness.ok:
         parts.append("Completeness issues to fix: " + "; ".join(completeness.reasons))
+        if (completeness.missing_sections or not completeness.ends_clean) and words_per_section > 0:
+            # Draft ran out of tokens before the ending: the fix is tighter earlier
+            # sections, not a longer story.
+            parts.append(
+                f"The previous draft was cut off. Keep each section to about {words_per_section} "
+                "words so all five sections fit, and end SECTION 5 with a complete sentence."
+            )
     parts.append("Keep every section, finish the final sentence, and stay strictly grounded in the facts.")
     return "\n".join(parts).strip()
 
@@ -275,9 +305,9 @@ def run_agentic_story_loop(
     length: Any = None,
     story_type: StoryType = StoryType.MIX,
     debug: bool = False,
-    show_progress: bool = True,
 ) -> AgenticLoopResult:
     """Retrieve → generate → evaluate → ACCEPT / REFINE / RE_RETRIEVE."""
+    from storyforge.rag.attribution import format_facts_for_prompt
     from storyforge.rag.extraction import extract_grounded_facts
     from storyforge.rag.generation import generate_from_facts
     from storyforge.rag.length_profile import is_thinking_mode, resolve_length_profile
@@ -304,7 +334,7 @@ def run_agentic_story_loop(
     refine_token_boost = int(
         cfg.get("Agentic_loop_refine_token_boost_thinking" if is_thinking else "Agentic_loop_refine_token_boost")
         or cfg.get("Agentic_loop_refine_token_boost")
-        or 600
+        or 900
     )
 
     eval_model = None
@@ -315,25 +345,16 @@ def run_agentic_story_loop(
 
         eval_model = eval_mod.evaluate_model()
         has_eval = True
-    except Exception as e:
-        LOG.warning(
-            "Agentic loop: no evaluation provider available (%s). Using completeness-only signals.",
+    except (RuntimeError, ValueError, OSError) as e:
+        LOG.error(
+            "Agentic loop: evaluator unavailable (%s). Using completeness-only signals; "
+            "scores will be 0.0 for this run.",
             e,
         )
-
-    pbar = None
-    if show_progress:
-        try:
-            from tqdm import tqdm  # type: ignore
-
-            pbar = tqdm(total=max_iter, desc="Agentic RAG", unit="iter")
-        except Exception:
-            pbar = None
 
     n_stories = 3
     chunks_per_story = 2
     k_boost = 1.0
-    use_reranker: Optional[bool] = None
     current_query = query
 
     docs = retrieve_docs(
@@ -342,7 +363,7 @@ def run_agentic_story_loop(
         n_stories=n_stories,
         chunks_per_story=chunks_per_story,
         k_boost=k_boost,
-        use_reranker=use_reranker,
+        story_type=story_type,
     )
     chunks = _docs_to_chunks(docs)
     retrieval_context = _docs_to_context(docs)
@@ -397,6 +418,14 @@ def run_agentic_story_loop(
             stop_reason = "generation_failed" if best is None else "generation_failed_using_best_so_far"
             break
 
+        regressed = bool(prior_draft) and refine_regressed(prior_draft, story)
+        if regressed:
+            LOG.warning(
+                "Agentic loop: refine on iteration %d regressed the draft (%d -> %d words); keeping the prior draft.",
+                i, len(prior_draft.split()), len(story.split()),
+            )
+            story = prior_draft
+
         comp = completeness_report(
             story,
             min_words=min_words,
@@ -406,13 +435,17 @@ def run_agentic_story_loop(
         eval_data: dict[str, Any] = {}
         if has_eval and eval_mod is not None:
             try:
-                eval_data = eval_mod.evaluate_story_text(eval_model, story) or {}
-            except Exception as e:
-                LOG.warning("Agentic loop: evaluation call failed on iteration %d (%s).", i, e)
+                eval_data = eval_mod.evaluate_story_text(
+                    eval_model, story, facts=format_facts_for_prompt(parsed)
+                ) or {}
+            except Exception as e:  # noqa: BLE001 - any provider failure must not discard a finished draft
+                LOG.error("Agentic loop: evaluation failed on iteration %d (%s: %s).", i, type(e).__name__, e)
                 eval_data = {}
 
         iter_has_eval = has_eval and bool(eval_data)
-        decision = decide_action(eval_data, comp, len(parsed.facts), cfg, has_eval=iter_has_eval)
+        decision = decide_action(
+            eval_data, comp, len(parsed.facts), cfg, has_eval=iter_has_eval, iteration=i
+        )
 
         iter_record = {
             "iteration": i,
@@ -439,9 +472,6 @@ def run_agentic_story_loop(
         if best is None or (candidate["complete"], candidate["avg"]) > (best["complete"], best["avg"]):
             best = candidate
 
-        if pbar:
-            pbar.update(1)
-
         if decision.action == ACCEPT:
             stop_reason = "accepted"
             best = candidate
@@ -457,7 +487,6 @@ def run_agentic_story_loop(
         if decision.action == RE_RETRIEVE:
             k_boost *= k_boost_step
             n_stories = max(n_stories, reretrieve_n)
-            use_reranker = False
             current_query = reformulate_query(query, parsed, eval_data)
             docs = retrieve_docs(
                 current_query,
@@ -465,7 +494,7 @@ def run_agentic_story_loop(
                 n_stories=n_stories,
                 chunks_per_story=chunks_per_story,
                 k_boost=k_boost,
-                use_reranker=use_reranker,
+                        story_type=story_type,
             )
             chunks = _docs_to_chunks(docs)
             retrieval_context = _docs_to_context(docs)
@@ -474,12 +503,9 @@ def run_agentic_story_loop(
             prior_draft = None
             refine_max_new = None
         else:
-            refine_feedback = build_feedback(eval_data, comp)
+            refine_feedback = build_feedback(eval_data, comp, words_per_section=profile.words_per_section)
             prior_draft = story
             refine_max_new = base_max_tokens + refine_token_boost if not comp.ok else None
-
-    if pbar:
-        pbar.close()
 
     best = best or {"story": "", "complete": False, "avg": 0.0, "eval_data": {}}
     return AgenticLoopResult(

@@ -101,3 +101,12 @@ def test_retrieve_docs_skips_diversity_narrowing_before_rerank_sees_it(stub_heav
     retrieval_mod.retrieve_docs(query="q", cfg=cfg, n_stories=1, chunks_per_story=1)
 
     assert "T11" in seen_titles_at_rerank
+
+
+def test_story_type_filter_maps_to_is_series():
+    from storyforge.rag.retrieval import story_type_filter
+
+    assert story_type_filter("single") == {"Is_series": False}
+    assert story_type_filter("series") == {"Is_series": True}
+    assert story_type_filter("mix") is None
+    assert story_type_filter(None) is None

@@ -79,102 +79,73 @@ def test_parse_json_response_extracts_json_from_model_chatter():
 
 
 # ---------------------------------------------------------------------------
-# Local evaluation backend (Evaluation_mode: "local")
+# Ollama evaluation backend (Evaluation_mode: "ollama", alias "local")
 # ---------------------------------------------------------------------------
 
+import pytest  # noqa: E402
 
-def test_evaluate_model_returns_local_evaluator_when_configured(monkeypatch):
+
+@pytest.mark.parametrize("mode", ["ollama", "local"])
+def test_evaluate_model_returns_ollama_evaluator(monkeypatch, mode):
     monkeypatch.setattr(evaluation, "_cfg", lambda: {
-        "Evaluation_mode": "local",
-        "Local_evaluation_model": "test-local-eval-model",
-        "Local_evaluation_device": "cpu",
+        "Evaluation_mode": mode,
+        "Generative_model": "qwen3.5:9b",
+        "Ollama_base_url": "http://localhost:11434",
+        "facehugging_api": "hf-token",
+        "Gemini_api_key": "gemini-token",
     })
+    monkeypatch.setattr(evaluation, "_check_ollama_ready", lambda *_a: None)
 
     model = evaluation.evaluate_model()
 
     assert model == {
-        "provider": "local",
-        "model": "test-local-eval-model",
-        "device": "cpu",
+        "provider": "ollama",
+        "model": "qwen3.5:9b",
+        "base_url": "http://localhost:11434",
         "temperature": 0.1,
     }
 
 
-def test_evaluate_model_local_mode_ignores_api_priority(monkeypatch):
-    # Even with HF/Gemini keys present, Evaluation_mode: local must win --
-    # it's a separate backend, not another entry in the API priority list.
+def test_ollama_evaluator_model_override(monkeypatch):
     monkeypatch.setattr(evaluation, "_cfg", lambda: {
-        "Evaluation_mode": "local",
+        "Evaluation_mode": "ollama",
+        "Generative_model": "qwen3.5:9b",
+        "Ollama_evaluation_model": "qwen3:4b",
+    })
+    monkeypatch.setattr(evaluation, "_check_ollama_ready", lambda *_a: None)
+
+    assert evaluation.evaluate_model()["model"] == "qwen3:4b"
+
+
+def test_ollama_unreachable_fails_explicitly_without_api_fallback(monkeypatch):
+    import requests
+
+    monkeypatch.setattr(evaluation, "_cfg", lambda: {
+        "Evaluation_mode": "ollama",
         "facehugging_api": "hf-token",
         "Gemini_api_key": "gemini-token",
-        "Evaluation_provider_priority": ["huggingface", "gemini"],
     })
 
-    model = evaluation.evaluate_model()
+    def _down(*_a, **_k):
+        raise requests.exceptions.ConnectionError("refused")
 
-    assert model["provider"] == "local"
+    monkeypatch.setattr(requests, "get", _down)
+    monkeypatch.setattr(evaluation, "_build_huggingface_evaluator", lambda **_k: pytest.fail("API fallback used"))
 
-
-def test_invoke_with_retry_routes_local_provider_to_local_invoker(monkeypatch):
-    local_model = {"provider": "local", "model": "test-model", "device": "cpu", "temperature": 0.1}
-    calls = []
-
-    def _fake_invoke_local(model, prompt):
-        calls.append((model, prompt))
-        return '{"overall": {"score": 9}}'
-
-    monkeypatch.setattr(evaluation, "_invoke_local_once", _fake_invoke_local)
-
-    response = evaluation._invoke_with_retry(local_model, "evaluate this")
-
-    assert response == '{"overall": {"score": 9}}'
-    assert calls == [(local_model, "evaluate this")]
+    with pytest.raises(RuntimeError, match="Ollama is unreachable"):
+        evaluation.evaluate_model()
 
 
-def test_local_evaluation_falls_back_to_api_chain_on_failure(monkeypatch):
-    local_model = {"provider": "local", "model": "test-model", "device": "cpu", "temperature": 0.1}
+def test_invoke_with_retry_routes_ollama_provider(monkeypatch):
+    model = {"provider": "ollama", "model": "qwen3.5:9b", "base_url": "x", "temperature": 0.1}
+    monkeypatch.setattr(evaluation, "_invoke_ollama_once", lambda m, p: '{"overall": {"score": 9}}')
 
-    def _raise_oom(_model, _prompt):
-        raise RuntimeError("CUDA out of memory")
+    assert evaluation._invoke_with_retry(model, "evaluate this") == '{"overall": {"score": 9}}'
 
-    monkeypatch.setattr(evaluation, "_invoke_local_once", _raise_oom)
-    monkeypatch.setattr(evaluation, "_cfg", lambda: {
-        "Evaluation_provider_priority": ["huggingface", "gemini"],
-    })
-    monkeypatch.setattr(
-        evaluation, "_build_huggingface_evaluator",
-        lambda **_kwargs: {"provider": "huggingface", "model": "fallback-model", "api_key": "hf-token"},
-    )
-    monkeypatch.setattr(
-        evaluation, "_invoke_hf_with_retry", lambda *_a, **_k: '{"overall": {"score": 6}}'
-    )
+def test_story_eval_prompt_includes_facts_only_when_given():
+    from storyforge.evaluation.evaluation import _story_eval_prompt
 
-    response = evaluation._invoke_with_retry(local_model, "evaluate this")
-
-    assert response == '{"overall": {"score": 6}}'
-
-
-def test_local_evaluation_raises_when_local_and_all_fallbacks_fail(monkeypatch):
-    local_model = {"provider": "local", "model": "test-model", "device": "cpu", "temperature": 0.1}
-
-    monkeypatch.setattr(
-        evaluation, "_invoke_local_once",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("CUDA out of memory")),
-    )
-    monkeypatch.setattr(evaluation, "_cfg", lambda: {
-        "Evaluation_provider_priority": ["huggingface", "gemini"],
-    })
-    monkeypatch.setattr(
-        evaluation, "_build_huggingface_evaluator",
-        lambda **_kwargs: (_ for _ in ()).throw(ValueError("no HF token")),
-    )
-    monkeypatch.setattr(
-        evaluation, "_build_gemini_evaluator",
-        lambda **_kwargs: (_ for _ in ()).throw(ValueError("no Gemini key")),
-    )
-
-    try:
-        evaluation._invoke_with_retry(local_model, "evaluate this")
-        assert False, "expected RuntimeError"
-    except RuntimeError as e:
-        assert "Local evaluation failed" in str(e)
+    with_facts = _story_eval_prompt("THE STORY", "1. [who] Alana is a soldier")
+    without = _story_eval_prompt("THE STORY")
+    assert "Grounded facts (source of truth)" in with_facts and "Alana is a soldier" in with_facts
+    assert "Grounded facts (source of truth)" not in without and "{facts_section}" not in without

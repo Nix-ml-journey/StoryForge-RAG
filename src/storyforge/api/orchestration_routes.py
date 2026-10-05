@@ -48,7 +48,7 @@ class RunPipelineRequest(BaseModel):
     )
     story_type: Optional[str] = Field(
         default="mix",
-        description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both).",
+        description="Filters retrieval by the Is_series metadata: 'single' = standalone stories only, 'series' = series chapters only, 'mix' = no filter (default).",
     )
     metadata: Optional[dict[str, Any]] = Field(
         default=None,
@@ -125,7 +125,7 @@ class RunStepRequest(BaseModel):
     )
     story_type: Optional[str] = Field(
         default="mix",
-        description="Story type filter: 'single' (standalone), 'series' (chapter-based), 'mix' (both).",
+        description="Filters retrieval by the Is_series metadata: 'single' = standalone stories only, 'series' = series chapters only, 'mix' = no filter (default).",
     )
     metadata: Optional[dict[str, Any]] = Field(
         default=None,
@@ -366,9 +366,9 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
     try:
         from storyforge.rag.attribution import format_facts_for_prompt
         from storyforge.rag.generation import (
-            _is_thinking_mode,
             _mode_generation_params,
             build_story_prompt,
+            is_thinking_mode,
         )
         from storyforge.rag.generation_backend import (
             build_chat_ollama,
@@ -401,7 +401,7 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
                 max_new_tokens=max_new,
                 temperature=temperature,
                 top_p=top_p,
-                thinking=_is_thinking_mode(mode),
+                thinking=is_thinking_mode(mode),
             )
         else:
             raise ValueError(

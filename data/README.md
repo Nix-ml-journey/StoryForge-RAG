@@ -10,9 +10,9 @@ Extracted files land in `data/raw_extracted/` (scratch). Ingest reads `data/stor
 2. **Strip** — Gutenberg/Archive licenses, TOC, page numbers, running headers, “end of ebook”.
 3. **Paragraphs** — blank line between paragraphs so chunking does not cut mid-sentence.
 4. **Copy** cleaned files into `data/stories/`.
-5. **Prepare** — `py scripts/step1_prepare_and_enrich.py`
+5. **Prepare** — `.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py`
 6. **Open JSON** in `data/story_json/` — fill `meta.author` / `meta.title`, set `Is_series` only if true, fix empty or garbage chunks, rewrite a bad summary.
-7. **Ingest** — `py scripts/records_to_ingest_manifest.py` then `py scripts/ingest_manifest.py`
+7. **Ingest** — `.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py` then `.\.venv\Scripts\python.exe scripts/ingest_manifest.py`
 
 If the `.txt` is junk, later generation will be junk. The model cannot un-glue two books or ignore a table of contents that you left in.
 
@@ -44,9 +44,9 @@ data/
 Rebuild locally (only after the checklist above):
 
 ```powershell
-py scripts/step1_prepare_and_enrich.py
-py scripts/records_to_ingest_manifest.py
-py scripts/reset_and_ingest.py
+.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py
+.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/reset_and_ingest.py
 ```
 
 Portfolio and job-search write-ups live outside this repo in `../StoryForge-portfolio/`.

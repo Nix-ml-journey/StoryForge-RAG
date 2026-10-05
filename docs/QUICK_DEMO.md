@@ -58,18 +58,18 @@ Once your files are there, run these three scripts in order:
 
 ```powershell
 # 1. Prepare and enrich the stories (adds tags, summaries, chunking)
-py scripts/step1_prepare_and_enrich.py
+.\.venv\Scripts\python.exe scripts/step1_prepare_and_enrich.py
 
 # 2. Build the ingest list
-py scripts/records_to_ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/records_to_ingest_manifest.py
 
 # 3. Load everything into the search database
-py scripts/ingest_manifest.py
+.\.venv\Scripts\python.exe scripts/ingest_manifest.py
 ```
 
 You only need to do this again when you add or change stories.
 
-> **Starting fresh?** Run `py scripts/reset_and_ingest.py` to wipe and reload everything in one step.
+> **Starting fresh?** Run `.\.venv\Scripts\python.exe scripts/reset_and_ingest.py` to wipe and reload everything in one step.
 
 ---
 
@@ -143,14 +143,14 @@ Leave `length` out and the system picks a default based on `mode`.
 Every generated story has exactly **5 sections**:
 
 ```
-[SECTION 1] Who, Where, When — The Setup
-[SECTION 2] The Inciting Incident
-[SECTION 3] Rising Action
-[SECTION 4] Climax / Confrontation
-[SECTION 5] Resolution / Outcome
+[SECTION 1: WHO, WHERE, WHEN (The Setup)]
+[SECTION 2: WHAT (The Problem Starts)]
+[SECTION 3: TWIST/COMPLICATION (The Challenge)]
+[SECTION 4: HOW (The Big Action/Climax)]
+[SECTION 5: WHY/OUTCOME (The Moral and Conclusion)]
 ```
 
-The system checks that all 5 sections are present and that the story is long enough. If not, it automatically tries to improve the draft before returning it to you.
+The system checks that all 5 sections are present and that the story is long enough. If not, the 3-step path makes one length-guard refine pass before returning it; the agentic path can refine or re-retrieve up to `Agentic_loop_max_iterations` times.
 
 ---
 
@@ -162,7 +162,7 @@ The system checks that all 5 sections are present and that the story is long eno
 | "No documents found" | Run the ingest scripts (Step A) first. If you just extracted a book, clean it first ([`DATA_PREP.md`](./DATA_PREP.md)) |
 | API not responding | Check that `python main.py` is still running |
 | Ollama errors | Run `docker compose up -d` to restart Ollama |
-| HF rate limits on evaluation | Set `Evaluation_mode: "local"` in `setup.yaml` (CPU by default) |
+| HF rate limits on evaluation | Set `Evaluation_mode: "ollama"` in `setup.yaml` (judge runs on local Ollama) |
 
 ---
 
@@ -170,7 +170,7 @@ The system checks that all 5 sections are present and that the story is long eno
 
 | Endpoint | What it does |
 |----------|-------------|
-| `POST /create-eval/story_generate` | Generate + evaluate (recommended) |
+| `POST /create-eval/story_generate` | 3-step generate and save (no evaluation, no agentic loop). Evaluation is the separate `/create-eval/story_evaluate*` routes |
 | `POST /orchestration/run_step` + `4_generate_story_3step` | Single-pass, no evaluation |
 | `POST /orchestration/run_step` + `4_generate_story_agentic` | With refine/retry loop |
 | `POST /orchestration/generate_stream` | Stream tokens as they generate |
