@@ -149,3 +149,39 @@ def test_story_eval_prompt_includes_facts_only_when_given():
     without = _story_eval_prompt("THE STORY")
     assert "Grounded facts (source of truth)" in with_facts and "Alana is a soldier" in with_facts
     assert "Grounded facts (source of truth)" not in without and "{facts_section}" not in without
+
+
+def test_evaluate_story_text_retries_once_on_unparseable_judge_output(monkeypatch):
+    replies = iter(["I think the story is fine.", '{"overall": {"score": 8}}'])
+    prompts = []
+
+    def fake(model, prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(evaluation, "_invoke_with_retry", fake)
+    data = evaluation.evaluate_story_text({"provider": "ollama"}, "story")
+    assert data["overall"]["score"] == 8
+    assert len(prompts) == 2 and "not valid JSON" in prompts[1]
+
+
+def test_evaluate_story_text_gives_up_after_one_retry(monkeypatch):
+    calls = []
+    monkeypatch.setattr(evaluation, "_invoke_with_retry", lambda m, p: calls.append(p) or "nope")
+    assert evaluation.evaluate_story_text({"provider": "ollama"}, "story") == {}
+    assert len(calls) == 2
+
+
+def test_parse_json_response_salvages_scores_from_truncated_judge_json():
+    cut = '{"faithfulness": 8, "coherence": 7, "grammar": 6, "creativity": 7, "overall": 7, "conclusion": "Good but the end'
+    data = evaluation._parse_json_response(cut)
+    assert data["faithfulness"]["score"] == 8 and data["overall"]["score"] == 7
+    assert evaluation._parse_json_response("I cannot comply.") == {}
+
+
+def test_loop_judge_uses_compact_prompt_and_carries_facts():
+    from storyforge.evaluation.evaluation import _story_eval_prompt
+
+    compact = _story_eval_prompt("THE STORY", "1. [who] Alana", compact=True)
+    assert "Reply with ONLY this JSON object" in compact and "Alana" in compact and "{facts_section}" not in compact
+    assert "Reply with ONLY this JSON object" not in _story_eval_prompt("THE STORY")

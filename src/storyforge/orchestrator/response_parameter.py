@@ -21,7 +21,6 @@ from storyforge.rag.generation import _mode_generation_params
 from storyforge.rag.langchain_rag import generate_story_3step_langchain
 from storyforge.rag.length_profile import resolve_length_profile
 from storyforge.config.config import load_config
-from storyforge.vector_store.chromadb import delete_data, query_data
 from storyforge.vector_store.chromadb import reset_vector_store_dir, set_active_collection
 from storyforge.vector_store.ingest_stories import ingest_stories_dir
 """
@@ -183,57 +182,6 @@ def step1_prepare_and_enrich_result(
     except Exception as e:
         LOG.exception("step1_prepare_and_enrich_result failed")
         return {"success": False, "error": str(e)}
-
-
-def query_vector_result(
-    query: str,
-    n_results: int = 5,
-    query_type: str = "content",
-    collection_name: Optional[str] = None,
-) -> dict:
-    """Query the vector store; return hits with full stored metadata."""
-    try:
-        res = query_data(
-            query, n_results=n_results, query_type=query_type, collection_name=collection_name
-        )
-        if res is None:
-            return {"success": False, "results": []}
-        ids = (res.get("ids") or [[]])[0]
-        docs = (res.get("documents") or [[]])[0]
-        metas = (res.get("metadatas") or [[]])[0]
-        dists = (res.get("distances") or [[]])[0] or []
-        results = []
-        for i, (rid, d, m) in enumerate(zip(ids, docs, metas)):
-            md = dict(m or {})
-            text = d or ""
-            results.append(
-                {
-                    "id": rid,
-                    "document": text,
-                    "text": text,
-                    "distance": dists[i] if i < len(dists) else None,
-                    "metadata": md,
-                }
-            )
-        return {"success": True, "results": results}
-    except Exception as e:
-        LOG.exception("query_vector_result failed")
-        return {"success": False, "results": [], "error": str(e)}
-
-
-def vector_delete_result(ids: list[str]) -> dict:
-    try:
-        failed = [id for id in ids if not delete_data(id)]
-        if failed:
-            return {
-                "success": False,
-                "ids": ids,
-                "error": f"Delete failed for: {failed}. Check server logs; ids must match Chroma exactly (see GET /vector_store/ids).",
-            }
-        return {"success": True}
-    except Exception as e:
-        LOG.exception("vector_delete_result failed")
-        return {"success": False, "ids": ids, "error": str(e)}
 
 
 def generate_story_result(

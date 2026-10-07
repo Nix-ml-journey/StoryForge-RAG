@@ -6,6 +6,7 @@ Public API:
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Any, Optional
 
@@ -182,17 +183,18 @@ def _load_generation_llm(
     return HuggingFacePipeline(pipeline=gen_pipe)
 
 
+_SECTION_HEADERS = (
+    "[SECTION 1: WHO, WHERE, WHEN (The Setup)]",
+    "[SECTION 2: WHAT (The Problem Starts)]",
+    "[SECTION 3: TWIST/COMPLICATION (The Challenge)]",
+    "[SECTION 4: HOW (The Big Action/Climax)]",
+    "[SECTION 5: WHY/OUTCOME (The Moral and Conclusion)]",
+)
+
+
 def _flow_section_headers() -> str:
     """Fixed 5-section outline used by every generation and refine pass."""
-    return "\n".join(
-        [
-            "[SECTION 1: WHO, WHERE, WHEN (The Setup)]",
-            "[SECTION 2: WHAT (The Problem Starts)]",
-            "[SECTION 3: TWIST/COMPLICATION (The Challenge)]",
-            "[SECTION 4: HOW (The Big Action/Climax)]",
-            "[SECTION 5: WHY/OUTCOME (The Moral and Conclusion)]",
-        ]
-    )
+    return "\n".join(_SECTION_HEADERS)
 
 
 def build_story_prompt(
@@ -288,6 +290,115 @@ def _apply_attribution_gate(story: str, facts: tuple, cfg: dict[str, Any]) -> st
     return story
 
 
+_SECTION_OVERSHOOT = 1.6  # a kept section may run this far over its word budget
+_TERMINAL = ('.', '!', '?', '"', "\u201d", "\u2019", "'")
+
+
+def _trim_to_sentence(text: str) -> str:
+    """Drop a trailing cut-off fragment so a section ends on a finished sentence."""
+    text = text.strip()
+    if not text or text[-1] in _TERMINAL:
+        return text
+    cut = max(text.rfind(c) for c in ".!?")
+    return text[: cut + 1] if cut > len(text) // 3 else text
+
+
+def _invoke_nonempty(prompt: str, cfg: dict[str, Any], *, mode: Any, max_new_tokens: Optional[int], profile: LengthProfile) -> str:
+    """One generation call; an empty thinking-mode reply is retried once with fast sampling."""
+    text = str(_load_generation_llm(cfg, mode=mode, max_new_tokens=max_new_tokens, profile=profile).invoke(prompt) or "").strip()
+    if not text and is_thinking_mode(mode):
+        LOG.warning("Empty draft from thinking mode -- retrying once with fast sampling.")
+        text = str(_load_generation_llm(cfg, mode="fast", max_new_tokens=max_new_tokens, profile=profile).invoke(prompt) or "").strip()
+    if not text:
+        raise RuntimeError(
+            "Story generation returned an empty draft. "
+            "Try mode=\'fast\' or a smaller \'length\' target."
+        )
+    return text
+
+
+def _sections_to_write(prior_draft: Optional[str], profile: LengthProfile) -> dict[int, str]:
+    """Sections of ``prior_draft`` worth keeping: present, long enough, not far over budget."""
+    if not prior_draft:
+        return {}
+    kept: dict[int, str] = {}
+    for i, body in _split_section_bodies(prior_draft).items():
+        if (
+            1 <= i <= len(_SECTION_HEADERS)
+            and body.rstrip().endswith(_TERMINAL)
+            and _sentence_count(body) >= profile.min_sentences_per_section
+            and len(body.split()) <= _SECTION_OVERSHOOT * profile.words_per_section
+        ):
+            kept[i] = body
+    return kept
+
+
+def _generate_sectioned(
+    query: str,
+    facts_for_prompt: str,
+    cfg: dict[str, Any],
+    *,
+    mode: Any,
+    profile: LengthProfile,
+    prior_draft: Optional[str] = None,
+    feedback: Optional[str] = None,
+    headers: tuple[str, ...] = _SECTION_HEADERS,
+    prompts: Optional[dict[str, str]] = None,
+    roles: tuple[str, ...] = (),
+) -> str:
+    """Opt-in writer: one short call per section, each with its own word and token budget.
+
+    ``headers`` / ``prompts`` / ``roles`` let another method (see ``generation_arc``) reuse the loop
+    with its own outline and prompt set; the defaults are the 5W1H outline and ``prompts.yaml``.
+
+    A single pass overshoots the length target and can run out of tokens before SECTION 5;
+    here the ending always gets its own budget. On a refine, only the missing, short, or
+    over-long sections are rewritten; the rest of ``prior_draft`` is kept.
+    """
+    from storyforge.rag.extraction import _get_generation_prompts
+
+    prompts = prompts or _get_generation_prompts()
+    words = profile.words_per_section
+    max_words = round(words * 1.3)
+    tokens = min(length_token_cap(cfg), math.ceil(words * _SECTION_OVERSHOOT * 1.35 * 1.3))
+    bodies = _sections_to_write(prior_draft, profile)
+    if prior_draft and len(bodies) == len(headers):
+        bodies = {}  # nothing structural to fix: rewrite everything using the reviewer feedback
+    feedback_block = f"- Reviewer feedback to address: {feedback.strip()}" if feedback and feedback.strip() else ""
+    last = len(headers)
+
+    for i, header in enumerate(headers, start=1):
+        if i in bodies:
+            continue
+        so_far = "\n\n".join(f"{headers[j - 1]}\n{bodies[j]}" for j in range(1, i) if j in bodies) or "(nothing yet)"
+        ending_rule = (
+            "This is the FINAL section: resolve the story and end on a finished, resolved final sentence."
+            if i == last
+            else "End on a complete sentence that leads into the next section."
+        )
+        prompt = (
+            f"{(prompts['section_system'] or '').strip()}\n\n"
+            + prompts["section_user"]
+            .format(
+                query=query,
+                grounded_facts=facts_for_prompt,
+                story_so_far=so_far,
+                header=header,
+                role=roles[i - 1] if i <= len(roles) else "",
+                words=words,
+                min_sentences=profile.min_sentences_per_section,
+                max_words=max_words,
+                ending_rule=ending_rule,
+                feedback_block=feedback_block,
+            )
+            .strip()
+        )
+        raw = _invoke_nonempty(prompt, cfg, mode=mode, max_new_tokens=tokens, profile=profile)
+        bodies[i] = _trim_to_sentence(re.sub(r"^\s*\[SECTION[^\]]*\]\s*", "", raw))
+        LOG.info("[GENERATION] sectioned: wrote section %d (%d words, budget %d).", i, len(bodies[i].split()), words)
+    return "\n\n".join(f"{h}\n{bodies[i]}" for i, h in enumerate(headers, start=1))
+
+
 def generate_from_facts(
     query: str,
     parsed: Any,
@@ -306,9 +417,21 @@ def generate_from_facts(
     formatted_facts = format_facts_for_prompt(parsed)
     facts_for_prompt = formatted_facts if formatted_facts else grounded_raw
 
-    gen_llm = _load_generation_llm(
-        cfg, mode=mode, max_new_tokens=max_new_tokens, profile=profile
-    )
+    if str(cfg.get("Story_generation_method") or "5w1h").strip().lower() == "arc":
+        from storyforge.rag.generation_arc import generate_arc
+
+        story = generate_arc(
+            query, facts_for_prompt, cfg, mode=mode, profile=profile,
+            prior_draft=prior_draft, feedback=refine_feedback,
+        )
+        return _apply_attribution_gate(story, parsed.facts, cfg)
+
+    if str(cfg.get("Story_generation_mode") or "single").strip().lower() == "sectioned":
+        story = _generate_sectioned(
+            query, facts_for_prompt, cfg, mode=mode, profile=profile,
+            prior_draft=prior_draft, feedback=refine_feedback,
+        )
+        return _apply_attribution_gate(story, parsed.facts, cfg)
 
     if refine_feedback and prior_draft:
         story_prompt = build_refine_prompt(
@@ -327,24 +450,5 @@ def generate_from_facts(
             profile=profile,
         )
 
-    story = str(gen_llm.invoke(story_prompt) or "").strip()
-
-    # Thinking mode occasionally returns an empty body (model emits only <think>…</think>).
-    # Retry once with fast-mode sampling before giving up.
-    if not story and is_thinking_mode(mode):
-        LOG.warning(
-            "Empty draft from thinking mode — retrying once with fast sampling (query=%r).",
-            (query or "")[:80],
-        )
-        fast_llm = _load_generation_llm(
-            cfg, mode="fast", max_new_tokens=max_new_tokens, profile=profile
-        )
-        story = str(fast_llm.invoke(story_prompt) or "").strip()
-
-    if not story:
-        raise RuntimeError(
-            "Story generation returned an empty draft. "
-            "Try mode=\'fast\' or a smaller \'length\' target."
-        )
-
+    story = _invoke_nonempty(story_prompt, cfg, mode=mode, max_new_tokens=max_new_tokens, profile=profile)
     return _apply_attribution_gate(story, parsed.facts, cfg)

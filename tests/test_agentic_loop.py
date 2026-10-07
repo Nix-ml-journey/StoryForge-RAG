@@ -123,8 +123,15 @@ def test_decide_accept():
 
 
 def test_decide_re_retrieve_on_low_faithfulness():
-    d = decide_action(_good_eval(faith=3), _complete(), facts_count=10, cfg=CFG, has_eval=True)
+    d = decide_action(_good_eval(faith=3), _complete(), facts_count=10, cfg=CFG, has_eval=True, iteration=2)
     assert d.action == RE_RETRIEVE
+
+
+def test_decide_low_faithfulness_refines_once_first_when_facts_are_enough():
+    d = decide_action(_good_eval(faith=3), _complete(), facts_count=10, cfg=CFG, has_eval=True)
+    assert d.action == REFINE and "refine once first" in d.reasons[0]
+    # thin facts: nothing solid to refine against -> straight to re-retrieve
+    assert decide_action(_good_eval(faith=3), _complete(), facts_count=2, cfg=CFG, has_eval=True).action == RE_RETRIEVE
 
 
 def test_decide_re_retrieve_on_thin_facts():
@@ -389,7 +396,7 @@ def test_incomplete_draft_refines_even_when_faithfulness_is_low():
 
 
 def test_complete_draft_with_low_faithfulness_still_re_retrieves():
-    d = decide_action(_good_eval(faith=2, others=8), _complete(), facts_count=10, cfg=CFG, has_eval=True)
+    d = decide_action(_good_eval(faith=2, others=8), _complete(), facts_count=10, cfg=CFG, has_eval=True, iteration=2)
     assert d.action == RE_RETRIEVE
 
 
@@ -405,3 +412,80 @@ def test_refine_regressed_detects_shrunk_or_section_losing_draft():
     assert refine_regressed(prior, "[SECTION 1: WHO]\nshort.") is True
     assert refine_regressed(prior, _five_section_story(extra_words=95)) is False
     assert refine_regressed(prior, _five_section_story(extra_words=120)) is False
+
+
+def test_decide_thin_facts_block_accept_even_with_high_scores():
+    d = decide_action(_good_eval(), _complete(), facts_count=2, cfg=CFG, has_eval=True)
+    assert d.action == RE_RETRIEVE
+    assert "thin grounding" in d.reasons[0]
+
+
+def test_build_feedback_asks_for_expansion_after_rejected_refine():
+    fb = build_feedback({}, _complete(), expand_by_words=250)
+    assert "Do NOT shorten" in fb and "250 words" in fb
+    assert "Do NOT shorten" not in build_feedback({}, _complete())
+
+
+def test_loop_expands_after_rejected_refine_then_stops_if_rejected_again(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.rag.generation as generation_mod
+
+    _fake_docs_chain(
+        monkeypatch,
+        facts_json='{"facts":[{"type":"who","fact":"Alana fights Zoruk","source_chunk_ids":["c1"]}]}',
+    )
+    full = _five_section_story(extra_words=80).rstrip(".")  # no terminal punctuation -> REFINE
+    short = "[SECTION 1: WHO]\nToo short."
+    seen = []
+
+    def _gen(query, parsed, raw, cfg, **k):
+        seen.append(k.get("refine_feedback"))
+        return full if len(seen) == 1 else short
+
+    monkeypatch.setattr(generation_mod, "generate_from_facts", _gen)
+    result = run_agentic_story_loop("q", cfg={"Agentic_loop_max_iterations": 5, "Agentic_loop_min_facts": 1}, debug=False)
+
+    assert result.content == full
+    assert result.stop_reason == "refine_rejected"
+    assert len(seen) == 3
+    assert "Do NOT shorten" not in seen[1] and "Do NOT shorten" in seen[2]
+
+
+def test_refine_regressed_allows_shrinking_an_overlong_draft_that_still_meets_minimum():
+    from storyforge.rag.agentic_loop import refine_regressed
+
+    prior = _five_section_story(extra_words=200)  # ~1000 words
+    new = _five_section_story(extra_words=120)  # ~600 words, 60% of prior, all sections
+    assert refine_regressed(prior, new)  # old behaviour
+    assert not refine_regressed(prior, new, min_words=500)
+    assert refine_regressed(prior, new, min_words=700)
+    assert refine_regressed(prior, "[SECTION 1: A]\n" + "word " * 900, min_words=500)  # lost sections
+
+
+def test_preflight_gate_widens_retrieval_and_merges_facts_before_writing(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.evaluation.evaluation as evaluation_mod
+    import storyforge.rag.extraction as extraction_mod
+    import storyforge.rag.generation as generation_mod
+    import storyforge.rag.retrieval as retrieval_mod
+
+    retrieve_calls = []
+    monkeypatch.setattr(retrieval_mod, "retrieve_docs", lambda *a, **k: retrieve_calls.append(k.get("k_boost")) or ["doc"])
+    monkeypatch.setattr(retrieval_mod, "_docs_to_chunks", lambda docs: [{"chunk_id": "c1", "title": "T", "metadata": {}, "text": "hi"}])
+    monkeypatch.setattr(retrieval_mod, "_docs_to_context", lambda docs: "context")
+    answers = iter([
+        '{"facts":[{"type":"who","fact":"Alana fights Zoruk","source_chunk_ids":["c1"]}]}',
+        '{"facts":[{"type":"where","fact":"The duel is in Eldoria","source_chunk_ids":["c1"]},'
+        '{"type":"when","fact":"It happens at dawn","source_chunk_ids":["c1"]},'
+        '{"type":"what","fact":"Alana wins the duel","source_chunk_ids":["c1"]}]}',
+    ])
+    monkeypatch.setattr(extraction_mod, "extract_grounded_facts", lambda q, c, cfg: (lambda raw: (raw, parse_grounded_facts_json(raw)))(next(answers)))
+    monkeypatch.setattr(evaluation_mod, "evaluate_model", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no eval")))
+    seen_facts = []
+    monkeypatch.setattr(generation_mod, "generate_from_facts", lambda q, parsed, raw, cfg, **k: seen_facts.append(len(parsed.facts)) or _complete_multi_sentence_story())
+
+    result = run_agentic_story_loop("q", cfg={"Agentic_loop_min_facts": 4, "Agentic_loop_max_iterations": 2}, debug=False)
+
+    assert len(retrieve_calls) == 2 and retrieve_calls[1] > retrieve_calls[0]  # widened once, then enough facts
+    assert seen_facts[0] == 4  # the first draft is written from the merged facts, not the thin first pass
+    assert result.iterations[0]["facts_count"] == 4

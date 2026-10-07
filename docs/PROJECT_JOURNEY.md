@@ -492,6 +492,7 @@ Decisions are recorded in [`decisions/`](decisions/README.md).
 - **Agentic loop**: the Sep-22 baseline's non-accepts were truncated drafts (missing SECTION 5), not low scores. Refine token boosts raised to 900/1200, a "cut off, tighten earlier sections" hint was added to refine feedback, and from iteration 2 a complete grounded draft is accepted `Agentic_loop_late_accept_slack` (0.5) under the bar.
 - **Prompts**: facts prompt asks for exact chunk ids and one fact per named entity; story prompts add pacing so SECTION 5 fits; judge prompts use strict 1-10 anchors and actionable per-section suggestions.
 - **Hygiene**: step-1 runner now lives in `src` (no `runpy` into `scripts/`), per-request tqdm bars removed, unused langchain deps removed, GitHub Actions CI (`ruff` + `pytest`), 8 integration tests (real in-memory Chroma + fake Ollama server), and a conftest fix that stopped stubs leaking onto real modules.
+- **Judge, loop and generation methods** (ADR-0007 to ADR-0010): judge retry and a short-output judge, minimum facts before ACCEPT, expand-after-rejected-refine, a thin-facts retry in Step 2, an opt-in section-by-section writer, and a story-arc method with its own prompts for A/B comparison against 5W1H (comparison inconclusive at n=8; default unchanged).
 
 ### Measured results, 2026-10-05 (Ollama judge `qwen3.5:4b`, local facts, generator `qwen3.5:9b`)
 
@@ -521,6 +522,95 @@ Steps (1)-(4) below were implemented afterwards (ADR-0006, not yet re-measured):
 `decide_action` checks completeness before faithfulness; RE_RETRIEVE keeps the reranker on; a refine that shrinks the draft is
 rejected. Still open: (5) the per-stage retrieval diagnostic described in ADR-0002 before touching the reranker.
 
+### Re-measure after ADR-0006 (2026-10-06, same setup)
+
+| Metric | 2026-10-05 | 2026-10-06 |
+|---|---|---|
+| accept_rate | 0.75 | 0.88 (7/8, **one unscored**) |
+| avg iterations | 1.75 | 1.38 |
+| avg words (target 1500) | 1670 | 1714 |
+| under-min-words rate | 0.12 | 0.12 (1/8) |
+| avg seconds / query | 99.7 | 76.7 |
+| retrieval top-1 / top-3 / fact coverage | 0.80 / 0.833 / 0.717 (BM25 pool on) | 0.80 / 0.867 / 0.733 (pool off) |
+
+Retrieval is back at the 0.733 fact-coverage floor and top-3 rose to 0.867 (Haunter of the Dark moved from rank 5 to 3). The
+cause is not established (the BM25 tokenizer change and run-to-run reranker variation are both candidates), so the floor in the
+change workflow was left at 0.833 / 0.733.
+
+Generation improved on speed and iterations, but the 0.88 is softer than it looks:
+
+- **One accept was unscored.** The huntress query was accepted on iteration 1 with `complete (no eval provider)` and average 0.0:
+  the judge call returned nothing usable (most likely invalid JSON from the 4B judge on a 2190-word story plus the facts list).
+  Excluding it, the scored accept rate is 6/7 = 0.86 among scored runs and 0.75 over all eight.
+- **Accepts on 1-3 facts.** Step 2 produced 0, 1, 2, 3 and 3 facts for five queries and 9-25 for the rest. Two drafts were accepted
+  with only 1-2 facts behind them, because `Agentic_loop_min_facts` is only consulted after the accept check. The first query also
+  spent iteration 1 on a zero-fact re-retrieve.
+- **The refine guard fired but did not rescue the lawyer query.** All three iterations returned the same 1027-word draft
+  (every refine was shorter and was rejected), so it ended under the 1275-word minimum with three wasted judge calls.
+
+Implemented next (ADR-0007, not yet re-measured): (1) judge retry, (2) min facts before ACCEPT, (3) expand-after-reject with a stop on a second rejection, (4) thin-facts coverage retry in Step 2. Original candidates, in order: (1) retry the judge once on unparseable output, and log it, so a failed judge call cannot silently turn
+into an accept; (2) require `Agentic_loop_min_facts` before ACCEPT; (3) on a rejected refine, retry once with an explicit
+"expand by N words" instruction (or regenerate from the facts) instead of repeating the same feedback; (4) investigate why Step 2
+returns so few facts on some queries (compact retry, schema output, `HF_grounded_facts_max_new_tokens`).
+
+### Re-measure after ADR-0007 (2026-10-06, same setup)
+
+Retrieval unchanged: top-1 0.80, top-3 0.867, fact coverage 0.733. Generation: accept 0.62 (5/8, was 0.88), 2.0 iterations (was 1.38),
+1972 words against a 1500 target (was 1714), under-min 0.0, 121.5 s per query (was 76.7 s). All eight generations succeeded.
+
+- **The accept rate fell for mostly intended reasons.** The scholar query (0-2 facts at every iteration, faithfulness 4) is no longer
+  accepted on thin grounding; it ran all three iterations (199 s). The huntress judge gave faithfulness 4 on the first draft with 13 facts,
+  then 7 and 8 on the next ones, so a noisy judge sent a complete 1554-word draft to RE_RETRIEVE.
+- **The refine guard rejected a legitimate fix.** The goblin draft ran to 2688 words and was cut off; the refine told it to tighten, and the
+  tighter drafts were rejected as "shorter than 80%". Two rejections stopped the loop with the cut-off draft. A shorter draft that still
+  meets the minimum word count and is complete should be accepted.
+- **Overshoot.** Drafts averaged 31% over target (2688 and 2524 words on 1500). Doctor and warrior were accepted on exactly 3 facts.
+- **Step 2 is still thin on the scholar query**, so the cause is probably sparse retrieval for that query; the `Local grounded-facts attempt`
+  log lines (chunk count, prompt size, status) will show whether the model stopped early.
+
+### Generation method comparison (2026-10-07)
+
+After ADR-0007/0008, a re-run scored 0.38 accept with five unscored judge iterations and two drafts that lost SECTION 5. Two causes were
+found and fixed (ADR-0008 addendum): the judge's `Local_evaluation_max_new_tokens` of 700 truncated its JSON (now 1200, plus a short
+`loop_judge` prompt that returns scores first and salvages cut-off replies), and a 2700-token floor cut off SECTION 5 on long drafts
+(back to 3200). ADR-0009 added an opt-in section-by-section writer and ADR-0010 a story-arc method with its own prompts, so three variants
+could be compared on the same 8 queries with `scripts/measure_generation_length.py --methods 5w1h 5w1h-sectioned arc`.
+
+| Metric | 5w1h | 5w1h-sectioned | arc |
+|---|---|---|---|
+| Accept rate (counts) | 0.50 (4/8) | 0.50 (4/8) | 0.62 (5/8) |
+| Avg iterations | 2.0 | 2.25 | 2.0 |
+| Avg words (target 1500) | 1957.6 | 1856.6 | 1787.8 |
+| Avg seconds per query | 104.6 | 123.1 | 123.1 |
+| Final drafts left incomplete | 3 of 8 | 0 | 0 |
+| Avg final score | 7.62 | 6.97 | 7.40 |
+
+I first read this as "`arc` is the best, by reliability". A second-model review (Opus, the multi-model review pattern) checked it against the
+three reports and corrected me:
+
+- **No ranking is supported at n=8, one run per method.** The accept-rate gaps are one or two queries; the same 2831-word draft scored 6.2 and
+  then 8.0 on consecutive iterations; first-iteration fact counts differ by method for the same query (huntress 12/17/18), so retrieval variance
+  is mixed in. `arc` is not better on first drafts (mean iteration-1 score 6.97 vs 7.40); its extra accepts come from the refine loop.
+- **What does hold:** the two sectioned variants end with no cut-off drafts while `5w1h` ended with three, and `arc` is closest to the length target.
+  That is a property of writing section by section, not specifically of `arc`.
+- **I had two facts wrong.** The lawyer query was accepted at iteration 1 by `5w1h` and failed under both sectioned variants (faithfulness 4 on every
+  iteration, and the last re-retrieve returned 0 facts), so it is not a method-independent failure. And the "2 unscored judge iterations" in `5w1h` were
+  "refine rejected twice" stops, not judge failures. Only scholar (0 facts from Step 2) and huntress stall under all three.
+- **The +18 s for `arc` is one query** (lawyer, +142 s); without it the gap is under a second.
+- **Reporting bug found:** the measure script pairs `final_average` (best draft) with `final_faithfulness` (last iteration).
+
+The default stays `5w1h`. Next: freeze retrieval and Step 2 output per query and run all three methods on the same facts with 3-5 seeds; fix the
+reporting pair; look into why a re-retrieve can return 0 facts for a reformulated query (lawyer, iteration 3) and why `5w1h` refines keep being rejected.
+
+### Target architecture (set 2026-10-07)
+
+The goal is the flow recorded in ADR-0011 (proposed): retrieve, extract facts (LLM with an extractive fallback), a pre-flight gate that widens
+retrieval and merges facts before anything is written, a section-by-section arc writer, per-section rule checks (length, complete sentence, names
+not in the facts), rewrite of failing sections only, and one judge call at the end that reports a score without steering the loop. Reasons: thin
+evidence is found only after a full draft today, a re-retrieve can drop facts to 0, and the 4B judge is too noisy to steer. Dropped from an earlier
+sketch: a per-story arc planner, context buffers between sections, and an "adaptive" multi-call judge. Build order: gate + fact merging +
+extractive fallback, then rule-driven loop, then single judge call, measuring after each step.
+
 ## Repo and docs
 
 - **Code:** https://github.com/Nix-ml-journey/StoryForge-RAG  
@@ -528,3 +618,8 @@ rejected. Still open: (5) the per-stage retrieval diagnostic described in ADR-00
 - **Data prep after extract:** `docs/DATA_PREP.md`  
 - **Quick test path:** `docs/QUICK_DEMO.md`  
 - **Roadmap:** `docs/UPGRADE_ROADMAP_5060Ti.md` (the older `docs/archive/PROJECT_UPDATE_ROADMAP.md` is archived)
+
+**Step 1 measured (2026-10-07, `--methods arc`, 8 queries, one run).** Pre-flight gate, merged facts and the extractive top-up gave accept 0.88 (7/8)
+versus 0.62 for the previous `arc` run, with iterations unchanged at 2.0, average 1829 words and 122 s. The scholar query, which used to fail on empty
+Step 2 output, was accepted after the extractive top-up supplied 6 facts. Huntress still stalled at faithfulness 4.0 on 20-30 facts, so thin facts are
+not the whole story. This is n=8 and a single run with a noisy 4B judge, so it is a promising signal, not proof. Details are in ADR-0011 Progress.

@@ -16,6 +16,8 @@ from storyforge.api_errors import is_retryable_api_error
 from storyforge.config.config import load_prompts
 from storyforge.rag.attribution import (
     ParsedFacts,
+    extractive_facts,
+    merge_facts,
     parse_grounded_facts_json,
     salvage_grounded_facts_json,
 )
@@ -51,6 +53,12 @@ def _get_generation_prompts() -> dict[str, str]:
         "story_user": (
             p.get("grounded_story_user")
             or "QUERY:\n{query}\n\nSECTION_HEADERS:\n{section_headers}\n\nGROUNDED_FACTS:\n{grounded_facts}"
+        ),
+        "section_system": p.get("grounded_section_system") or "Write one section of a grounded story.",
+        "section_user": (
+            p.get("grounded_section_user")
+            or "QUERY:\n{query}\n\nGROUNDED_FACTS:\n{grounded_facts}\n\nSTORY SO FAR:\n{story_so_far}\n\n"
+            "Write ONLY this section: {header}\nAbout {words} words. {ending_rule}\n{feedback_block}"
         ),
         "refine_system": (
             p.get("grounded_story_refine_system")
@@ -257,6 +265,11 @@ _LOCAL_COMPACT_RETRY_SUFFIX = (
     "\n\nYour previous answer could not be used ({reason}). Return AT MOST {max_facts} facts, "
     "keep every quote under 10 words, and make sure the JSON object is complete and closed."
 )
+_LOCAL_THIN_RETRY_SUFFIX = (
+    "\n\nYour previous answer listed only {n} fact(s), which is too few. Re-read EVERY chunk "
+    "and list at least {want} facts: one per named character, place, object, date, and event. "
+    "Return the complete JSON object."
+)
 
 
 def _local_json_format(cfg: dict[str, Any]) -> Any:
@@ -385,6 +398,7 @@ def _extract_grounded_facts_local(
     json_format = _local_json_format(cfg)
     retries = max(0, int(cfg.get("Local_grounded_facts_retries", 1) or 0))
     compact_max = int(cfg.get("Local_grounded_facts_compact_max_facts") or 12)
+    min_facts = int(cfg.get("Local_grounded_facts_min_facts") or 6)
     known_ids = [str(c.get("chunk_id")) for c in chunks if c.get("chunk_id")]
 
     base_prompt = (
@@ -400,24 +414,42 @@ def _extract_grounded_facts_local(
     parsed = ParsedFacts(facts=(), raw={})
     diag: dict[str, Any] = {}
     prompt = base_prompt
+    best: tuple[str, ParsedFacts] = (raw, parsed)
     for attempt in range(retries + 1):
         raw = _invoke_local_facts(cfg, prompt, json_format)
         parsed, diag = salvage_grounded_facts_json(raw, known_chunk_ids=known_ids or None)
         LOG.info(
-            "Local grounded-facts attempt %d/%d: status=%s raw_fact_objects=%s kept=%d dropped=%s chars=%d",
-            attempt + 1, retries + 1, diag.get("status"), diag.get("raw_fact_objects"),
-            len(parsed.facts), diag.get("dropped"), len(raw),
+            "Local grounded-facts attempt %d/%d: status=%s chunks=%d prompt_chars=%d "
+            "raw_fact_objects=%s kept=%d dropped=%s chars=%d",
+            attempt + 1, retries + 1, diag.get("status"), len(chunks), len(prompt),
+            diag.get("raw_fact_objects"), len(parsed.facts), diag.get("dropped"), len(raw),
         )
+        if len(parsed.facts) > len(best[1].facts):
+            best = (raw, parsed)
+        if len(best[1].facts) >= min_facts:
+            return best
         if parsed.facts:
-            return raw, parsed
-        prompt = base_prompt + _LOCAL_COMPACT_RETRY_SUFFIX.format(
-            reason=diag.get("status"), max_facts=compact_max
+            # Parsed fine but thin (schema-constrained decoding often stops the list
+            # early): ask for coverage, not a shorter answer.
+            prompt = base_prompt + _LOCAL_THIN_RETRY_SUFFIX.format(
+                n=len(parsed.facts), want=max(min_facts + 4, 10)
+            )
+        else:
+            prompt = base_prompt + _LOCAL_COMPACT_RETRY_SUFFIX.format(
+                reason=diag.get("status"), max_facts=compact_max
+            )
+    if best[1].facts:
+        raw, parsed = best
+        LOG.warning(
+            "Local grounded-facts extraction stayed thin for query=%r: %d fact(s) < %d after %d attempt(s).",
+            query, len(parsed.facts), min_facts, retries + 1,
         )
+        return raw, parsed
 
     LOG.error(
         "LOCAL grounded-facts extraction FAILED for query=%r after %d attempt(s): status=%s "
-        "raw_fact_objects=%s dropped=%s. Step 3 will have NO grounded facts (the agentic loop "
-        "will not ACCEPT this). Raw response (first 300 chars): %r",
+        "raw_fact_objects=%s dropped=%s. the extractive top-up (if enabled) "
+        "will supply facts. Raw response (first 300 chars): %r",
         query, retries + 1, diag.get("status"), diag.get("raw_fact_objects"),
         diag.get("dropped"), raw[:300],
     )
@@ -429,7 +461,31 @@ def extract_grounded_facts(
     chunks: list[dict[str, Any]],
     cfg: dict[str, Any],
 ) -> tuple[str, ParsedFacts]:
-    """Step 2: extract grounded facts JSON (HF first, local fallback).
+    """Step 2: LLM facts, topped up with deterministic extractive facts when too few came back.
+
+    ``Facts_extractive_fallback: false`` disables the top-up. The threshold is
+    ``Local_grounded_facts_min_facts`` (default 6), the same knob that triggers the coverage retry.
+    """
+    raw, parsed = _extract_grounded_facts_llm(query, chunks, cfg)
+    want = int(cfg.get("Local_grounded_facts_min_facts") or 6)
+    off = str(cfg.get("Facts_extractive_fallback", "true")).strip().lower() in ("false", "0", "no", "off")
+    if off or len(parsed.facts) >= want:
+        return raw, parsed
+    topped = merge_facts(parsed, ParsedFacts(facts=extractive_facts(chunks, max_facts=want), raw={}), cap=want)
+    if len(topped.facts) > len(parsed.facts):
+        LOG.warning(
+            "[FACTS] Extractive top-up for query=%r: %d -> %d facts (LLM returned too few).",
+            query, len(parsed.facts), len(topped.facts),
+        )
+    return raw, topped
+
+
+def _extract_grounded_facts_llm(
+    query: str,
+    chunks: list[dict[str, Any]],
+    cfg: dict[str, Any],
+) -> tuple[str, ParsedFacts]:
+    """Step 2 LLM extraction (HF first, local fallback).
 
     ``Grounded_facts_provider: "local"`` skips the HF call entirely (offline /
     no HF credits) instead of paying a failed request + retry on every query.

@@ -1,13 +1,10 @@
 # Architecture decisions
 
-Short records of *why* the pipeline looks the way it does. New decisions get the next number;
-superseded ones stay, with their status updated.
+Short records of *why* the pipeline looks the way it does. ADR numbers are stable; new decisions take the next
+number and go into the file for their topic (or a new file if none fits).
 
-| ADR | Decision |
+| File | ADRs |
 |---|---|
-| [0001](0001-ollama-evaluation-no-api-fallback.md) | Evaluate with local Ollama, no API fallback |
-| [0002](0002-global-bm25-candidates.md) | Whole-corpus BM25 candidates join the rerank pool (tested, no gain, off) |
-| [0003](0003-story-type-filters-retrieval.md) | `story_type` filters retrieval on `Is_series` |
-| [0004](0004-remove-vector-store-insert-update.md) | Remove the vector-store insert/update routes |
-| [0005](0005-model-choices-16gb-vram.md) | Model choices for a 16 GB GPU |
-| [0006](0006-agentic-loop-decision-order.md) | Agentic loop decision order, grounded judge, refine guard |
+| [retrieval.md](retrieval.md) | 0002 whole-corpus BM25 candidates (tested, no gain, off); 0003 `story_type` filters retrieval |
+| [evaluation-and-agentic-loop.md](evaluation-and-agentic-loop.md) | 0001 Ollama judge, no API fallback; 0006 decision order, grounded judge, refine guard; 0007 close the silent-accept gaps; 0008 guard minimum, refine-once, token floor; 0009 short judge, loop helpers, sectioned writer; 0010 story-arc method for A/B comparison; 0011 target architecture (proposed) |
+| [platform.md](platform.md) | 0004 remove vector-store insert/update routes; 0005 model choices for 16 GB |

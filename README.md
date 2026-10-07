@@ -176,7 +176,7 @@ Step 1 retrieval is **hybrid BM25 + dense (RRF) → cross-encoder rerank → tit
 .\.venv\Scripts\python.exe scripts/retrieval_eval.py --cases tests/fixtures/retrieval_eval_cases.example.json --k 3
 ```
 
-Phase 1 retrieval tuning (2026-09) peaked at top1 0.80 / top3 0.90 / fact_coverage 0.77, then stopped. The current baseline, after rebuilding the collection from reviewed `story_json` chunks (2026-09-24, `Evaluation/retrieval_eval_report.json`), is **top1 0.80 / top3 0.833 / fact_coverage 0.733**; that is also the floor the change workflow gates on. (A 2026-10-05 experiment with whole-corpus BM25 candidates scored fact_coverage 0.717, below the floor, so it ships disabled: [ADR-0002](docs/decisions/0002-global-bm25-candidates.md).) Details: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md).
+Phase 1 retrieval tuning (2026-09) peaked at top1 0.80 / top3 0.90 / fact_coverage 0.77, then stopped. The current baseline, after rebuilding the collection from reviewed `story_json` chunks (2026-09-24, `Evaluation/retrieval_eval_report.json`), was **top1 0.80 / top3 0.833 / fact_coverage 0.733** (re-measured 2026-10-06: top3 0.867, others unchanged); that is also the floor the change workflow gates on. (A 2026-10-05 experiment with whole-corpus BM25 candidates scored fact_coverage 0.717, below the floor, so it ships disabled: [ADR-0002](docs/decisions/retrieval.md).) Details: [`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md).
 
 Extracted text in `data/raw_extracted/` is scratch. Clean and split it into `data/stories/` first — [`docs/DATA_PREP.md`](docs/DATA_PREP.md).
 

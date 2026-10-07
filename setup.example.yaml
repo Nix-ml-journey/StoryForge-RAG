@@ -22,19 +22,20 @@ Google_book_api_key: ""
 # Offline / no HF credits: set Evaluation_mode: "ollama". Without ANY working
 # evaluator the agentic loop decides on completeness + facts only, and will not
 # ACCEPT a draft that has zero grounded facts behind it.
-Evaluation_mode: "api"
+Evaluation_mode: "ollama"
 # VRAM budget (RTX 5060 Ti, 16 GB): qwen3.5:9b (~6.6 GB) + qwen3.5:4b judge (~3.3 GB)
 # + KV cache at Model_max_prompt_tokens fits together (~11-12 GB). Embeddings and the
 # reranker run on CPU. qwen3.5:27b / qwen3:30b+ do NOT fit; qwen3:14b fits alone but is
 # older than qwen3.5:9b. To trim further, start Ollama with OLLAMA_FLASH_ATTENTION=1 and
 # OLLAMA_KV_CACHE_TYPE=q8_0. If you see OOM, lower Model_max_prompt_tokens first.
-# Ollama_evaluation_model: "qwen3.5:4b"   # optional small judge (ollama pull qwen3.5:4b); defaults to Generative_model
-Local_evaluation_max_new_tokens: 700
+Ollama_evaluation_model: "qwen3.5:4b"   # small judge; run: ollama pull qwen3.5:4b
+# 700 truncated the judge JSON (scores + feedback + suggestions) -> unscored iterations.
+Local_evaluation_max_new_tokens: 1200
 
 Evaluation_provider_priority:
   - huggingface
   - gemini
-HF_evaluation_model: "Qwen/Qwen2.5-7B-Instruct"
+HF_evaluation_model: "Qwen/Qwen3-4B-Instruct-2507"
 HF_evaluation_max_new_tokens: 700
 HF_evaluation_temperature: 0.1
 Gemini_evaluation_model: "gemini-3.7-flash"
@@ -79,11 +80,11 @@ HF_grounded_facts_json_mode: true
 # writes the JSON answer -- finish_reason "length", empty content, 0 facts.
 # Keep this true unless you've confirmed your model/provider doesn't need it.
 HF_grounded_facts_disable_thinking: true
-# "hf" (default): HF API first, local model on failure.
+# "hf": HF API first, local model on failure.
 # "local": skip HF entirely (offline / no HF credits) -- avoids a failed HF
 # request + retries on every query. The local call uses Generation_provider
 # (Ollama by default) with HF_grounded_facts_max_new_tokens / _temperature.
-Grounded_facts_provider: "hf"
+Grounded_facts_provider: "local"
 # Ollama output constraint for the LOCAL facts call: "schema" (grammar-constrained
 # JSON, Ollama >= 0.5), "json" (plain JSON mode, older Ollama), or "off".
 # If Ollama rejects the format the call is retried once without it.
@@ -92,6 +93,12 @@ Local_grounded_facts_json_format: "schema"
 # shorter facts -- truncation is the usual cause). 0 disables the retry.
 Local_grounded_facts_retries: 1
 Local_grounded_facts_compact_max_facts: 12
+# A parsed-but-thin answer (fewer facts than this) triggers one coverage retry
+# ("list at least N facts, one per entity"); the larger of the two answers is kept.
+Local_grounded_facts_min_facts: 6
+# If the LLM still returns fewer facts than this, top up with deterministic extractive facts
+# (leading sentences of the retrieved chunks, verbatim, tagged with chunk ids; no LLM call). false = off.
+Facts_extractive_fallback: true
 
 # --- Step 3: story generation ---
 # Provider: ollama | vllm | transformers
@@ -112,8 +119,9 @@ Generation_precision: "auto"
 Model_max_prompt_tokens: 12288
 Generation_fast_temperature: 0.4
 Generation_fast_top_p: 0.8
-# Token FLOOR for the generation budget. The length target below raises this
-# when it needs more room; it is a ceiling on output, so a generous value is safe.
+# Token FLOOR for the generation budget. The length target below raises this when it
+# needs more room; it is a ceiling on output. Lowering it to 2700 (tried 2026-10-06) cut off
+# SECTION 5 on long drafts and lowered the accept rate, so keep 3200.
 Single_pass_fast_max_tokens: 3200
 # Thinking/medium mode knobs (used when request mode is "thinking"/"medium")
 Generation_thinking_temperature: 0.35
@@ -122,7 +130,15 @@ Single_pass_thinking_max_tokens: 4000
 # Anti-loop decoding controls (applies to both fast and thinking modes)
 Generation_repetition_penalty: 1.08
 Generation_no_repeat_ngram_size: 4
-Single_pass_refine_max_tokens: 2800
+Single_pass_refine_max_tokens: 3600
+# "single" (default): one call writes the whole story. "sectioned" (opt-in): one short call per
+# section, each with its own word/token budget, so SECTION 5 always gets written and refines
+# rewrite only the missing/short/over-long sections. Compare both with measure_generation_length.py.
+Story_generation_mode: "single"
+# Which outline/prompt set writes the story: "5w1h" (default: WHO/WHAT/TWIST/HOW/WHY, prompts under
+# `generation:`) or "arc" (setup/inciting incident/rising action/climax/resolution, always sectioned,
+# prompts under `generation_arc:`). Compare with: measure_generation_length.py --methods 5w1h arc
+Story_generation_method: "5w1h"
 
 ## Story length target
 # A single target drives three things that must agree, or output never grows:
@@ -145,7 +161,7 @@ Story_length_max_new_tokens_cap: 6000  # hard ceiling, incl. refine boosts
 
 # Post-check for unknown names. false = log only; true = may truncate.
 Attribution_gate_truncate: false
-Attribution_violation_threshold: 8
+Attribution_violation_threshold: 20
 
 # --- Reranker (after Chroma, before Step 2) ---
 Reranker_enabled: true
@@ -176,7 +192,7 @@ Hybrid_bm25_weight: 0.3
 # pool) so stories dense retrieval missed outright can still reach the reranker.
 # 0 (default) = old behaviour (BM25 only reorders the dense pool). 12 was tried on
 # 2026-10-05: no top-1/top-3 change and fact_coverage fell 0.733 -> 0.717, so it is
-# off until the reranker stage is fixed (docs/decisions/0002-global-bm25-candidates.md).
+# off until the reranker stage is fixed (docs/decisions/retrieval.md).
 Hybrid_bm25_pool: 0
 
 # Enrichment for data/story_json (scripts/enrich_story_records.py)
@@ -189,6 +205,9 @@ Agentic_loop_max_iterations: 3
 Agentic_loop_accept_score: 7.0
 Agentic_loop_min_faithfulness: 6
 Agentic_loop_min_facts: 3
+# Pre-flight gate: when fewer than Agentic_loop_min_facts facts are found, widen retrieval (tier 1) and
+# reformulate the query (tier 2) BEFORE writing; facts are merged across tiers. 0 disables the gate.
+Agentic_loop_preflight_tiers: 2
 Agentic_loop_late_accept_slack: 0.5   # from iteration 2 on, accept a complete grounded draft this far under accept_score
 Agentic_loop_reretrieve_k_boost: 2.0
 Agentic_loop_reretrieve_n_results: 5

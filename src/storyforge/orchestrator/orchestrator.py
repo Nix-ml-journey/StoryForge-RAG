@@ -18,7 +18,6 @@ class Orchestrator:
         self.downloaded_data_meta = c.get("Downloaded_data_meta")
         self.story_input = c.get("Story_input")
         self.chroma_collection_name = c.get("Chroma_collection_name") or "StoryForgeRag_v1"
-        self.generated_story_output = c.get("Generated_story_output")
 
     def search_book(self, query: str, n_results: int = 20) -> dict:
         return parameters.search_books(self.config.get("Google_book_api_key"), query, n_results)
@@ -64,19 +63,6 @@ class Orchestrator:
         return parameters.ingest_stories_result(
             collection_name=collection_name or self.chroma_collection_name
         )
-
-    def query_vector_store(self, query: str, n_results: int = 5, collection: Optional[str] = None) -> dict:
-        # `collection` was previously accepted and then dropped, so vector_store_query's
-        # explicit collection argument silently had no effect.
-        return parameters.query_vector_result(
-            query, n_results, collection_name=collection or self.chroma_collection_name
-        )
-
-    def vector_store_query(self, query: str, n_results: int = 5, collection: str = "") -> dict:
-        return self.query_vector_store(query, n_results, collection or self.chroma_collection_name)
-
-    def vector_store_delete(self, collection: str, ids: list[str], metadata: dict) -> dict:
-        return parameters.vector_delete_result(ids)
 
     def generate_story(
         self,
@@ -152,7 +138,6 @@ class Orchestrator:
         ]
         steps_to_run = steps or default_steps
         done: list[str] = []
-        self._template_count = 0
         try:
             for step in steps_to_run:
                 logging.info(f"Running step: {step}")

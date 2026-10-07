@@ -28,6 +28,7 @@ Usage (from project root, with venv active):
     py scripts/measure_generation_length.py --length 13min --mode fast
     py scripts/measure_generation_length.py --queries-file my_queries.json --limit 3
     py scripts/measure_generation_length.py --mode thinking --length long   # tests empty-draft recovery path too
+    py scripts/measure_generation_length.py --methods 5w1h arc              # A/B: one report per method + a table
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+import storyforge.config.config as _config_mod  # noqa: E402
 from storyforge.config.config import load_config  # noqa: E402
 from storyforge.orchestrator.orchestrator import Orchestrator  # noqa: E402
 from storyforge.rag.generative_ai import Gen_mode, StoryType  # noqa: E402
@@ -61,6 +63,21 @@ DEFAULT_QUERIES = [
     "A grieving lawyer investigates his old friend's connection to a violent alter ego",
     "A young warrior trains to become as strong as the heroes of legend",
 ]
+
+
+# Generation methods to compare. Each is a config overlay applied on top of setup.yaml.
+METHODS: dict[str, dict[str, str]] = {
+    "5w1h": {"Story_generation_method": "5w1h", "Story_generation_mode": "single"},
+    "5w1h-sectioned": {"Story_generation_method": "5w1h", "Story_generation_mode": "sectioned"},
+    "arc": {"Story_generation_method": "arc"},
+}
+_OVERRIDES: dict[str, Any] = {}
+
+
+def _install_overrides() -> None:
+    """Make every load_config() call (in any module) see ``_OVERRIDES`` on top of setup.yaml."""
+    original = _config_mod._load_config_cached
+    _config_mod._load_config_cached = lambda *a, **k: {**original(*a, **k), **_OVERRIDES}
 
 
 def _run_one(orchestrator: Orchestrator, query: str, *, mode: Gen_mode, length: str) -> dict[str, Any]:
@@ -142,6 +159,16 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def format_comparison(summaries: dict[str, dict[str, Any]]) -> str:
+    """Side-by-side table of the summary metrics, one column per method."""
+    keys = list(next(iter(summaries.values())))
+    width = max(len(k) for k in keys)
+    labels = list(summaries)
+    lines = [f"{'metric':<{width}}  " + "  ".join(f"{label:>14}" for label in labels)]
+    lines += [f"{k:<{width}}  " + "  ".join(f"{str(summaries[label].get(k)):>14}" for label in labels) for k in keys]
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Measure agentic-loop length accept rate over a small query batch.")
     parser.add_argument("--queries-file", default=None, help="JSON file: a list of query strings.")
@@ -151,6 +178,14 @@ def main() -> int:
         "--length",
         default="long",
         help='Length target: preset ("long"), duration ("13min"), or word count ("1800").',
+    )
+    parser.add_argument(
+        "--methods",
+        nargs="+",
+        choices=sorted(METHODS),
+        default=None,
+        help="Run the same queries once per generation method and print a comparison table "
+        "(default: one run with whatever setup.yaml says).",
     )
     parser.add_argument(
         "--output",
@@ -166,37 +201,48 @@ def main() -> int:
         queries = queries[: args.limit]
 
     mode = Gen_mode.THINKING if args.mode == "thinking" else Gen_mode.FAST
+    _install_overrides()
     load_config()  # fail fast on a broken config before spending any GPU time
     orchestrator = Orchestrator()
 
-    records: list[dict[str, Any]] = []
-    for i, q in enumerate(queries, start=1):
-        print(f"[{i}/{len(queries)}] mode={args.mode} length={args.length} :: {q[:70]}")
-        rec = _run_one(orchestrator, q, mode=mode, length=args.length)
-        records.append(rec)
-        if rec.get("success"):
-            print(
-                f"    words={rec['actual_words']}/{rec['target_words']} "
-                f"(min {rec['min_words']}) accepted={rec['accepted']} "
-                f"stop={rec['stop_reason']} iters={rec['iterations_run']} "
-                f"faithfulness={rec['final_faithfulness']} "
-                f"({rec['elapsed_seconds']}s)"
-            )
-        else:
-            print(f"    FAILED: {rec.get('error')} ({rec['elapsed_seconds']}s)")
+    base_out = Path(args.output)
+    summaries: dict[str, dict[str, Any]] = {}
+    for method in args.methods or [None]:
+        label = method or "config"
+        _OVERRIDES.clear()
+        _OVERRIDES.update(METHODS.get(method, {}))
+        records: list[dict[str, Any]] = []
+        for i, q in enumerate(queries, start=1):
+            print(f"[{label} {i}/{len(queries)}] mode={args.mode} length={args.length} :: {q[:70]}")
+            rec = _run_one(orchestrator, q, mode=mode, length=args.length)
+            records.append(rec)
+            if rec.get("success"):
+                print(
+                    f"    words={rec['actual_words']}/{rec['target_words']} "
+                    f"(min {rec['min_words']}) accepted={rec['accepted']} "
+                    f"stop={rec['stop_reason']} iters={rec['iterations_run']} "
+                    f"faithfulness={rec['final_faithfulness']} "
+                    f"({rec['elapsed_seconds']}s)"
+                )
+            else:
+                print(f"    FAILED: {rec.get('error')} ({rec['elapsed_seconds']}s)")
 
-    report = {
-        "mode": args.mode,
-        "length": args.length,
-        "summary": summarize(records),
-        "records": records,
-    }
-    out_path = Path(args.output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        report = {
+            "method": label,
+            "mode": args.mode,
+            "length": args.length,
+            "summary": summarize(records),
+            "records": records,
+        }
+        out_path = base_out if method is None else base_out.with_name(f"{base_out.stem}_{label}{base_out.suffix}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        summaries[label] = report["summary"]
+        print(f"\nWrote report to {out_path}")
+        print(json.dumps(report["summary"], indent=2))
 
-    print(f"\nWrote report to {out_path}")
-    print(json.dumps(report["summary"], indent=2))
+    if len(summaries) > 1:
+        print("\n" + format_comparison(summaries))
     return 0
 
 

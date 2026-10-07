@@ -29,7 +29,7 @@ To harden this project for production, I would add:
 - FastAPI route structure for repeatable workflows (`/orchestration`, `/create-eval`, vector store, streaming).
 - Shared config loading with `setup.example.yaml` fallback.
 - Unified story-length target (`Story_length_*` + request `length` field).
-- Hugging Face-first evaluation with Gemini fallback, or fully local (`Evaluation_mode: "ollama"`, no fallback; see [ADR-0001](decisions/0001-ollama-evaluation-no-api-fallback.md)).
+- Hugging Face-first evaluation with Gemini fallback, or fully local (`Evaluation_mode: "ollama"`, no fallback; see [ADR-0001](decisions/evaluation-and-agentic-loop.md)).
 - Hybrid BM25 + dense retrieval, reranker, and agentic refine / re-retrieve loop.
 - vLLM as an alternative generation backend for higher-throughput / concurrent use (`Generation_provider: "vllm"`).
 - Empty-draft recovery: a failed thinking-mode draft retries once with fast sampling and raises a clear error instead of returning nothing; the length-guard refine pass falls back to the pre-refine draft; the agentic loop catches the same error per iteration and returns the best draft so far (or a clean empty result on first-iteration failure).

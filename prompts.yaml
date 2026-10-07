@@ -5,7 +5,7 @@ generation:
     Use only the provided chunks.
     Do not invent names, places, events, or objects.
     Every fact must include source chunk ids.
-    Output only valid JSON.
+    Output only valid JSON, no prose or markdown.
 
   grounded_facts_user: |
     QUERY:
@@ -14,7 +14,7 @@ generation:
     RETRIEVED_CHUNKS:
     {retrieval_chunks}
 
-    Return only valid JSON in this structure:
+    Return JSON in this structure:
     {{
       "facts": [
         {{
@@ -28,8 +28,7 @@ generation:
 
     Rules:
     - Target 10 to 30 facts when possible.
-    - Always populate "quote" with a verbatim phrase from the chunk when one exists; leave it "" only if the chunk has no close match.
-    - Keep quotes short (under 15 words) and copy them character-for-character from the chunk.
+    - "quote": a verbatim phrase (under 15 words) copied character-for-character from the chunk; "" only if no close match exists.
     - Copy each "source_chunk_ids" value exactly from the [CHUNK <id> | title] headers above.
     - Give every named character, place, object, and date in the chunks its own fact.
     - Do not add keys other than "facts".
@@ -38,8 +37,7 @@ generation:
     You are a grounded story writer.
     Follow grounded facts strictly.
     Do NOT introduce new named characters, places, groups, organizations, items, or events not present in the facts.
-    Output all 5 sections in order, using the given headers.
-    Finish SECTION 5 fully, and end with terminal punctuation.
+    Write all 5 sections in order under the given headers, finish SECTION 5 fully, and end with terminal punctuation.
     Output only story prose under headers.
 
   grounded_story_user: |
@@ -53,8 +51,7 @@ generation:
     {section_headers}
 
     Rules:
-    - Output the first header, then its prose, then the next header, and so on through SECTION 5.
-    - Keep it simple: clear prose under each header, not an outline.
+    - Write each header followed by its prose, through SECTION 5. Prose, not an outline.
     {length_guidance}
     - Expand grounded facts with clear detail, pacing, and dialogue where natural.
     - You MUST write all five sections. Do not end the story until SECTION 5 reaches a
@@ -69,6 +66,33 @@ generation:
         * Use straight double quotes " for dialogue.
     - Return only story text (no outline, no JSON, no markdown, no commentary).
 
+  # Step 3 sectioned mode (Story_generation_mode: sectioned): one call per section
+  grounded_section_system: |
+    You are a grounded story writer, writing ONE section of a five-section story.
+    Follow the grounded facts strictly.
+    Do NOT introduce new named characters, places, groups, organizations, items, or events not present in the facts.
+    Output only the prose of the requested section: no header, no outline, no commentary.
+
+  grounded_section_user: |
+    QUERY:
+    {query}
+
+    GROUNDED_FACTS:
+    {grounded_facts}
+
+    STORY SO FAR:
+    {story_so_far}
+
+    Write ONLY this section: {header}
+
+    Rules:
+    - Write about {words} words ({min_sentences}+ complete sentences); never more than {max_words} words.
+    - Continue naturally from the story so far; do not repeat or summarize it.
+    - {ending_rule}
+    - Dialogue: close quotes on the same line, never start narration with a quote, use straight " only.
+    - Return only the prose for this section (no header, no JSON, no markdown, no commentary).
+    {feedback_block}
+
   # Step 3 refine pass (agentic loop)
   grounded_story_refine_system: |
     You are a grounded story reviser.
@@ -76,7 +100,7 @@ generation:
     Stay strictly grounded: do NOT introduce new named characters, places, groups, organizations, items, or events not present in the grounded facts.
     Keep what works and fix only requested issues.
     Return a complete story with all sections and a finished ending sentence.
-    - Preserve finished sections when possible and continue from the earliest incomplete section instead of restarting from scratch.
+    Preserve finished sections when possible and continue from the earliest incomplete section instead of restarting from scratch.
 
   grounded_story_refine_user: |
     QUERY:
@@ -95,17 +119,54 @@ generation:
     {section_headers}
 
     Rules:
-    - Begin with the first section header. Do not print all headers as an outline.
+    - Begin with the first section header (no outline of headers); write prose under each.
     - Address every point in the reviewer feedback.
-    - Keep the format simple: prose under each header.
     {length_guidance}
     - If the draft is incomplete, prioritize completing missing/weak sections while preserving valid grounded content from earlier sections.
     - If the previous draft is short, expand with detail and dialogue instead of trimming.
     - If it was cut off or ran far past the target, tighten the earlier sections so all five fit.
     - Finish every section and complete the final sentence.
-    - Dialogue rules: close quotes on the same line, do not start narration with quotes, use straight " only.
+    - Dialogue: close quotes on the same line, never start narration with a quote, use straight " only.
     - Do NOT introduce new named characters, places, or events not in the grounded facts.
     - Return only revised story text (no JSON, no markdown, no commentary).
+
+# Alternative generation method (Story_generation_method: arc): classic story-arc outline,
+# one call per section. Separate from the 5W1H prompts above so the two can be compared.
+generation_arc:
+  section_system: |
+    You are a story writer working from grounded facts, writing ONE section of a five-part story arc.
+    Every named character, place, group, organization, item, and event must come from the grounded facts.
+    Do NOT invent new ones; deepen mood, motive, and sensory detail instead.
+    Output only the prose of the requested section: no header, no outline, no commentary.
+
+  section_user: |
+    QUERY:
+    {query}
+
+    GROUNDED_FACTS:
+    {grounded_facts}
+
+    STORY SO FAR:
+    {story_so_far}
+
+    Write ONLY this section: {header}
+    Its job in the story: {role}
+
+    Rules:
+    - Write about {words} words ({min_sentences}+ complete sentences); never more than {max_words} words.
+    - Continue from the story so far; do not repeat or summarize it.
+    - Show events through concrete action, setting, and dialogue rather than explaining them.
+    - {ending_rule}
+    - Dialogue: close quotes on the same line, never start narration with a quote, use straight " only.
+    - Return only the prose for this section (no header, no JSON, no markdown, no commentary).
+    {feedback_block}
+
+  roles:
+    - "Show the ordinary world: who the protagonist is, where and when they live, and what they want or lack. No major conflict yet."
+    - "Break the ordinary world: one event forces the protagonist to act. End on the decision to act."
+    - "Escalate: the protagonist pursues the goal and meets obstacles that raise the stakes and cost something."
+    - "The turning point: the decisive confrontation or choice where everything is at stake. Highest tension of the story."
+    - "Show the consequences and how the world and the protagonist have changed, then close the story."
 
 ingest:
   section_label_system: |
@@ -175,6 +236,28 @@ evaluation:
 
     "suggestions" must be 2-4 concrete, actionable edits, each naming the section it applies to.
     Return only the JSON object.
+
+  # Short-output judge for the agentic loop: scores only (no per-criterion prose), so a small
+  # model cannot run out of tokens mid-JSON. Completeness/length are checked by rules in code.
+  loop_judge: |
+    You are a strict story judge. Score the story from 1-10 per criterion: 5-6 = acceptable but flawed,
+    7-8 = good, 9-10 = near-flawless and rare. Do not give every criterion the same score.
+
+    ## Story:
+    {story}
+
+    {facts_section}## Criteria:
+    - faithfulness: 8+ only if every named character, place, and event is supported by the grounded facts above
+      and nothing contradicts them; penalize each unsupported name. Without facts, score internal consistency.
+    - coherence: clear beginning, middle, end; logical flow, no loops.
+    - grammar: readable and correct; penalize run-ons and repeated filler.
+    - creativity: varied and engaging; penalize repeated sentences or images.
+    - overall: holistic quality; 1-3 if a "[SECTION n: ...]" header is missing, the ending is cut off, or it loops.
+
+    Reply with ONLY this JSON object, in this key order, with no other text:
+    {{"faithfulness": <1-10>, "coherence": <1-10>, "grammar": <1-10>, "creativity": <1-10>, "overall": <1-10>,
+    "conclusion": "<one sentence, max 30 words>",
+    "suggestions": ["<edit naming a section, max 25 words>", "<second edit>"]}}
 
   with_summary: |
     You are an expert story evaluator. Read the full story, then evaluate the summary.

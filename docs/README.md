@@ -97,7 +97,7 @@ When `Agentic_loop_enabled: true`:
 - **REFINE** when the draft is incomplete or short, checked *before* faithfulness so a truncated draft is finished, not discarded. A refine that shrinks the draft (under 80% of the words, or fewer sections) is rejected and the prior draft kept
 - **ACCEPT** when scores + completeness pass (completeness uses the resolved length target)
 
-The judge receives the grounded facts, so its faithfulness score checks the story against them. See [ADR-0006](decisions/0006-agentic-loop-decision-order.md).
+The judge receives the grounded facts, so its faithfulness score checks the story against them. See [ADR-0006](decisions/evaluation-and-agentic-loop.md).
 
 Minimum word count and minimum sentences per section are **no longer hardcoded** in config. They come from the length profile.
 
@@ -176,6 +176,10 @@ Streaming uses the same length guidance in the prompt. It cannot retry mid-strea
 | `Agentic_loop_*` | Loop thresholds (scores / re-retrieve / refine boost) |
 | `Evaluation_mode` | `api` (default, HF → Gemini) or `ollama` / `local` (local Ollama judge; no API fallback, fails loudly if Ollama is down) |
 | `Ollama_evaluation_model` | Optional judge model for `ollama` mode (default: `Generative_model`); `qwen3.5:4b` recommended |
+| `Facts_extractive_fallback` | `true` (default): when Step 2 returns fewer than `Local_grounded_facts_min_facts` facts, top up with extractive facts from the chunks (no LLM; ADR-0011) |
+| `Agentic_loop_preflight_tiers` | Pre-flight gate: widen retrieval (tier 1) and reformulate the query (tier 2) before writing when facts < `Agentic_loop_min_facts`; facts are merged, never replaced (default 2; 0 = off) |
+| `Story_generation_method` | `5w1h` (default) or `arc` (story-arc outline with its own prompt set `generation_arc`, always sectioned; see ADR-0010). Compare with `measure_generation_length.py --methods 5w1h 5w1h-sectioned arc` |
+| `Story_generation_mode` | `single` (default, one call per draft) or `sectioned` (opt-in, one short call per section with its own word/token budget; refines rewrite only the weak sections; see ADR-0009) |
 | `Hybrid_bm25_pool` | BM25 candidates taken from the whole collection and added to the rerank pool (default 0 = off; 12 tested and rejected, see ADR-0002) |
 | `Agentic_loop_late_accept_slack` | From iteration 2, accept a complete grounded draft this far below `Agentic_loop_accept_score` (default 0.5) |
 | `Generated_story_output` / `Evaluated_stories_output` | Output folders under `data/outputs/` |
@@ -290,7 +294,7 @@ Reports top-1 / top-k accuracy and expected fact coverage.
 
 The pipeline is functional end-to-end. Active tuning areas:
 
-- Retrieval quality as corpus size grows -- Phase 1 tuning peaked (2026-09) at top1=0.80 / top3=0.90 / fact_coverage=0.77 and then stopped; current baseline after the story_json rebuild is top1=0.80 / top3=0.833 / fact_coverage=0.733 (a 2026-10-05 whole-corpus BM25 experiment, `Hybrid_bm25_pool: 12`, did not move top-k and cost fact coverage, so it is off; see ADR-0002); remaining misses need query reformulation or corpus/chunking work, not another knob (see docs/PROJECT_JOURNEY.md "What I am doing next" for the case-by-case breakdown and why `Hybrid_bm25_weight` is currently a no-op with reranking on)
+- Retrieval quality as corpus size grows -- Phase 1 tuning peaked (2026-09) at top1=0.80 / top3=0.90 / fact_coverage=0.77 and then stopped; current baseline after the story_json rebuild is top1=0.80 / top3=0.833 / fact_coverage=0.733, re-measured 2026-10-06 at top3=0.867 (a 2026-10-05 whole-corpus BM25 experiment, `Hybrid_bm25_pool: 12`, did not move top-k and cost fact coverage, so it is off; see ADR-0002); remaining misses need query reformulation or corpus/chunking work, not another knob (see docs/PROJECT_JOURNEY.md "What I am doing next" for the case-by-case breakdown and why `Hybrid_bm25_weight` is currently a no-op with reranking on)
 - Phase 2 generation reliability -- length targets are fine under agentic `long` (first batch: under-min-words 0.0); active issue is grounded-facts extraction / HF credits masking accept rate. Offline fixes landed (2026-09): no-eval path never ACCEPTs with zero facts (iterations record `has_eval`), hardened local facts provider (`Grounded_facts_provider: "local"`), and `reset_and_ingest.py` now reads story_json metadata; the clean scored re-measure was done 2026-10-05 on Ollama (accept 0.75, 1.75 avg iterations, 1670 avg words, 0.12 under-min; details and next steps in docs/PROJECT_JOURNEY.md). Measurement: `scripts/measure_generation_length.py`. Details in docs/PROJECT_JOURNEY.md
 - Reducing repetitive phrasing in generated prose
 - Retrieval eval fixture (`tests/fixtures/retrieval_eval_cases.example.json`) now has 30 realistic cases incl. "wrong book" traps; `scripts/retrieval_eval.py` was fixed (2026-09) to route through the real hybrid+rerank `retrieve_docs()` pipeline instead of a bare dense-only Chroma query it was silently using before -- use it before/after any retrieval tuning

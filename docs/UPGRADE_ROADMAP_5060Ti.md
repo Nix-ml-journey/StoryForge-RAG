@@ -286,7 +286,7 @@ Generation_precision: "bf16"
 
 ### 3.5 ✅ Replace `requests`-based HF evaluation with a local evaluator
 
-> **Superseded 2026-10-05 by [ADR-0001](decisions/0001-ollama-evaluation-no-api-fallback.md):** the Transformers/CPU evaluator and its API fallback described below were removed; `Evaluation_mode: "ollama"` (alias `local`) now judges via Ollama. The text below is kept as history.
+> **Superseded 2026-10-05 by [ADR-0001](decisions/evaluation-and-agentic-loop.md):** the Transformers/CPU evaluator and its API fallback described below were removed; `Evaluation_mode: "ollama"` (alias `local`) now judges via Ollama. The text below is kept as history.
 
 The evaluation step previously always called the HuggingFace Inference API (remote,
 rate-limited, can fail) — twice per agentic-loop iteration when combined with Step 2's

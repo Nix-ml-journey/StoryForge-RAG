@@ -124,6 +124,7 @@ def _local_cfg(**over):
         "Grounded_facts_provider": "local",
         "Generation_provider": "ollama",
         "HF_grounded_facts_max_new_tokens": 3200,
+        "Local_grounded_facts_min_facts": 1,  # tests opt in to the thin-retry explicitly
     }
     cfg.update(over)
     return cfg
@@ -237,3 +238,75 @@ def test_build_chat_ollama_forwards_format(stub_heavy_deps):
         captured.clear()
         gb.build_chat_ollama({}, max_new_tokens=10, temperature=0.1, top_p=0.8)
         assert "format" not in captured
+
+
+def test_local_thin_result_retries_for_coverage_and_keeps_the_larger_set(extraction):
+    more = [dict(GOOD_FACT, fact=f"Fact {i}") for i in range(5)]
+    llm = _fake_llm(json.dumps({"facts": [GOOD_FACT]}), json.dumps({"facts": more}))
+    with patch.object(extraction, "_load_facts_llm", return_value=llm):
+        _, parsed = extraction.extract_grounded_facts("q", CHUNKS, _local_cfg(Local_grounded_facts_min_facts=4))
+    assert len(parsed.facts) == 5 and llm.invoke.call_count == 2
+    assert "only 1 fact(s)" in llm.invoke.call_args_list[1][0][0]
+
+
+def test_local_thin_retry_never_replaces_a_larger_first_answer(extraction):
+    first = [dict(GOOD_FACT, fact=f"Fact {i}") for i in range(3)]
+    llm = _fake_llm(json.dumps({"facts": first}), json.dumps({"facts": [GOOD_FACT]}))
+    with patch.object(extraction, "_load_facts_llm", return_value=llm):
+        _, parsed = extraction.extract_grounded_facts("q", CHUNKS, _local_cfg(Local_grounded_facts_min_facts=4))
+    assert len(parsed.facts) == 3
+
+
+# ---------------------------------------------------------------------------
+# Extractive top-up (ADR-0011 step 1)
+# ---------------------------------------------------------------------------
+
+LONG_CHUNKS = [
+    {"chunk_id": "A_chunk_1", "title": "A",
+     "text": "The old doctor climbed the frozen stairs of the manor. He had not slept for two nights. Snow covered every window."},
+    {"chunk_id": "B_chunk_2", "title": "B",
+     "text": "Alana drew her sword beside the river at dawn. The beast was already waiting in the reeds."},
+]
+
+
+def test_extractive_facts_are_deterministic_verbatim_and_tagged_with_chunk_ids():
+    from storyforge.rag.attribution import extractive_facts
+
+    facts = extractive_facts(LONG_CHUNKS, max_facts=10)
+    assert facts == extractive_facts(LONG_CHUNKS, max_facts=10)
+    assert {f.source_chunk_ids for f in facts} == {("A_chunk_1",), ("B_chunk_2",)}
+    assert facts[0].fact.startswith("The old doctor climbed") and facts[0].quote in facts[0].fact
+    assert len(extractive_facts(LONG_CHUNKS, max_facts=3)) == 3
+    assert extractive_facts([{"chunk_id": "x", "text": "Too short."}]) == ()
+
+
+def test_merge_facts_dedupes_keeps_old_first_and_never_loses_facts():
+    from storyforge.rag.attribution import GroundedFact, ParsedFacts, merge_facts
+
+    old = ParsedFacts(facts=(GroundedFact("Alana is a soldier", "who", ("c1",)),), raw={})
+    new = ParsedFacts(facts=(GroundedFact("alana  is a soldier", "who", ("c1",)), GroundedFact("Zoruk is a beast", "who", ("c2",))), raw={"k": 1})
+    merged = merge_facts(old, new)
+    assert [f.fact for f in merged.facts] == ["Alana is a soldier", "Zoruk is a beast"]
+    assert merge_facts(old, ParsedFacts(facts=(), raw={})).facts == old.facts  # a re-retrieve that finds nothing keeps the old facts
+    assert len(merge_facts(old, new, cap=1).facts) == 1
+
+
+def test_thin_llm_facts_are_topped_up_with_extractive_facts(extraction):
+    llm = _fake_llm(json.dumps({"facts": [dict(GOOD_FACT, source_chunk_ids=["A_chunk_1"])]}))
+    with patch.object(extraction, "_load_facts_llm", return_value=llm):
+        _, parsed = extraction.extract_grounded_facts(
+            "q", LONG_CHUNKS, _local_cfg(Local_grounded_facts_min_facts=4, Local_grounded_facts_retries=0)
+        )
+    assert len(parsed.facts) == 4
+    assert parsed.facts[0].fact == GOOD_FACT["fact"]  # the LLM fact stays first
+
+
+def test_zero_llm_facts_fall_back_to_extractive_and_the_fallback_can_be_disabled(extraction):
+    for off, expected in ((False, 3), (True, 0)):
+        llm = _fake_llm("no json here")
+        cfg = _local_cfg(Local_grounded_facts_min_facts=3, Local_grounded_facts_retries=0)
+        if off:
+            cfg["Facts_extractive_fallback"] = False
+        with patch.object(extraction, "_load_facts_llm", return_value=llm):
+            _, parsed = extraction.extract_grounded_facts("q", LONG_CHUNKS, cfg)
+        assert len(parsed.facts) == expected

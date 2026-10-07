@@ -204,27 +204,37 @@ def decide_action(
         reasons = tuple(completeness.reasons) or ("incomplete",)
         return Decision(REFINE, reasons, avg, faith)
     if faith is not None and faith < min_faith:
+        if iteration == 1 and facts_count >= min_facts:
+            # A 4B judge swings 4 -> 8 on the same facts: give the draft one refine with
+            # the judge's notes before throwing it away. Still low next time -> re-retrieve.
+            return Decision(REFINE, (f"faithfulness {faith} < {min_faith} (refine once first)",), avg, faith)
         return Decision(RE_RETRIEVE, (f"faithfulness {faith} < {min_faith}",), avg, faith)
 
-    if avg >= accept_score and completeness.ok:
-        return Decision(ACCEPT, (f"avg {avg} >= {accept_score}, complete, grounded",), avg, faith)
-
+    # Thin grounding blocks ACCEPT: high scores on 1-3 facts mostly reward invented filler.
     if facts_count < min_facts:
         return Decision(
             RE_RETRIEVE,
-            (f"low quality (avg {avg}) with thin grounding ({facts_count} < {min_facts} facts)",),
+            (f"thin grounding ({facts_count} < {min_facts} facts), avg {avg}",),
             avg,
             faith,
         )
+    if avg >= accept_score:
+        return Decision(ACCEPT, (f"avg {avg} >= {accept_score}, complete, grounded",), avg, faith)
     return Decision(REFINE, (f"avg {avg} < {accept_score}",), avg, faith)
 
 
-def refine_regressed(prior: str, new: str, *, min_ratio: float = 0.8) -> bool:
-    """True when a refine pass made the draft worse: much shorter, or fewer sections."""
+def refine_regressed(prior: str, new: str, *, min_ratio: float = 0.8, min_words: int = 0) -> bool:
+    """True when a refine pass made the draft worse: much shorter, or fewer sections.
+
+    With ``min_words`` a shorter draft is fine as long as it still meets the minimum
+    (tightening an over-long, cut-off draft is exactly what the refine asks for).
+    """
     count = lambda s: len({int(n) for n in re.findall(r"\[SECTION\s+(\d+)", s or "", flags=re.IGNORECASE)})  # noqa: E731
-    if len((new or "").split()) < min_ratio * len((prior or "").split()):
-        return True
-    return count(new) < count(prior)
+    new_words = len((new or "").split())
+    shrank = new_words < min_ratio * len((prior or "").split())
+    if min_words:
+        shrank = shrank and new_words < min_words
+    return shrank or count(new) < count(prior)
 
 
 def build_feedback(
@@ -232,6 +242,7 @@ def build_feedback(
     completeness: CompletenessReport,
     *,
     words_per_section: int = 0,
+    expand_by_words: int = 0,
 ) -> str:
     """Merge evaluator notes and completeness gaps into text for the refine prompt."""
     parts: list[str] = []
@@ -254,6 +265,14 @@ def build_feedback(
                 f"The previous draft was cut off. Keep each section to about {words_per_section} "
                 "words so all five sections fit, and end SECTION 5 with a complete sentence."
             )
+    if expand_by_words > 0:
+        # The last rewrite came back shorter and was discarded; repeating the same
+        # feedback would reproduce it, so ask for explicit growth instead.
+        parts.append(
+            f"The previous rewrite was shorter and was discarded. Do NOT shorten: add about "
+            f"{expand_by_words} words of grounded detail and dialogue across the sections, "
+            "keeping every existing section."
+        )
     parts.append("Keep every section, finish the final sentence, and stay strictly grounded in the facts.")
     return "\n".join(parts).strip()
 
@@ -297,6 +316,39 @@ class AgenticLoopResult:
     retrieval_chunks: tuple[dict[str, Any], ...] = ()
 
 
+def _iteration_record(
+    iteration: int,
+    action: str,
+    query: str,
+    facts_count: int,
+    *,
+    avg: Optional[float] = None,
+    faith: Optional[float] = None,
+    comp: Optional[CompletenessReport] = None,
+    words: int = 0,
+    reasons: Any = (),
+    has_eval: Optional[bool] = None,
+    scores: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """One row of ``AgenticLoopResult.iterations`` (same shape for every outcome)."""
+    rec: dict[str, Any] = {
+        "iteration": iteration,
+        "action": action,
+        "average_score": avg,
+        "faithfulness": faith,
+        "completeness_ok": comp.ok if comp else False,
+        "word_count": comp.word_count if comp else words,
+        "missing_sections": list(comp.missing_sections) if comp else [],
+        "reasons": list(reasons),
+        "query": query,
+        "facts_count": facts_count,
+        "scores": scores or {},
+    }
+    if has_eval is not None:
+        rec["has_eval"] = has_eval
+    return rec
+
+
 def run_agentic_story_loop(
     query: str,
     *,
@@ -307,7 +359,7 @@ def run_agentic_story_loop(
     debug: bool = False,
 ) -> AgenticLoopResult:
     """Retrieve → generate → evaluate → ACCEPT / REFINE / RE_RETRIEVE."""
-    from storyforge.rag.attribution import format_facts_for_prompt
+    from storyforge.rag.attribution import format_facts_for_prompt, merge_facts
     from storyforge.rag.extraction import extract_grounded_facts
     from storyforge.rag.generation import generate_from_facts
     from storyforge.rag.length_profile import is_thinking_mode, resolve_length_profile
@@ -357,17 +409,33 @@ def run_agentic_story_loop(
     k_boost = 1.0
     current_query = query
 
-    docs = retrieve_docs(
-        current_query,
-        cfg,
-        n_stories=n_stories,
-        chunks_per_story=chunks_per_story,
-        k_boost=k_boost,
-        story_type=story_type,
-    )
-    chunks = _docs_to_chunks(docs)
-    retrieval_context = _docs_to_context(docs)
-    grounded_raw, parsed = extract_grounded_facts(current_query, chunks, cfg)
+    def retrieve_and_extract(q: str, previous=None):
+        docs = retrieve_docs(
+            q, cfg, n_stories=n_stories, chunks_per_story=chunks_per_story,
+            k_boost=k_boost, story_type=story_type,
+        )
+        chunks = _docs_to_chunks(docs)
+        raw, facts = extract_grounded_facts(q, chunks, cfg)
+        if previous is not None:
+            facts = merge_facts(previous, facts)  # widening adds evidence, never replaces it
+        return _docs_to_context(docs), chunks, raw, facts
+
+    retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query)
+
+    # Pre-flight gate: thin evidence is fixed BEFORE any story is written. Tier 1 widens the
+    # search; tier 2 also reformulates the query with names from the facts found so far.
+    gate_min = int(cfg.get("Agentic_loop_min_facts") or 3)
+    for tier in range(1, int(cfg.get("Agentic_loop_preflight_tiers", 2) or 0) + 1):
+        if len(parsed.facts) >= gate_min:
+            break
+        LOG.warning(
+            "Pre-flight gate: %d facts < %d; widening retrieval (tier %d).", len(parsed.facts), gate_min, tier
+        )
+        k_boost *= k_boost_step
+        n_stories = max(n_stories, reretrieve_n)
+        if tier >= 2:
+            current_query = reformulate_query(query, parsed, {})
+        retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
 
     iterations: list[dict[str, Any]] = []
     best: Optional[dict[str, Any]] = None
@@ -376,6 +444,7 @@ def run_agentic_story_loop(
     refine_feedback: Optional[str] = None
     prior_draft: Optional[str] = None
     refine_max_new: Optional[int] = None
+    prev_regressed = False
 
     for i in range(1, max_iter + 1):
         try:
@@ -392,44 +461,37 @@ def run_agentic_story_loop(
             )
         except RuntimeError as e:
             # generate_from_facts already retried thinking -> fast once and still
-            # came back empty. Unlike the length guard (which has a single prior
-            # draft to fall back to), the loop may have several iterations' worth
-            # of history -- stop here and return the best draft seen so far
-            # instead of losing the whole run to one bad generation call.
+            # came back empty: stop with the best draft seen so far rather than
+            # losing the whole run to one bad generation call.
             LOG.warning(
                 "Agentic loop: generation failed on iteration %d (%s). "
                 "Stopping with the best draft found so far.", i, e,
             )
-            iterations.append(
-                {
-                    "iteration": i,
-                    "action": "generation_failed",
-                    "average_score": None,
-                    "faithfulness": None,
-                    "completeness_ok": False,
-                    "word_count": 0,
-                    "missing_sections": [],
-                    "reasons": [str(e)],
-                    "query": current_query,
-                    "facts_count": len(parsed.facts),
-                    "scores": {},
-                }
-            )
+            iterations.append(_iteration_record(i, "generation_failed", current_query, len(parsed.facts), reasons=[str(e)]))
             stop_reason = "generation_failed" if best is None else "generation_failed_using_best_so_far"
             break
 
-        regressed = bool(prior_draft) and refine_regressed(prior_draft, story)
+        regressed = bool(prior_draft) and refine_regressed(prior_draft, story, min_words=min_words)
+        if regressed and prev_regressed:
+            LOG.warning("Agentic loop: refine rejected twice in a row on iteration %d; stopping.", i)
+            iterations.append(
+                _iteration_record(
+                    i, "refine_rejected", current_query, len(parsed.facts),
+                    words=len(prior_draft.split()), reasons=["refine regressed twice; keeping the prior draft"],
+                )
+            )
+            stop_reason = "refine_rejected"
+            break
         if regressed:
             LOG.warning(
                 "Agentic loop: refine on iteration %d regressed the draft (%d -> %d words); keeping the prior draft.",
                 i, len(prior_draft.split()), len(story.split()),
             )
             story = prior_draft
+        prev_regressed = regressed
 
         comp = completeness_report(
-            story,
-            min_words=min_words,
-            min_sentences_per_section=min_sentences_per_section,
+            story, min_words=min_words, min_sentences_per_section=min_sentences_per_section
         )
 
         eval_data: dict[str, Any] = {}
@@ -440,35 +502,25 @@ def run_agentic_story_loop(
                 ) or {}
             except Exception as e:  # noqa: BLE001 - any provider failure must not discard a finished draft
                 LOG.error("Agentic loop: evaluation failed on iteration %d (%s: %s).", i, type(e).__name__, e)
-                eval_data = {}
+            if not eval_data:
+                LOG.warning(
+                    "Agentic loop: judge produced no usable scores on iteration %d; "
+                    "decision falls back to completeness only.", i,
+                )
 
         iter_has_eval = has_eval and bool(eval_data)
         decision = decide_action(
             eval_data, comp, len(parsed.facts), cfg, has_eval=iter_has_eval, iteration=i
         )
+        iterations.append(
+            _iteration_record(
+                i, decision.action, current_query, len(parsed.facts),
+                avg=decision.avg, faith=decision.faithfulness, comp=comp,
+                reasons=list(decision.reasons), has_eval=iter_has_eval, scores=eval_data,
+            )
+        )
 
-        iter_record = {
-            "iteration": i,
-            "action": decision.action,
-            "average_score": decision.avg,
-            "faithfulness": decision.faithfulness,
-            "completeness_ok": comp.ok,
-            "word_count": comp.word_count,
-            "missing_sections": list(comp.missing_sections),
-            "reasons": list(decision.reasons),
-            "query": current_query,
-            "facts_count": len(parsed.facts),
-            "has_eval": iter_has_eval,
-            "scores": eval_data,
-        }
-        iterations.append(iter_record)
-
-        candidate = {
-            "story": story,
-            "complete": comp.ok,
-            "avg": decision.avg,
-            "eval_data": eval_data,
-        }
+        candidate = {"story": story, "complete": comp.ok, "avg": decision.avg, "eval_data": eval_data}
         if best is None or (candidate["complete"], candidate["avg"]) > (best["complete"], best["avg"]):
             best = candidate
 
@@ -478,32 +530,23 @@ def run_agentic_story_loop(
             break
 
         if i == max_iter:
-            # Distinguish "ran out of iterations with nothing grounded to write
-            # from" from an ordinary non-converging loop -- the first is a Step 2
+            # "Ran out of iterations with nothing grounded to write from" is a Step 2
             # (facts extraction) failure, not a generation-quality one.
             stop_reason = "max_iterations_no_grounded_facts" if not parsed.facts else "max_iterations"
             break
 
         if decision.action == RE_RETRIEVE:
+            prev_regressed = False
             k_boost *= k_boost_step
             n_stories = max(n_stories, reretrieve_n)
             current_query = reformulate_query(query, parsed, eval_data)
-            docs = retrieve_docs(
-                current_query,
-                cfg,
-                n_stories=n_stories,
-                chunks_per_story=chunks_per_story,
-                k_boost=k_boost,
-                        story_type=story_type,
-            )
-            chunks = _docs_to_chunks(docs)
-            retrieval_context = _docs_to_context(docs)
-            grounded_raw, parsed = extract_grounded_facts(current_query, chunks, cfg)
-            refine_feedback = None
-            prior_draft = None
-            refine_max_new = None
+            retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
+            refine_feedback = prior_draft = refine_max_new = None
         else:
-            refine_feedback = build_feedback(eval_data, comp, words_per_section=profile.words_per_section)
+            expand = max(100, profile.target_words - comp.word_count) if regressed else 0
+            refine_feedback = build_feedback(
+                eval_data, comp, words_per_section=profile.words_per_section, expand_by_words=expand
+            )
             prior_draft = story
             refine_max_new = base_max_tokens + refine_token_boost if not comp.ok else None
 

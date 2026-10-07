@@ -22,6 +22,8 @@ __all__ = [
     "attribution_violations",
     "build_debug_attribution_stub",
     "format_facts_for_prompt",
+    "extractive_facts",
+    "merge_facts",
 ]
 
 
@@ -346,3 +348,53 @@ def format_facts_for_prompt(parsed: "ParsedFacts") -> str:
         quote = f' ("{f.quote}")' if f.quote else ""
         lines.append(f"{i}. [{f.type}] {f.fact}{quote}  (source: {src})")
     return "\n".join(lines)
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def extractive_facts(
+    chunks: list[dict[str, Any]], *, max_facts: int = 12, per_chunk: int = 2, min_chars: int = 40
+) -> tuple[GroundedFact, ...]:
+    """Deterministic fallback facts: leading sentences of each chunk, verbatim, tagged with the chunk id.
+
+    No LLM call, so it cannot return nothing while retrieval returns chunks. Sentences are taken
+    round-robin-by-chunk order, ``per_chunk`` at most, until ``max_facts``.
+    """
+    out: list[GroundedFact] = []
+    for ch in chunks:
+        cid = str(ch.get("chunk_id") or "")
+        if not cid:
+            continue
+        taken = 0
+        for sentence in _SENTENCE_SPLIT.split(" ".join(str(ch.get("text") or "").split())):
+            if len(sentence) < min_chars:
+                continue
+            words = sentence.split()
+            out.append(
+                GroundedFact(
+                    fact=" ".join(words[:45]), type="detail",
+                    source_chunk_ids=(cid,), quote=" ".join(words[:14]),
+                )
+            )
+            taken += 1
+            if taken >= per_chunk or len(out) >= max_facts:
+                break
+        if len(out) >= max_facts:
+            break
+    return tuple(out)
+
+
+def merge_facts(old: ParsedFacts, new: ParsedFacts, *, cap: int = 30) -> ParsedFacts:
+    """Union of two fact sets (old first, de-duplicated by text, at most ``cap``).
+
+    Widening retrieval must add evidence, never replace it: a re-retrieve once turned 25 facts into 0.
+    """
+    seen: set[str] = set()
+    merged: list[GroundedFact] = []
+    for f in (*old.facts, *new.facts):
+        key = " ".join(f.fact.lower().split())
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(f)
+    return ParsedFacts(facts=tuple(merged[:cap]), raw=new.raw or old.raw)

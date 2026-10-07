@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ def _eval_prompts() -> dict[str, str]:
     return {
         "with_story": str(ev.get("with_story") or ""),
         "with_summary": str(ev.get("with_summary") or ""),
+        "loop_judge": str(ev.get("loop_judge") or ev.get("with_story") or ""),
     }
 
 EVAL_RETRY_MAX_ATTEMPTS = 6
@@ -176,44 +178,28 @@ def _invoke_huggingface_once(evaluator: dict[str, Any], prompt: str) -> str:
         return str(resp).strip()
 
 
-def _invoke_hf_with_retry(evaluator: dict[str, Any], prompt: str) -> str:
-    last_exc = None
+def _retry_transient(call, label: str):
+    """Run ``call()``; retry transient API errors with exponential backoff, else raise."""
     for attempt in range(EVAL_RETRY_MAX_ATTEMPTS):
         try:
-            return _invoke_huggingface_once(evaluator, prompt)
-        except Exception as e:
-            last_exc = e
+            return call()
+        except Exception as e:  # noqa: BLE001 - provider SDKs raise unrelated types; is_retryable_api_error classifies
             if not is_retryable_api_error(e) or attempt == EVAL_RETRY_MAX_ATTEMPTS - 1:
-                break
+                raise
             delay = EVAL_RETRY_BASE_DELAY_SEC * (EVAL_RETRY_BACKOFF_FACTOR**attempt)
             logging.warning(
-                "HF evaluation transient error (attempt %s/%s), retrying in %.1fs: %s",
-                attempt + 1, EVAL_RETRY_MAX_ATTEMPTS, delay, e,
+                "%s evaluation transient error (attempt %s/%s), retrying in %.1fs: %s",
+                label, attempt + 1, EVAL_RETRY_MAX_ATTEMPTS, delay, e,
             )
             time.sleep(delay)
-    if last_exc is not None:
-        raise last_exc
-    return ""
+
+
+def _invoke_hf_with_retry(evaluator: dict[str, Any], prompt: str) -> str:
+    return _retry_transient(lambda: _invoke_huggingface_once(evaluator, prompt), "HF")
 
 
 def _invoke_gemini_with_retry(model, prompt: str):
-    last_exc = None
-    for attempt in range(EVAL_RETRY_MAX_ATTEMPTS):
-        try:
-            return model.invoke(prompt)
-        except Exception as e:
-            last_exc = e
-            if not is_retryable_api_error(e) or attempt == EVAL_RETRY_MAX_ATTEMPTS - 1:
-                break
-            delay = EVAL_RETRY_BASE_DELAY_SEC * (EVAL_RETRY_BACKOFF_FACTOR**attempt)
-            logging.warning(
-                "Gemini evaluation transient error (attempt %s/%s), retrying in %.1fs: %s",
-                attempt + 1, EVAL_RETRY_MAX_ATTEMPTS, delay, e,
-            )
-            time.sleep(delay)
-    if last_exc is not None:
-        raise last_exc
-    return ""
+    return _retry_transient(lambda: model.invoke(prompt), "Gemini")
 
 
 def _invoke_with_retry(model, prompt: str):
@@ -296,6 +282,18 @@ def evaluate_model(
     raise ValueError("No evaluation provider could be initialized. " + " | ".join(errors))
 
 
+_CRITERIA = ("faithfulness", "coherence", "grammar", "creativity", "overall")
+
+
+def _salvage_scores(text: str) -> dict[str, Any]:
+    """Pull ``"name": 7`` / ``"name": {"score": 7`` pairs out of truncated judge JSON."""
+    found = {
+        m.group(1): {"score": float(m.group(2))}
+        for m in re.finditer(r'"(%s)"\s*:\s*(?:\{\s*"score"\s*:\s*)?(\d+(?:\.\d+)?)' % "|".join(_CRITERIA), text)
+    }
+    return found if "faithfulness" in found or len(found) >= 2 else {}
+
+
 def _parse_json_response(response) -> dict:
     raw = response.content if hasattr(response, "content") else response
     if isinstance(raw, list):
@@ -321,6 +319,10 @@ def _parse_json_response(response) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
+        scores = _salvage_scores(text)
+        if scores:
+            logging.warning(f"Evaluation JSON was cut off ({e}); salvaged scores: {sorted(scores)}")
+            return scores
         logging.error(f"Evaluation response was not valid JSON: {e}")
         logging.error(f"Raw response (first 500 chars): {text[:500]}")
         return {}
@@ -340,10 +342,20 @@ def evaluate_generated_story(model, file_path) -> dict[str, Any]:
         return {}
 
 
-def _story_eval_prompt(story: str, facts: str = "") -> str:
-    """Judge prompt; with ``facts`` the faithfulness score is checkable against them."""
+def _story_eval_prompt(story: str, facts: str = "", *, compact: bool = False) -> str:
+    """Judge prompt; with ``facts`` the faithfulness score is checkable against them.
+
+    ``compact`` selects the short-output loop judge (scores + one sentence + suggestions).
+    """
     section = f"## Grounded facts (source of truth):\n{facts.strip()}\n\n" if facts and facts.strip() else ""
-    return _eval_prompts()["with_story"].format(story=story, facts_section=section)
+    key = "loop_judge" if compact else "with_story"
+    return _eval_prompts()[key].format(story=story, facts_section=section)
+
+
+_JSON_RETRY_SUFFIX = (
+    "\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON object, "
+    "starting with { and ending with }, with no prose or code fences."
+)
 
 
 def evaluate_story_text(model, story_text: str, facts: str = "") -> dict[str, Any]:
@@ -353,9 +365,16 @@ def evaluate_story_text(model, story_text: str, facts: str = "") -> dict[str, An
     guessing from the prose alone.
     """
     try:
-        prompt = _story_eval_prompt(story_text, facts)
-        response = _invoke_with_retry(model, prompt)
-        return _parse_json_response(response)
+        prompt = _story_eval_prompt(story_text, facts, compact=True)
+        data = _parse_json_response(_invoke_with_retry(model, prompt))
+        if not data:
+            # Small judges sometimes emit prose or truncated JSON on long inputs; one
+            # stricter retry keeps a parse failure from silently becoming an unscored accept.
+            logging.warning("[EVALUATION] Judge output was not valid JSON; retrying once.")
+            data = _parse_json_response(_invoke_with_retry(model, prompt + _JSON_RETRY_SUFFIX))
+            if not data:
+                logging.error("[EVALUATION] Judge returned no valid JSON after retry; story is unscored.")
+        return data
     except RuntimeError:
         raise  # explicit provider failure (e.g. Ollama down): surface it, do not mask as {}
     except (ValueError, KeyError, TypeError, OSError) as e:

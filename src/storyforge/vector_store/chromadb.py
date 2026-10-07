@@ -81,15 +81,6 @@ def query_data(
         return None
 
 
-def delete_data(id: str):
-    try:
-        Collection.delete(ids=[id])
-        return True
-    except Exception as e:
-        logging.error(f"Error deleting data: {e}")
-        return False
-
-
 def get_data(id: str):
     try:
         results = Collection.get(ids=[id])
