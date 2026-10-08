@@ -123,13 +123,19 @@ def test_decide_accept():
 
 
 def test_decide_re_retrieve_on_low_faithfulness():
-    d = decide_action(_good_eval(faith=3), _complete(), facts_count=10, cfg=CFG, has_eval=True, iteration=2)
+    d = decide_action(_good_eval(faith=3), _complete(), facts_count=5, cfg=CFG, has_eval=True, iteration=2)
     assert d.action == RE_RETRIEVE
 
 
-def test_decide_low_faithfulness_refines_once_first_when_facts_are_enough():
-    d = decide_action(_good_eval(faith=3), _complete(), facts_count=10, cfg=CFG, has_eval=True)
-    assert d.action == REFINE and "refine once first" in d.reasons[0]
+def test_decide_low_faithfulness_with_rich_facts_refines_instead_of_re_retrieving():
+    # 17-30 facts and faithfulness still 4.0 after re-retrieves: the writer invents details, more search does not help
+    d = decide_action(_good_eval(faith=3), _complete(), facts_count=12, cfg=CFG, has_eval=True, iteration=2)
+    assert d.action == REFINE and "unsupported details" in d.reasons[0]
+
+
+def test_decide_low_faithfulness_refines_first_when_facts_are_enough():
+    d = decide_action(_good_eval(faith=3), _complete(), facts_count=6, cfg=CFG, has_eval=True)
+    assert d.action == REFINE and "unsupported details" in d.reasons[0]
     # thin facts: nothing solid to refine against -> straight to re-retrieve
     assert decide_action(_good_eval(faith=3), _complete(), facts_count=2, cfg=CFG, has_eval=True).action == RE_RETRIEVE
 
@@ -396,7 +402,7 @@ def test_incomplete_draft_refines_even_when_faithfulness_is_low():
 
 
 def test_complete_draft_with_low_faithfulness_still_re_retrieves():
-    d = decide_action(_good_eval(faith=2, others=8), _complete(), facts_count=10, cfg=CFG, has_eval=True, iteration=2)
+    d = decide_action(_good_eval(faith=2, others=8), _complete(), facts_count=5, cfg=CFG, has_eval=True, iteration=2)
     assert d.action == RE_RETRIEVE
 
 
@@ -489,3 +495,59 @@ def test_preflight_gate_widens_retrieval_and_merges_facts_before_writing(stub_he
     assert len(retrieve_calls) == 2 and retrieve_calls[1] > retrieve_calls[0]  # widened once, then enough facts
     assert seen_facts[0] == 4  # the first draft is written from the merged facts, not the thin first pass
     assert result.iterations[0]["facts_count"] == 4
+
+
+def test_loop_stops_when_two_refines_do_not_beat_the_best_draft(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.evaluation.evaluation as evaluation_mod
+    import storyforge.rag.generation as generation_mod
+
+    facts = '{"facts":[' + ",".join(
+        f'{{"type":"who","fact":"Alana meets Zoruk number {n}","source_chunk_ids":["c1"]}}' for n in range(4)
+    ) + "]}"
+    _fake_docs_chain(monkeypatch, facts_json=facts)
+    monkeypatch.setattr(evaluation_mod, "evaluate_model", lambda *a, **k: "judge")
+    others = iter([5, 4, 5])  # judge averages 5.2, 4.4, 5.2 with faithfulness fixed at 6
+
+    def _judge(*a, **k):
+        x = next(others)
+        return {"faithfulness": 6, "coherence": x, "grammar": x, "creativity": x, "overall": x}
+
+    monkeypatch.setattr(evaluation_mod, "evaluate_story_text", _judge)
+    monkeypatch.setattr(generation_mod, "generate_from_facts", lambda *a, **k: _five_section_story(extra_words=80))
+
+    result = run_agentic_story_loop("q", cfg={"Agentic_loop_max_iterations": 3, "Agentic_loop_preflight_tiers": 0})
+
+    assert result.stop_reason == "no_progress"
+    assert len(result.iterations) == 2 and result.final_average == 5.2
+
+
+def test_refine_names_unsupported_details_and_rewrites_only_those_sections(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.evaluation.evaluation as evaluation_mod
+    import storyforge.rag.generation as generation_mod
+
+    facts = '{"facts":[' + ",".join(
+        f'{{"type":"who","fact":"Alana fights Zoruk number {n}","source_chunk_ids":["c1"]}}' for n in range(4)
+    ) + "]}"
+    _fake_docs_chain(monkeypatch, facts_json=facts)
+    monkeypatch.setattr(evaluation_mod, "evaluate_model", lambda *a, **k: "judge")
+    monkeypatch.setattr(
+        evaluation_mod, "evaluate_story_text",
+        lambda *a, **k: {"faithfulness": 3, "coherence": 8, "grammar": 8, "creativity": 8, "overall": 8},
+    )
+    clean = " ".join(["Alana fought Zoruk bravely in the old village today."] * 12)
+    invented = clean + " Then Quillon met Brannoch and Selmara near Dornhaven."
+    story = "\n\n".join(f"[SECTION {i}: X]\n{invented if i == 2 else clean}" for i in range(1, 6))
+    calls = []
+
+    def _gen(*a, **k):
+        calls.append(k)
+        return story
+
+    monkeypatch.setattr(generation_mod, "generate_from_facts", _gen)
+    run_agentic_story_loop("q", cfg={"Agentic_loop_max_iterations": 2, "Agentic_loop_preflight_tiers": 0})
+
+    assert calls[0].get("rewrite_sections") is None
+    assert calls[1]["rewrite_sections"] == frozenset({2})
+    assert "SECTION 2" in calls[1]["refine_feedback"] and "Quillon" in calls[1]["refine_feedback"]

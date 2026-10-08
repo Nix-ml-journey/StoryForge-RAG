@@ -1,6 +1,6 @@
 """Alternative Step 3 method: classic story-arc outline, written one section per call.
 
-``Story_generation_method: arc`` (default ``5w1h``) swaps the WHO/WHAT/TWIST/HOW/WHY outline for
+``Story_generation_method: arc`` (default; ``5w1h`` is the older outline) swaps the WHO/WHAT/TWIST/HOW/WHY outline for
 setup -> inciting incident -> rising action -> climax -> resolution, with its own prompt set
 (``generation_arc`` in prompts.yaml). The section loop, length budgets, and refine rule (rewrite only
 missing/short/over-long sections) are shared with the sectioned 5W1H writer in ``generation.py``;
@@ -43,11 +43,12 @@ def generate_arc(
     profile: LengthProfile,
     prior_draft: Optional[str] = None,
     feedback: Optional[str] = None,
+    rewrite_sections: Optional[frozenset[int]] = None,
 ) -> str:
     """Write (or partially rewrite) the story with the story-arc outline."""
     prompts, roles = _arc_prompts()
     return _generate_sectioned(
         query, facts_for_prompt, cfg, mode=mode, profile=profile,
         prior_draft=prior_draft, feedback=feedback,
-        headers=ARC_HEADERS, prompts=prompts, roles=roles,
+        headers=ARC_HEADERS, prompts=prompts, roles=roles, rewrite_sections=rewrite_sections,
     )

@@ -604,12 +604,11 @@ reporting pair; look into why a re-retrieve can return 0 facts for a reformulate
 
 ### Target architecture (set 2026-10-07)
 
-The goal is the flow recorded in ADR-0011 (proposed): retrieve, extract facts (LLM with an extractive fallback), a pre-flight gate that widens
-retrieval and merges facts before anything is written, a section-by-section arc writer, per-section rule checks (length, complete sentence, names
-not in the facts), rewrite of failing sections only, and one judge call at the end that reports a score without steering the loop. Reasons: thin
-evidence is found only after a full draft today, a re-retrieve can drop facts to 0, and the 4B judge is too noisy to steer. Dropped from an earlier
-sketch: a per-story arc planner, context buffers between sections, and an "adaptive" multi-call judge. Build order: gate + fact merging +
-extractive fallback, then rule-driven loop, then single judge call, measuring after each step.
+The flow is recorded in ADR-0011: retrieve, extract facts (LLM with an extractive fallback), a pre-flight gate that widens retrieval and merges facts
+before anything is written, then the section-by-section `arc` writer under the judge-driven loop. The original plan also had rule checks steering the
+loop with one judge call at the end; it was built (`Agentic_loop_rule_driven`) and measured, was about 2x faster but scored about a point lower with the
+judge, so it stayed an opt-in fast mode (2026-10-08). Dropped: a per-story arc planner, context buffers, an "adaptive" multi-call judge, and a lexical
+grounding gate (it did not track judge faithfulness).
 
 ## Repo and docs
 
@@ -622,4 +621,4 @@ extractive fallback, then rule-driven loop, then single judge call, measuring af
 **Step 1 measured (2026-10-07, `--methods arc`, 8 queries, one run).** Pre-flight gate, merged facts and the extractive top-up gave accept 0.88 (7/8)
 versus 0.62 for the previous `arc` run, with iterations unchanged at 2.0, average 1829 words and 122 s. The scholar query, which used to fail on empty
 Step 2 output, was accepted after the extractive top-up supplied 6 facts. Huntress still stalled at faithfulness 4.0 on 20-30 facts, so thin facts are
-not the whole story. This is n=8 and a single run with a noisy 4B judge, so it is a promising signal, not proof. Details are in ADR-0011 Progress.
+not the whole story. This is n=8 and a single run with a noisy 4B judge, so it is a promising signal, not proof. Details are in ADR-0011 Evidence.

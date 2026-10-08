@@ -35,10 +35,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -48,6 +49,7 @@ if str(SRC) not in sys.path:
 import storyforge.config.config as _config_mod  # noqa: E402
 from storyforge.config.config import load_config  # noqa: E402
 from storyforge.orchestrator.orchestrator import Orchestrator  # noqa: E402
+from storyforge.rag.agentic_loop import criterion_score  # noqa: E402
 from storyforge.rag.generative_ai import Gen_mode, StoryType  # noqa: E402
 
 # Small, varied default batch: distinct corpus-adjacent themes so retrieval has
@@ -70,6 +72,7 @@ METHODS: dict[str, dict[str, str]] = {
     "5w1h": {"Story_generation_method": "5w1h", "Story_generation_mode": "single"},
     "5w1h-sectioned": {"Story_generation_method": "5w1h", "Story_generation_mode": "sectioned"},
     "arc": {"Story_generation_method": "arc"},
+    "arc-rules": {"Story_generation_method": "arc", "Agentic_loop_rule_driven": True},  # ADR-0011 Step 2
 }
 _OVERRIDES: dict[str, Any] = {}
 
@@ -87,7 +90,7 @@ def _run_one(orchestrator: Orchestrator, query: str, *, mode: Gen_mode, length: 
         save=False,
         mode=mode,
         story_type=StoryType.MIX,
-        debug=False,
+        debug=True,  # needed for grounded_facts and final_scores in the payload
         length=length,
     )
     elapsed = round(time.monotonic() - started, 1)
@@ -118,9 +121,13 @@ def _run_one(orchestrator: Orchestrator, query: str, *, mode: Gen_mode, length: 
         "under_min_words": actual_words < min_words if min_words else None,
         "accepted": bool(res.get("accepted")),
         "stop_reason": res.get("stop_reason"),
+        "story": content,  # kept so rules can be calibrated offline against judge scores
+        "facts": [f.get("fact") for f in (res.get("grounded_facts") or [])],
         "iterations_run": res.get("iterations_run"),
         "final_average": res.get("final_average"),
-        "final_faithfulness": (iterations[-1].get("faithfulness") if iterations else None),
+        # Both numbers describe the returned (best) draft; the last iteration may be a different draft.
+        "final_faithfulness": criterion_score(res.get("final_scores"), "faithfulness"),
+        "last_iteration_faithfulness": (iterations[-1].get("faithfulness") if iterations else None),
         "iterations": [
             {
                 "iteration": it.get("iteration"),
@@ -156,7 +163,26 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_actual_words": round(sum(r.get("actual_words") or 0 for r in ok) / n_ok, 1) if n_ok else None,
         "avg_target_words": round(sum(r.get("target_words") or 0 for r in ok) / n_ok, 1) if n_ok else None,
         "avg_elapsed_seconds": round(sum(r.get("elapsed_seconds") or 0 for r in records) / total, 1) if total else None,
+        "avg_judge_average": _mean([r.get("final_average") for r in ok]),
+        "avg_judge_faithfulness": _mean([r.get("final_faithfulness") for r in ok]),
     }
+
+
+def _mean(values: list[Any]) -> Optional[float]:
+    nums = [float(v) for v in values if isinstance(v, (int, float))]
+    return round(sum(nums) / len(nums), 2) if nums else None
+
+
+def summarize_runs(runs: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Mean and spread of the headline metrics over repeated runs (the judge and sampling are noisy)."""
+    per_run = [summarize(r) for r in runs]
+    out: dict[str, Any] = {"runs": len(per_run)}
+    for key in ("accept_rate", "avg_iterations_run", "avg_elapsed_seconds", "avg_judge_average", "avg_judge_faithfulness"):
+        vals = [s[key] for s in per_run if s.get(key) is not None]
+        if vals:
+            out[key] = f"{statistics.mean(vals):.2f} +/- {statistics.pstdev(vals):.2f}"
+    out["per_run"] = per_run
+    return out
 
 
 def format_comparison(summaries: dict[str, dict[str, Any]]) -> str:
@@ -188,6 +214,13 @@ def main() -> int:
         "(default: one run with whatever setup.yaml says).",
     )
     parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Run the whole query set this many times per method and report mean +/- spread "
+        "(the 4B judge shifts by about a point between runs, so one run cannot rank methods).",
+    )
+    parser.add_argument(
         "--output",
         default="Evaluation/generation_eval_report.json",
         help="Where to write the JSON report (gitignored under Evaluation/).",
@@ -212,10 +245,16 @@ def main() -> int:
         _OVERRIDES.clear()
         _OVERRIDES.update(METHODS.get(method, {}))
         records: list[dict[str, Any]] = []
-        for i, q in enumerate(queries, start=1):
-            print(f"[{label} {i}/{len(queries)}] mode={args.mode} length={args.length} :: {q[:70]}")
+        runs: list[list[dict[str, Any]]] = []
+        plan = [(r, i, q) for r in range(1, max(1, args.repeat) + 1) for i, q in enumerate(queries, start=1)]
+        for r, i, q in plan:
+            if i == 1:
+                runs.append([])
+            print(f"[{label} run {r} {i}/{len(queries)}] mode={args.mode} length={args.length} :: {q[:70]}")
             rec = _run_one(orchestrator, q, mode=mode, length=args.length)
+            rec["run"] = r
             records.append(rec)
+            runs[-1].append(rec)
             if rec.get("success"):
                 print(
                     f"    words={rec['actual_words']}/{rec['target_words']} "
@@ -234,12 +273,17 @@ def main() -> int:
             "summary": summarize(records),
             "records": records,
         }
+        if args.repeat > 1:
+            report["repeat_summary"] = summarize_runs(runs)
         out_path = base_out if method is None else base_out.with_name(f"{base_out.stem}_{label}{base_out.suffix}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         summaries[label] = report["summary"]
         print(f"\nWrote report to {out_path}")
         print(json.dumps(report["summary"], indent=2))
+        if args.repeat > 1:
+            print("Mean +/- spread over runs:")
+            print(json.dumps({k: v for k, v in report["repeat_summary"].items() if k != "per_run"}, indent=2))
 
     if len(summaries) > 1:
         print("\n" + format_comparison(summaries))

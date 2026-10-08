@@ -138,7 +138,7 @@ Story_generation_mode: "single"
 # Which outline/prompt set writes the story: "5w1h" (default: WHO/WHAT/TWIST/HOW/WHY, prompts under
 # `generation:`) or "arc" (setup/inciting incident/rising action/climax/resolution, always sectioned,
 # prompts under `generation_arc:`). Compare with: measure_generation_length.py --methods 5w1h arc
-Story_generation_method: "5w1h"
+Story_generation_method: "arc"
 
 ## Story length target
 # A single target drives three things that must agree, or output never grows:
@@ -205,9 +205,17 @@ Agentic_loop_max_iterations: 3
 Agentic_loop_accept_score: 7.0
 Agentic_loop_min_faithfulness: 6
 Agentic_loop_min_facts: 3
+Agentic_loop_rich_facts: 8              # low faithfulness with this many facts -> rewrite the unsupported sections, not re-retrieve
+Agentic_loop_stop_on_no_progress: true # stop after two refines in a row that do not beat the best draft by 0.5
 # Pre-flight gate: when fewer than Agentic_loop_min_facts facts are found, widen retrieval (tier 1) and
 # reformulate the query (tier 2) BEFORE writing; facts are merged across tiers. 0 disables the gate.
 Agentic_loop_preflight_tiers: 2
+# Rule-driven loop (ADR-0011 Step 2; needs Story_generation_method: arc or mode: sectioned): rule checks per
+# section (length, finished sentence, names not in the facts) drive up to Agentic_loop_rule_rounds rewrites of
+# only the failing sections; the judge runs once at the end and only reports a score. false = judge-driven loop.
+Agentic_loop_rule_driven: false
+Agentic_loop_rule_rounds: 2
+Agentic_loop_rule_max_novel_names: 3
 Agentic_loop_late_accept_slack: 0.5   # from iteration 2 on, accept a complete grounded draft this far under accept_score
 Agentic_loop_reretrieve_k_boost: 2.0
 Agentic_loop_reretrieve_n_results: 5

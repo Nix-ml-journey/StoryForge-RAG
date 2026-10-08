@@ -28,6 +28,7 @@ from storyforge.rag.length_profile import (
 )
 from storyforge.rag.length_profile import sentence_count as _sentence_count
 from storyforge.rag.length_profile import split_section_bodies as _split_section_bodies
+from storyforge.rag.section_rules import trim_overlong, without_sentence_starts
 
 LOG = logging.getLogger(__name__)
 
@@ -263,7 +264,7 @@ def _sections_below_min_sentences(story: str, *, min_sentences: int) -> dict[int
 
 def _apply_attribution_gate(story: str, facts: tuple, cfg: dict[str, Any]) -> str:
     """Log (or optionally truncate) names not present in grounded facts."""
-    story_body_for_check = re.sub(r"^\[SECTION \d+:.*?\]\s*", "", story, flags=re.MULTILINE)
+    story_body_for_check = without_sentence_starts(re.sub(r"^\[SECTION \d+:.*?\]\s*", "", story, flags=re.MULTILINE))
     violations = attribution_violations(story=story_body_for_check, facts=facts)
     if not violations:
         return story
@@ -345,6 +346,7 @@ def _generate_sectioned(
     headers: tuple[str, ...] = _SECTION_HEADERS,
     prompts: Optional[dict[str, str]] = None,
     roles: tuple[str, ...] = (),
+    rewrite_sections: Optional[frozenset[int]] = None,
 ) -> str:
     """Opt-in writer: one short call per section, each with its own word and token budget.
 
@@ -353,7 +355,9 @@ def _generate_sectioned(
 
     A single pass overshoots the length target and can run out of tokens before SECTION 5;
     here the ending always gets its own budget. On a refine, only the missing, short, or
-    over-long sections are rewritten; the rest of ``prior_draft`` is kept.
+    over-long sections are rewritten; the rest of ``prior_draft`` is kept. With ``rewrite_sections`` the
+    caller names exactly which sections to rewrite (rule-driven loop); every other section of
+    ``prior_draft`` is kept as written.
     """
     from storyforge.rag.extraction import _get_generation_prompts
 
@@ -361,8 +365,11 @@ def _generate_sectioned(
     words = profile.words_per_section
     max_words = round(words * 1.3)
     tokens = min(length_token_cap(cfg), math.ceil(words * _SECTION_OVERSHOOT * 1.35 * 1.3))
-    bodies = _sections_to_write(prior_draft, profile)
-    if prior_draft and len(bodies) == len(headers):
+    if prior_draft and rewrite_sections is not None:
+        bodies = {i: b for i, b in _split_section_bodies(prior_draft).items() if 1 <= i <= len(headers) and i not in rewrite_sections}
+    else:
+        bodies = _sections_to_write(prior_draft, profile)
+    if prior_draft and rewrite_sections is None and len(bodies) == len(headers):
         bodies = {}  # nothing structural to fix: rewrite everything using the reviewer feedback
     feedback_block = f"- Reviewer feedback to address: {feedback.strip()}" if feedback and feedback.strip() else ""
     last = len(headers)
@@ -411,27 +418,28 @@ def generate_from_facts(
     max_new_tokens: Optional[int] = None,
     length: Any = None,
     profile: Optional[LengthProfile] = None,
+    rewrite_sections: Optional[frozenset[int]] = None,
 ) -> str:
     """Step 3: write or refine a 5-section story from grounded facts."""
     profile = profile or resolve_length_profile(cfg, length=length, mode=mode)
     formatted_facts = format_facts_for_prompt(parsed)
     facts_for_prompt = formatted_facts if formatted_facts else grounded_raw
 
-    if str(cfg.get("Story_generation_method") or "5w1h").strip().lower() == "arc":
+    if str(cfg.get("Story_generation_method") or "arc").strip().lower() == "arc":
         from storyforge.rag.generation_arc import generate_arc
 
         story = generate_arc(
             query, facts_for_prompt, cfg, mode=mode, profile=profile,
-            prior_draft=prior_draft, feedback=refine_feedback,
+            prior_draft=prior_draft, feedback=refine_feedback, rewrite_sections=rewrite_sections,
         )
-        return _apply_attribution_gate(story, parsed.facts, cfg)
+        return _apply_attribution_gate(trim_overlong(story, profile), parsed.facts, cfg)
 
     if str(cfg.get("Story_generation_mode") or "single").strip().lower() == "sectioned":
         story = _generate_sectioned(
             query, facts_for_prompt, cfg, mode=mode, profile=profile,
-            prior_draft=prior_draft, feedback=refine_feedback,
+            prior_draft=prior_draft, feedback=refine_feedback, rewrite_sections=rewrite_sections,
         )
-        return _apply_attribution_gate(story, parsed.facts, cfg)
+        return _apply_attribution_gate(trim_overlong(story, profile), parsed.facts, cfg)
 
     if refine_feedback and prior_draft:
         story_prompt = build_refine_prompt(

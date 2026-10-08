@@ -179,6 +179,7 @@ def decide_action(
         accept_score -= float(cfg.get("Agentic_loop_late_accept_slack", 0.5) or 0.0)
     min_faith = float(cfg.get("Agentic_loop_min_faithfulness") or 6)
     min_facts = int(cfg.get("Agentic_loop_min_facts") or 3)
+    rich_facts = int(cfg.get("Agentic_loop_rich_facts") or 8)
 
     avg = average_score(eval_data)
     faith = criterion_score(eval_data, "faithfulness")
@@ -204,10 +205,11 @@ def decide_action(
         reasons = tuple(completeness.reasons) or ("incomplete",)
         return Decision(REFINE, reasons, avg, faith)
     if faith is not None and faith < min_faith:
-        if iteration == 1 and facts_count >= min_facts:
-            # A 4B judge swings 4 -> 8 on the same facts: give the draft one refine with
-            # the judge's notes before throwing it away. Still low next time -> re-retrieve.
-            return Decision(REFINE, (f"faithfulness {faith} < {min_faith} (refine once first)",), avg, faith)
+        if (iteration == 1 and facts_count >= min_facts) or facts_count >= rich_facts:
+            # A 4B judge swings 4 -> 8 on the same facts, and with plenty of facts the problem is
+            # the writer's invented details, not missing evidence (huntress 17-30 facts, doctor 11-17:
+            # three re-retrieves all stayed at 4.0). Rewrite the offending sections instead.
+            return Decision(REFINE, (f"faithfulness {faith} < {min_faith} (refine unsupported details)",), avg, faith)
         return Decision(RE_RETRIEVE, (f"faithfulness {faith} < {min_faith}",), avg, faith)
 
     # Thin grounding blocks ACCEPT: high scores on 1-3 facts mostly reward invented filler.
@@ -349,6 +351,103 @@ def _iteration_record(
     return rec
 
 
+def _rule_driven_enabled(cfg: dict[str, Any]) -> bool:
+    """Rule-driven loop needs a section-by-section writer (arc, or 5W1H sectioned)."""
+    if str(cfg.get("Agentic_loop_rule_driven") or "").strip().lower() not in ("true", "1", "yes"):
+        return False
+    method = str(cfg.get("Story_generation_method") or "arc").strip().lower()
+    sectioned = str(cfg.get("Story_generation_mode") or "single").strip().lower() == "sectioned"
+    if method == "arc" or sectioned:
+        return True
+    LOG.warning("Agentic_loop_rule_driven needs Story_generation_method 'arc' or mode 'sectioned'; using the judge-driven loop.")
+    return False
+
+
+def _run_rule_driven(
+    query: str, parsed, grounded_raw: str, cfg: dict[str, Any], *, mode, profile,
+    current_query: str, eval_mod, eval_model, retrieval_context: str, chunks,
+) -> "AgenticLoopResult":
+    """ADR-0011 Step 2: write all sections, then rewrite only the sections that fail a rule.
+
+    Rule checks (length, finished sentence, novel names) decide; the judge runs once at the end and
+    only reports a score. At most ``Agentic_loop_rule_rounds`` rewrite rounds (default 2).
+    """
+    from storyforge.rag.attribution import format_facts_for_prompt
+    from storyforge.rag.generation import generate_from_facts
+    from storyforge.rag.section_rules import failure_feedback, section_failures
+
+    rounds = max(0, int(cfg.get("Agentic_loop_rule_rounds", 2) or 0))
+    max_novel = int(cfg.get("Agentic_loop_rule_max_novel_names", 3) or 3)
+    facts_n = len(parsed.facts)
+    iterations: list[dict[str, Any]] = []
+    story = ""
+    failures: dict[int, list[str]] = {}
+    stop_reason = "rules_max_rounds"
+    prior: Optional[str] = None
+    feedback: Optional[str] = None
+    rewrite: Optional[frozenset[int]] = None
+
+    for rnd in range(rounds + 1):
+        try:
+            draft = generate_from_facts(
+                query, parsed, grounded_raw, cfg, mode=mode, profile=profile,
+                refine_feedback=feedback, prior_draft=prior, rewrite_sections=rewrite,
+            )
+        except RuntimeError as e:
+            LOG.warning("Rule loop: generation failed in round %d (%s).", rnd, e)
+            iterations.append(_iteration_record(rnd + 1, "generation_failed", current_query, facts_n, reasons=[str(e)]))
+            stop_reason = "generation_failed" if not story else "generation_failed_using_best_so_far"
+            break
+        new_failures = section_failures(
+            draft, tuple(parsed.facts), profile, max_novel_names=max_novel
+        )
+        if story and len(new_failures) > len(failures):
+            LOG.warning("Rule loop: round %d left more failing sections (%d > %d); keeping the previous draft.",
+                        rnd, len(new_failures), len(failures))
+            iterations.append(_iteration_record(rnd + 1, "rewrite_rejected", current_query, facts_n,
+                                                words=len(story.split()), reasons=["rewrite worsened the draft"]))
+            break
+        story, failures = draft, new_failures
+        comp = completeness_report(story, min_words=profile.min_words,
+                                   min_sentences_per_section=profile.min_sentences_per_section)
+        rec = _iteration_record(
+            rnd + 1, "write" if rnd == 0 else "rewrite", current_query, facts_n, comp=comp,
+            reasons=[f"SECTION {i}: {'; '.join(w)}" for i, w in sorted(failures.items())],
+        )
+        iterations.append(rec)
+        if not failures:
+            stop_reason = "accepted"
+            break
+        prior = story
+        rewrite = frozenset(failures)
+        feedback = failure_feedback(failures, profile.words_per_section)
+
+    eval_data: dict[str, Any] = {}
+    if story and eval_mod is not None:
+        try:
+            eval_data = eval_mod.evaluate_story_text(eval_model, story, facts=format_facts_for_prompt(parsed)) or {}
+        except Exception as e:  # noqa: BLE001 - a judge failure must not discard a finished draft
+            LOG.error("Rule loop: judge failed (%s: %s); score not reported.", type(e).__name__, e)
+    avg = average_score(eval_data) if eval_data else 0.0
+    if iterations:
+        iterations[-1].update(
+            average_score=avg, faithfulness=criterion_score(eval_data, "faithfulness"),
+            scores=eval_data, has_eval=bool(eval_data),
+        )
+    return AgenticLoopResult(
+        content=story,
+        accepted=(stop_reason == "accepted"),
+        stop_reason=stop_reason,
+        iterations=iterations,
+        final_scores=eval_data,
+        final_average=avg,
+        retrieval_context=retrieval_context,
+        grounded_extraction=grounded_raw,
+        grounded_facts=tuple(f.__dict__ for f in parsed.facts),
+        retrieval_chunks=tuple(chunks),
+    )
+
+
 def run_agentic_story_loop(
     query: str,
     *,
@@ -364,6 +463,7 @@ def run_agentic_story_loop(
     from storyforge.rag.generation import generate_from_facts
     from storyforge.rag.length_profile import is_thinking_mode, resolve_length_profile
     from storyforge.rag.retrieval import _docs_to_chunks, _docs_to_context, retrieve_docs
+    from storyforge.rag.section_rules import failure_feedback, section_failures
 
     cfg = cfg or load_config()
 
@@ -437,6 +537,13 @@ def run_agentic_story_loop(
             current_query = reformulate_query(query, parsed, {})
         retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
 
+    if _rule_driven_enabled(cfg):
+        return _run_rule_driven(
+            query, parsed, grounded_raw, cfg, mode=mode, profile=profile, current_query=current_query,
+            eval_mod=eval_mod if has_eval else None, eval_model=eval_model,
+            retrieval_context=retrieval_context, chunks=chunks,
+        )
+
     iterations: list[dict[str, Any]] = []
     best: Optional[dict[str, Any]] = None
     stop_reason = "max_iterations"
@@ -444,7 +551,11 @@ def run_agentic_story_loop(
     refine_feedback: Optional[str] = None
     prior_draft: Optional[str] = None
     refine_max_new: Optional[int] = None
+    rewrite_only: Optional[frozenset[int]] = None
     prev_regressed = False
+    last_action = ""
+    stop_on_stall = str(cfg.get("Agentic_loop_stop_on_no_progress", True)).strip().lower() not in ("false", "0", "no")
+    max_novel = int(cfg.get("Agentic_loop_rule_max_novel_names", 3) or 3)
 
     for i in range(1, max_iter + 1):
         try:
@@ -458,6 +569,7 @@ def run_agentic_story_loop(
                 refine_feedback=refine_feedback,
                 prior_draft=prior_draft,
                 max_new_tokens=refine_max_new,
+                rewrite_sections=rewrite_only,
             )
         except RuntimeError as e:
             # generate_from_facts already retried thinking -> fast once and still
@@ -521,6 +633,7 @@ def run_agentic_story_loop(
         )
 
         candidate = {"story": story, "complete": comp.ok, "avg": decision.avg, "eval_data": eval_data}
+        prior_best_avg = best["avg"] if best else 0.0
         if best is None or (candidate["complete"], candidate["avg"]) > (best["complete"], best["avg"]):
             best = candidate
 
@@ -528,6 +641,18 @@ def run_agentic_story_loop(
             stop_reason = "accepted"
             best = candidate
             break
+
+        if (
+            stop_on_stall and iter_has_eval and i >= 2 and decision.action == REFINE and last_action == REFINE
+            and decision.avg < prior_best_avg + 0.5
+        ):
+            # Two refines in a row that did not beat the best draft: another pass is a coin flip on judge
+            # noise (lawyer: 5.4 -> 4.6 -> 5.0 over 186 s). Keep the best draft and stop.
+            LOG.warning("Agentic loop: refine made no progress (avg %.1f vs best %.1f); stopping.", decision.avg, prior_best_avg)
+            stop_reason = "no_progress"
+            break
+
+        last_action = decision.action
 
         if i == max_iter:
             # "Ran out of iterations with nothing grounded to write from" is a Step 2
@@ -541,12 +666,18 @@ def run_agentic_story_loop(
             n_stories = max(n_stories, reretrieve_n)
             current_query = reformulate_query(query, parsed, eval_data)
             retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
-            refine_feedback = prior_draft = refine_max_new = None
+            refine_feedback = prior_draft = refine_max_new = rewrite_only = None
         else:
             expand = max(100, profile.target_words - comp.word_count) if regressed else 0
             refine_feedback = build_feedback(
                 eval_data, comp, words_per_section=profile.words_per_section, expand_by_words=expand
             )
+            # Name the unsupported details instead of trusting the judge's vague advice, and rewrite only
+            # the sections that carry them.
+            failures = section_failures(story, tuple(parsed.facts), profile, max_novel_names=max_novel)
+            rewrite_only = frozenset(failures) or None
+            if failures:
+                refine_feedback += "\n" + failure_feedback(failures, profile.words_per_section)
             prior_draft = story
             refine_max_new = base_max_tokens + refine_token_boost if not comp.ok else None
 

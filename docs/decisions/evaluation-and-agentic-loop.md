@@ -251,83 +251,86 @@ Verdict: partly agree. The first draft of this record was wrong in three places;
 
 ---
 
-## ADR-0011: Target architecture: pre-flight gate, section-by-section arc writer, rule checks first
+## ADR-0011: Target architecture: pre-flight gate, section-by-section arc writer, judge-driven loop
 
 ### Status
-Proposed (set as the goal on 2026-10-07). Step 1 implemented 2026-10-07, not yet measured; steps 2 and 3 not started.
+Accepted, revised 2026-10-08. Step 1 is the default and measured. Step 2 (rule-driven loop) is built, measured three times, and kept opt-in: it
+is faster but its stories score lower, so the judge-driven loop stays in control.
 
 ### Date
-2026-10-07
+2026-10-07 (set as the goal), revised 2026-10-08.
 
 ### Context
-The 2026-10-07 comparison (ADR-0010) and its review showed where time and quality go on one 16 GB GPU:
-- a full story is written before anyone checks the evidence (scholar: 2000+ words from 0 facts, then a re-retrieve);
-- Step 2 can return 0-3 facts, and a re-retrieve can replace 25 facts with 0 (lawyer, iteration 3);
-- the 4B judge steers the loop but is noisy (the same draft scored 6.2, then 8.0), so decisions and iterations are noise-driven;
+The 2026-10-07 comparison (ADR-0010) showed where time and quality go on one 16 GB GPU:
+- a full story was written before anyone checked the evidence (scholar: 2000+ words from 0 facts, then a re-retrieve);
+- Step 2 could return 0-3 facts, and a re-retrieve could replace 25 facts with 0 (lawyer, iteration 3);
+- the 4B judge steers the loop but is noisy (the same draft scored 6.2, then 8.0);
 - single-pass drafts overshoot the length target and lose SECTION 5; writing section by section fixes that.
 
 ### Decision
-Head toward this flow. Each step is a small change on code that already exists:
+Build on the `arc` writer (now the default `Story_generation_method`) with this flow:
 ```
-Query -> hybrid retrieval -> facts (LLM, extractive fallback)
-      -> GATE: enough facts? no -> widen (tier 1: more results; tier 2: reformulated query)
-                                   merge facts across tiers, re-check, max 2 tiers, then extractive fallback
+Query -> hybrid retrieval -> facts (LLM, extractive top-up)
+      -> GATE: enough facts? no -> widen (tier 1: more results; tier 2: reformulated query), merge facts, max 2 tiers
       -> write sections 1-5 (arc, each sees the story so far)
-      -> rule checks per section: length, complete sentence, names not in the facts
-      -> any fail? yes -> rewrite only those sections (max 2 rounds) -> re-check
-      -> one judge call -> report score
+      -> judge -> ACCEPT | REFINE (rewrite only weak sections) | RE_RETRIEVE (merge facts), max 3 iterations
 ```
-Design rules:
-1. The gate runs before any writing. "Enough" is a fact count and a source-diversity threshold (to be tuned; start from `Agentic_loop_min_facts`).
-2. Widening merges facts; it never replaces them. After two tiers, build extractive facts (chunk id plus a short passage, no LLM) and write anyway.
-3. Accept means the rule checks pass. The judge runs once at the end and only reports a score; it does not steer the loop. Its score stays visible
-   because name checks miss invented events.
-4. Rewrite touches only failing sections (the sectioned refine, which exists).
-
-### What exists and what is new
-- Exists: hybrid retrieval, widening via `k_boost` and `reformulate_query`, the sectioned/arc writer with per-section rewrite, the attribution gate.
-- New: the pre-flight gate, fact merging across tiers, the extractive fallback, per-section rule checks (including novel names), and a loop driven
-  by rules instead of judge scores.
+Rules:
+1. The gate runs before any writing; widening merges facts and never replaces them (`Agentic_loop_min_facts`, `Agentic_loop_preflight_tiers`).
+2. Thin facts are topped up with extractive facts (chunk sentences, no LLM, `Facts_extractive_fallback`).
+3. The judge decides accept/refine/re-retrieve. Its noise is limited by refine-once-first on low faithfulness, a thin-facts block on ACCEPT, and a
+   late accept slack.
+4. Opt-in fast mode: `Agentic_loop_rule_driven: true` replaces the judge with per-section rule checks (`section_rules.py`: missing, unfinished
+   sentence, too few sentences, over/under word budget, names not in the facts), rewrites only failing sections (max 2 rounds), trims over-long
+   sections to whole sentences, and calls the judge once to report a score.
 
 ### Alternatives Considered (and why not)
-- **Arc planner (per-story outline call):** one extra 9B call, it can invent names, and the arc headers are already fixed. Assign facts to sections
-  by rule only if prompt size becomes a measured problem.
-- **Context buffers (summaries between sections):** the writer already passes the full story so far (about 1500 tokens); summaries add calls and lose detail.
+- **Rules as the default controller:** about 2x faster (71-113 s vs 132-155 s per query) but judge average 5.8 vs 7.17 and faithfulness 5.5 vs 6.62
+  in the latest run; rules check shape, not faithfulness, so weak first drafts were accepted.
+- **Lexical grounding score as a faithfulness gate:** tried 2026-10-08; ratios (0.02-0.55) did not track judge faithfulness. Code removed.
+- **Arc planner (per-story outline call):** one extra 9B call, it can invent names, and the arc headers are already fixed.
+- **Context buffers (summaries between sections):** the writer already passes the full story so far (about 1500 tokens).
 - **"Adaptive" judge with several calls:** more noise and more GPU time for no defined gain.
-- **5W1H sub-queries with a categorical matrix:** speculative. Test sub-query retrieval alone with `scripts/retrieval_eval.py` before building it.
-- **Full rewrite:** unnecessary; everything above is incremental.
+- **5W1H sub-queries with a categorical matrix:** speculative. Test sub-query retrieval alone with `scripts/retrieval_eval.py` first.
 
 ### Consequences
-- Roughly 8-12 short 9B calls plus one judge call per story, instead of repeated long drafts plus a judge each time. VRAM is unchanged
-  (9B ~6.6 GB + 4B ~3.3 GB + KV cache, about 11-12 GB). Time per query is an expectation, not a measurement.
-- Thin-evidence queries stop early (before writing) instead of after a full draft.
-- Risk: rule checks accept stories that invent events without new names. Mitigation: report the judge score; compare rule decisions with judge
-  scores on saved drafts before trusting them for control.
+- VRAM unchanged (9B ~6.6 GB + 4B ~3.3 GB + KV cache, about 11-12 GB). The default loop still pays for up to 3 drafts plus 3 judge calls on hard queries.
+- Thin-evidence queries are fixed before writing, not after a full draft.
+- A judge-gated rewrite on top of the rule loop is the open way to get speed without losing quality; not built.
 
-### Plan and acceptance
-1. Gate + fact merging + extractive fallback. Done when scholar-type queries never write from 0-2 facts and a re-retrieve never lowers the fact count.
-2. Per-section rule checks drive the loop (completeness, length, novel names). Done when decisions agree with human reading on saved drafts.
-3. Judge once at the end. Done when judge calls per story drop to 1.
-After each step: `pytest`, `ruff`, `scripts/retrieval_eval.py` (floors top-1 0.80, top-3 0.833, fact coverage 0.733) and
-`scripts/measure_generation_length.py --methods arc` against the 2026-10-07 `arc` run. Because n=8 and one run is noisy, add frozen facts per query
-and 3-5 seeds before claiming a gain (ADR-0010 follow-up).
+### Evidence
+Eight queries per run (`scripts/measure_generation_length.py`), one run each; n=8 and the 4B judge are noisy, so differences under about one judge point
+are not claims.
 
-### Progress
-- **Step 1 (implemented and measured once, 2026-10-07):**
-  - `extractive_facts` and `merge_facts` in `attribution.py`; Step 2 tops up to `Local_grounded_facts_min_facts` facts with extractive facts when the LLM
-    returns too few (`Facts_extractive_fallback`, default on).
-  - Pre-flight gate in the agentic loop (`Agentic_loop_preflight_tiers`, default 2): thin facts widen retrieval, then reformulate the query, before any
-    story is written. Facts are merged across tiers, and an in-loop RE_RETRIEVE now merges too, so the 25 -> 0 drop cannot recur.
-  - Known limit: `retrieval_chunks` in the result lists only the latest retrieval, while merged facts may cite chunks from an earlier one.
-  - **Result (`--methods arc`, 8 queries, one run):** accept 0.88 (7/8) vs 0.62 for the earlier `arc` run; average iterations 2.0 (unchanged);
-    average words 1829 (target 1500, under-min 0.0); average 122.0 s (was ~123 s); 8/8 generations succeeded.
-  - Per query: 4 accepted on iteration 1 (scientist, goblin, lawyer, warrior; 58-100 s), 3 accepted on iteration 3 (scholar, doctor, whispering),
-    huntress hit `max_iterations`.
-  - Scholar: Step 2 returned `no_json` / `no_facts`; the extractive top-up supplied 6 facts and the story was accepted on iteration 3. This is the
-    clearest effect of Step 1.
-  - Huntress still stalls: faithfulness 4.0 on all three iterations despite 20-30 facts. Thin facts are not the cause; suspect judge noise or content
-    drift, which Steps 2-3 (rule checks, judge reports only) are meant to address.
-  - Caveats: n=8, a single run, `arc` only (no 5w1h comparison re-run), and the 4B judge is noisy (same text scored 6.2 then 8.0). Treat 0.62 -> 0.88
-    as encouraging, not proven. Reporting note: `final_average` comes from the best draft while `final_faithfulness` comes from the last iteration
-    (e.g. doctor shows average 6.8 with faithfulness 9.0), so the two columns are not a matched pair; not yet fixed.
-  - Next: Step 2 (per-section rule checks drive the loop) once confirmed; optionally repeat Step 1 with 3 seeds first to size the noise.
+| Run | Accept | Iterations | Seconds | Judge avg / faithfulness |
+|---|---|---|---|---|
+| `arc`, before Step 1 | 0.62 | 2.0 | 123 | - |
+| `arc`, Step 1 | 0.88 | 2.0 | 122 | - |
+| `arc` (2026-10-08 compare) | 0.62 | 2.0 | 155 | 7.17 / 6.62 |
+| `arc-rules`, three runs | 1.0, 0.62, 0.88 | 2.38, 2.5, 1.25 | 87, 113, 71 | 6.53 / 6.0 (run 1), 5.8 / 5.5 (run 3) |
+
+- Step 1 (gate, merging, extractive top-up): scholar went from stalling to accepted after the top-up supplied 6 facts. Huntress still stalls at
+  faithfulness 4 with 20-30 facts, so thin facts are not the whole story.
+- Step 2 fixes found from saved rounds: sentence-initial words (Every, Now, They) were counted as names, and rewriting an over-long section did not
+  shorten it (486 -> 498 words vs a 300 budget); now skipped and trimmed.
+- Reporting bug, not fixed: the report's `final_average` is from the best draft but `final_faithfulness` is from the last iteration.
+- Known limit: `retrieval_chunks` lists only the latest retrieval while merged facts may cite earlier chunks.
+
+### Changes after the 2026-10-08 runs (not yet measured)
+- Over-long sections are trimmed to whole sentences (1.5x budget) in the writer for `arc` and sectioned output; the attribution check skips
+  sentence-initial words.
+- Stalls (huntress 17-30 facts, doctor 11-17: faithfulness 4.0 on every draft, even after re-retrieves with more facts): low faithfulness with at least
+  `Agentic_loop_rich_facts` (8) facts now REFINEs instead of RE_RETRIEVE. The refine feedback names the unsupported names per section
+  (`section_failures`) and rewrites only those sections. Whispering (6 facts, faithfulness 2.0 -> 9.0 after re-retrieval) still re-retrieves.
+- `Agentic_loop_stop_on_no_progress` (default on): two REFINEs in a row that do not beat the best draft by 0.5 stop the loop with
+  `stop_reason: no_progress` (lawyer: 5.4 -> 4.6 -> 5.0 over 186 s).
+- Measure script: `--repeat N` (mean +/- spread over runs), per-run judge averages, and `final_faithfulness` now comes from the returned draft
+  (the old last-iteration value is `last_iteration_faithfulness`). Facts and stories are only saved because the script now runs with `debug=True`.
+- To check: `--methods arc --repeat 3`; compare accept, seconds, judge average and faithfulness with the `arc` row above; huntress, doctor and lawyer
+  should stop earlier or reach faithfulness >= 6.
+
+### Next
+1. Measure the changes above with `--repeat 3`.
+2. Look at the `max_iterations` stalls (lawyer, huntress, doctor) with saved stories and facts.
+3. Repeat `arc` over 3-5 seeds with frozen facts before claiming any gain (ADR-0010 follow-up).
+After each change: `pytest`, `ruff`, `scripts/retrieval_eval.py` (floors top-1 0.80, top-3 0.833, fact coverage 0.733).

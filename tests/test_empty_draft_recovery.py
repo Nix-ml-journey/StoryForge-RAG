@@ -28,6 +28,7 @@ def _auto_stub(stub_heavy_deps):
 def _cfg(**overrides) -> dict:
     base = {
         "Generation_provider": "ollama",
+        "Story_generation_method": "5w1h",
         "Generative_model": "qwen3.5:9b",
         "Ollama_base_url": "http://localhost:11434",
         "Generation_fast_temperature": 0.4,

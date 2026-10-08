@@ -178,7 +178,7 @@ Streaming uses the same length guidance in the prompt. It cannot retry mid-strea
 | `Ollama_evaluation_model` | Optional judge model for `ollama` mode (default: `Generative_model`); `qwen3.5:4b` recommended |
 | `Facts_extractive_fallback` | `true` (default): when Step 2 returns fewer than `Local_grounded_facts_min_facts` facts, top up with extractive facts from the chunks (no LLM; ADR-0011) |
 | `Agentic_loop_preflight_tiers` | Pre-flight gate: widen retrieval (tier 1) and reformulate the query (tier 2) before writing when facts < `Agentic_loop_min_facts`; facts are merged, never replaced (default 2; 0 = off) |
-| `Story_generation_method` | `5w1h` (default) or `arc` (story-arc outline with its own prompt set `generation_arc`, always sectioned; see ADR-0010). Compare with `measure_generation_length.py --methods 5w1h 5w1h-sectioned arc` |
+| `Story_generation_method` | `arc` (default; story-arc outline with its own prompt set `generation_arc`, always sectioned; see ADR-0010) or `5w1h` (older outline). Compare with `measure_generation_length.py --methods 5w1h 5w1h-sectioned arc` |
 | `Story_generation_mode` | `single` (default, one call per draft) or `sectioned` (opt-in, one short call per section with its own word/token budget; refines rewrite only the weak sections; see ADR-0009) |
 | `Hybrid_bm25_pool` | BM25 candidates taken from the whole collection and added to the rerank pool (default 0 = off; 12 tested and rejected, see ADR-0002) |
 | `Agentic_loop_late_accept_slack` | From iteration 2, accept a complete grounded draft this far below `Agentic_loop_accept_score` (default 0.5) |

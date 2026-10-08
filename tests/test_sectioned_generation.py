@@ -37,7 +37,7 @@ class _Scripted:
         return _L()
 
 
-def _run(replies, **kw):
+def _run(replies, cfg_extra=None, **kw):
     from storyforge.rag import generation
 
     llm = _Scripted(replies)
@@ -45,7 +45,7 @@ def _run(replies, **kw):
     with patch.object(generation, "_load_generation_llm", side_effect=llm), \
          patch.object(generation, "_apply_attribution_gate", side_effect=lambda s, *a, **k: s):
         story = generation.generate_from_facts(
-            "q", ParsedFacts(facts=(), raw={}), "1. [who] Alana", CFG, mode="fast", profile=profile, **kw
+            "q", ParsedFacts(facts=(), raw={}), "1. [who] Alana", {**CFG, **(cfg_extra or {})}, mode="fast", profile=profile, **kw
         )
     return story, llm, profile
 
@@ -97,7 +97,7 @@ def test_default_mode_is_single_pass(monkeypatch):
     monkeypatch.setattr(generation, "_generate_sectioned", lambda *a, **k: called.append(1) or "x")
     monkeypatch.setattr(generation, "_invoke_nonempty", lambda *a, **k: "single")
     monkeypatch.setattr(generation, "_apply_attribution_gate", lambda s, *a, **k: s)
-    out = generation.generate_from_facts("q", ParsedFacts(facts=(), raw={}), "", {"Generation_provider": "ollama"}, mode="fast")
+    out = generation.generate_from_facts("q", ParsedFacts(facts=(), raw={}), "", {"Generation_provider": "ollama", "Story_generation_method": "5w1h"}, mode="fast")
     assert out == "single" and not called
 
 
@@ -139,8 +139,8 @@ def test_arc_refine_rewrites_only_weak_sections():
     assert len(llm.prompts) == 2 and "[SECTION 4: CLIMAX" in llm.prompts[0]
 
 
-def test_5w1h_stays_the_default_method():
-    story, _, _ = _run([_body() for _ in range(5)])
+def test_5w1h_still_selectable():
+    story, _, _ = _run([_body() for _ in range(5)], cfg_extra={"Story_generation_method": "5w1h"})
     assert "WHO, WHERE, WHEN" in story and "SETUP (The Ordinary World)" not in story
 
 
@@ -152,3 +152,12 @@ def test_arc_prompt_set_matches_the_section_placeholders():
     needed = ("{query}", "{grounded_facts}", "{story_so_far}", "{header}", "{role}", "{words}",
               "{max_words}", "{min_sentences}", "{ending_rule}", "{feedback_block}")
     assert all(p in arc["section_user"] for p in needed)
+
+
+def test_rewrite_sections_rewrites_exactly_the_named_sections():
+    from storyforge.rag.generation import _SECTION_HEADERS
+
+    prior = "\n\n".join(f"{h}\n{_body()}" for h in _SECTION_HEADERS)  # all five look fine
+    story, llm, _ = _run(["A fresh third section. " + _body(5)], prior_draft=prior, refine_feedback="x", rewrite_sections=frozenset({3}))
+    assert len(llm.prompts) == 1
+    assert "A fresh third section." in story and story.count(SENTENCE) >= 20
