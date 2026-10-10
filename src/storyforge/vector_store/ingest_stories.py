@@ -13,12 +13,14 @@ from typing import Iterable, Optional
 from storyforge.config.config import load_config
 
 from storyforge.vector_store.chromadb import get_or_create_collection
+from storyforge._load_lock import serialized
 
 LOG = logging.getLogger(__name__)
 
 _EMBED_MODEL_CACHE: dict = {}  # model_name -> SentenceTransformer
 
 
+@serialized
 def _get_embed_model(model_name: str):
     """Cached embedding model — must match langchain_rag retrieval vectors."""
     if model_name in _EMBED_MODEL_CACHE:
@@ -39,11 +41,10 @@ def _get_embed_model(model_name: str):
         return None
 
 
-def _embed_chunks(model, texts: list[str], *, is_bge: bool = False) -> list[list[float]] | None:
+def _embed_chunks(model, texts: list[str]) -> list[list[float]] | None:
     """Embed a list of texts. Returns None when the model is unavailable.
 
-    ``is_bge`` is accepted for call-site compatibility but no longer changes
-    encoding: BGE's documented recipe (BAAI/bge-base-en-v1.5) only prefixes
+    BGE's documented recipe (BAAI/bge-base-en-v1.5) only prefixes
     the *query* side ("Represent this sentence for searching relevant
     passages: ", applied at search time -- see
     storyforge.vector_store.embeddings.QUERY_PREFIX). Passages/documents are
@@ -290,7 +291,6 @@ def ingest_stories_dir(
 
         # Same embedding model as langchain_rag (required for BGE / non-default models).
         embed_model_name = str(cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5")
-        is_bge = "bge" in embed_model_name.lower()
         embed_model = _get_embed_model(embed_model_name)
         if embed_model is not None:
             LOG.info("Ingest using embedding model: %s", embed_model_name)
@@ -346,7 +346,7 @@ def ingest_stories_dir(
                 )
                 documents.append(row["text"])
 
-            embeddings = _embed_chunks(embed_model, documents, is_bge=is_bge)
+            embeddings = _embed_chunks(embed_model, documents)
             if embeddings is not None:
                 collection.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=documents)
             else:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Optional, Protocol
+from storyforge._load_lock import serialized
 
 _OLLAMA_LLM_CACHE: dict[tuple, Any] = {}
 
@@ -89,6 +90,7 @@ def build_chat_ollama(
     )
 
 
+@serialized
 def load_ollama_llm(
     cfg: dict[str, Any],
     *,

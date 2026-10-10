@@ -38,15 +38,15 @@ Tests use temporary directories and do not require GPU, Chroma data, or live API
 | Embeddings | `BAAI/bge-base-en-v1.5` | 768-dim, local; CPU by default (`Embedding_device`) |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | After Chroma, before Step 2 |
 | Hybrid search | BM25 + dense (RRF) | On via `Hybrid_search_enabled`; needs `rank-bm25` from `requirements.txt` |
-| Step 2 facts | `Qwen/Qwen3-8B` (HF API) | Retry + optional JSON mode; local Ollama fallback |
-| Step 3 story | `qwen3.5:9b` (Ollama) | Also supports vLLM or Transformers |
-| Evaluation | HF 7B → Gemini fallback | Used by the agentic loop; `Evaluation_mode: "ollama"` judges with local Ollama instead (no API fallback) |
+| Step 2 facts | `qwen3.5:9b` (Ollama, `Grounded_facts_provider: "local"` in the example config) | Schema-constrained JSON plus an extractive top-up. `"hf"` uses `Qwen/Qwen3-8B` via the HF API with a local fallback |
+| Step 3 story | `qwen3.5:9b` (Ollama) | `arc` method: five sections, one call each. Also supports vLLM or Transformers |
+| Evaluation | `qwen3.5:4b` (Ollama, `Evaluation_mode: "ollama"` in the example config) | Judge for the agentic loop; no API fallback. `Evaluation_mode: "api"` uses HF → Gemini |
 
 ## Grounded story generation
 
 1. **Step 1 — Retrieval:** Chroma search (+ hybrid BM25 + reranker). Order is dense -> BM25 fusion (RRF) -> cross-encoder rerank of the whole pool -> title diversity (up to `n_stories` titles x `chunks_per_story`, then backfilled in rerank order up to `Story_generation_n_results`, so the final set can span more than 3 titles). Chunk count is controlled by `Story_generation_n_results` (default 10).
 2. **Step 2 — Grounded extraction:** HF API extracts JSON facts from retrieved chunks. Retries on transient API errors; falls back to local generation (Ollama / vLLM / Transformers, matching `Generation_provider`) if HF is down. Fact-token budget is `HF_grounded_facts_max_new_tokens` (3200 in `setup.example.yaml`; 1600 truncated the JSON on real 10-chunk pools).
-3. **Step 3 — Generation:** One pass from grounded facts into a 5-section story. A length guard may run one refine pass when the draft is too short.
+3. **Step 3 — Generation:** Grounded facts into a 5-section story. The default `arc` method writes one section per call (setup, inciting incident, rising action, climax, resolution); `5w1h` is the older outline. A length guard may run one refine pass when the draft is too short. Before writing, the agentic loop runs a pre-flight gate that widens retrieval and merges facts when too few were found ([ADR-0011](decisions/evaluation-and-agentic-loop.md)).
 
 If extraction returns no usable facts, Step 3 is prompted with the raw (unparsed) extraction text instead of the numbered fact list (`generation.py`, `generate_from_facts`). Retrieved chunks are never pasted into the Step 3 prompt, so that draft is effectively ungrounded -- the agentic loop will not ACCEPT it (it re-retrieves instead), with or without an evaluator.
 
@@ -98,6 +98,8 @@ When `Agentic_loop_enabled: true`:
 - **ACCEPT** when scores + completeness pass (completeness uses the resolved length target)
 
 The judge receives the grounded facts, so its faithfulness score checks the story against them. See [ADR-0006](decisions/evaluation-and-agentic-loop.md).
+
+Since ADR-0007 to ADR-0011 the loop also: blocks ACCEPT on thin facts; REFINEs (rewriting only the sections with unsupported details) instead of re-retrieving when faithfulness is low but facts are plentiful (`Agentic_loop_rich_facts`); and stops early on `no_progress` after two refines that do not beat the best draft. `Agentic_loop_rule_driven: true` swaps the judge for per-section rule checks (about 2x faster, lower judge scores; opt-in).
 
 Minimum word count and minimum sentences per section are **no longer hardcoded** in config. They come from the length profile.
 

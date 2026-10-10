@@ -16,6 +16,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 
+from storyforge._load_lock import serialized
 from storyforge.vector_store.embeddings import QUERY_PREFIX
 
 LOG = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ def _resolve_device(requested: str) -> str:
     return device
 
 
+@serialized
 def _get_reranker(model_id: str, device: str = _DEFAULT_DEVICE):
     """Load (or return cached) a cross-encoder reranker on `device` (default cpu)."""
     device = _resolve_device(device)
@@ -93,6 +95,7 @@ def _get_paths_and_names(cfg: dict[str, Any]):
     return chroma_dir, str(collection), str(embed_model)
 
 
+@serialized
 def _build_vectorstore(cfg: dict[str, Any]) -> Chroma:
     chroma_dir, collection, embed_model = _get_paths_and_names(cfg)
     device = _resolve_device(str(cfg.get("Embedding_device") or _DEFAULT_DEVICE))
@@ -368,7 +371,7 @@ def retrieve_docs(
             search_kwargs["filter"] = filter_metadata
         docs = vectorstore.as_retriever(search_kwargs=search_kwargs).invoke(query)
 
-    hybrid_on = str(cfg.get("Hybrid_search_enabled") or "").strip().lower() not in ("false", "0", "no", "")
+    hybrid_on = str(cfg.get("Hybrid_search_enabled", True)).strip().lower() not in ("false", "0", "no", "")
     if hybrid_on and docs:
         bm25_weight = float(cfg.get("Hybrid_bm25_weight") or 0.3)
         # Lexical candidates from the WHOLE corpus (not just the dense pool): these
@@ -397,7 +400,7 @@ def retrieve_docs(
     # diversity then picks its titles from that better-ordered list. See
     # docs/PROJECT_JOURNEY.md for the retrieval_eval cases this targets.
     if use_reranker is None:
-        reranker_on = str(cfg.get("Reranker_enabled") or "").strip().lower() not in ("false", "0", "no", "")
+        reranker_on = str(cfg.get("Reranker_enabled", True)).strip().lower() not in ("false", "0", "no", "")
     else:
         reranker_on = bool(use_reranker)
     if reranker_on and docs:

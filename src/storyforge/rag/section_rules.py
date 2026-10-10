@@ -10,8 +10,8 @@ import re
 from storyforge.rag.attribution import attribution_violations
 from storyforge.rag.length_profile import LengthProfile, sentence_count, split_section_bodies
 
-_TERMINAL = ('.', '!', '?', '"', "”", "’", "'")
-_OVER = 1.6   # a section may run this far over its word budget
+TERMINAL = ('.', '!', '?', '"', "\u201d", "\u2019", "'")
+OVERSHOOT = 1.6  # a section may run this far over its word budget
 _UNDER = 0.5  # ... and must reach this share of it
 _SECTIONS = 5
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
@@ -61,11 +61,11 @@ def section_failures(
             failures[i] = ["missing"]
             continue
         words = len(body.split())
-        if not body.endswith(_TERMINAL):
+        if not body.endswith(TERMINAL):
             why.append("does not end on a finished sentence")
         if sentence_count(body) < profile.min_sentences_per_section:
             why.append(f"only {sentence_count(body)} sentences (need {profile.min_sentences_per_section})")
-        if words > _OVER * budget:
+        if words > OVERSHOOT * budget:
             why.append(f"{words} words, over the {budget}-word budget")
         elif words < _UNDER * budget:
             why.append(f"{words} words, under the {budget}-word budget")

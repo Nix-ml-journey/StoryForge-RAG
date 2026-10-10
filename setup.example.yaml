@@ -135,9 +135,9 @@ Single_pass_refine_max_tokens: 3600
 # section, each with its own word/token budget, so SECTION 5 always gets written and refines
 # rewrite only the missing/short/over-long sections. Compare both with measure_generation_length.py.
 Story_generation_mode: "single"
-# Which outline/prompt set writes the story: "5w1h" (default: WHO/WHAT/TWIST/HOW/WHY, prompts under
+# Which outline/prompt set writes the story: "5w1h" (older: WHO/WHAT/TWIST/HOW/WHY, prompts under
 # `generation:`) or "arc" (setup/inciting incident/rising action/climax/resolution, always sectioned,
-# prompts under `generation_arc:`). Compare with: measure_generation_length.py --methods 5w1h arc
+# prompts under `generation_arc:`; the default). Compare with: measure_generation_length.py --methods 5w1h arc
 Story_generation_method: "arc"
 
 ## Story length target

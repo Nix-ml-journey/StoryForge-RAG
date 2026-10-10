@@ -219,14 +219,14 @@ def test_reformulate_query_appends_entities():
         '{"facts":[{"type":"who","fact":"Alana fights Zoruk","source_chunk_ids":["c1"]},'
         '{"type":"where","fact":"In Eldoria","source_chunk_ids":["c2"]}]}'
     )
-    out = reformulate_query("the duel", parsed, {})
+    out = reformulate_query("the duel", parsed)
     assert out.startswith("the duel")
     assert "Alana" in out or "Zoruk" in out or "Eldoria" in out
 
 
 def test_reformulate_query_unchanged_without_entities():
     parsed = parse_grounded_facts_json("{}")
-    assert reformulate_query("the duel", parsed, {}) == "the duel"
+    assert reformulate_query("the duel", parsed) == "the duel"
 
 
 # ---------------------------------------------------------------------------
@@ -278,8 +278,7 @@ def test_generation_failure_on_first_iteration_stops_gracefully(stub_heavy_deps,
 
     cfg = {"Agentic_loop_max_iterations": 3}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, debug=False
-    )
+        "a test query", cfg=cfg)
 
     assert result.content == ""
     assert result.accepted is False
@@ -314,8 +313,7 @@ def test_generation_failure_after_partial_progress_keeps_best_draft(stub_heavy_d
 
     cfg = {"Agentic_loop_max_iterations": 3}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, debug=False
-    )
+        "a test query", cfg=cfg)
 
     assert result.content == first_draft
     assert result.accepted is False
@@ -348,8 +346,7 @@ def test_no_eval_zero_facts_complete_draft_is_never_accepted(stub_heavy_deps, mo
 
     cfg = {"Agentic_loop_max_iterations": 2, "Story_length_presets": {"short": 100}}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, length="short", debug=False
-    )
+        "a test query", cfg=cfg, length="short")
 
     assert result.accepted is False
     assert result.stop_reason == "max_iterations_no_grounded_facts"
@@ -375,8 +372,7 @@ def test_no_eval_with_facts_complete_draft_accepts(stub_heavy_deps, monkeypatch)
 
     cfg = {"Agentic_loop_max_iterations": 2, "Story_length_presets": {"short": 100}}
     result = run_agentic_story_loop(
-        "a test query", cfg=cfg, length="short", debug=False
-    )
+        "a test query", cfg=cfg, length="short")
 
     assert result.accepted is True
     assert result.stop_reason == "accepted"
@@ -449,7 +445,7 @@ def test_loop_expands_after_rejected_refine_then_stops_if_rejected_again(stub_he
         return full if len(seen) == 1 else short
 
     monkeypatch.setattr(generation_mod, "generate_from_facts", _gen)
-    result = run_agentic_story_loop("q", cfg={"Agentic_loop_max_iterations": 5, "Agentic_loop_min_facts": 1}, debug=False)
+    result = run_agentic_story_loop("q", cfg={"Agentic_loop_max_iterations": 5, "Agentic_loop_min_facts": 1})
 
     assert result.content == full
     assert result.stop_reason == "refine_rejected"
@@ -490,7 +486,7 @@ def test_preflight_gate_widens_retrieval_and_merges_facts_before_writing(stub_he
     seen_facts = []
     monkeypatch.setattr(generation_mod, "generate_from_facts", lambda q, parsed, raw, cfg, **k: seen_facts.append(len(parsed.facts)) or _complete_multi_sentence_story())
 
-    result = run_agentic_story_loop("q", cfg={"Agentic_loop_min_facts": 4, "Agentic_loop_max_iterations": 2}, debug=False)
+    result = run_agentic_story_loop("q", cfg={"Agentic_loop_min_facts": 4, "Agentic_loop_max_iterations": 2})
 
     assert len(retrieve_calls) == 2 and retrieve_calls[1] > retrieve_calls[0]  # widened once, then enough facts
     assert seen_facts[0] == 4  # the first draft is written from the merged facts, not the thin first pass
@@ -551,3 +547,34 @@ def test_refine_names_unsupported_details_and_rewrites_only_those_sections(stub_
     assert calls[0].get("rewrite_sections") is None
     assert calls[1]["rewrite_sections"] == frozenset({2})
     assert "SECTION 2" in calls[1]["refine_feedback"] and "Quillon" in calls[1]["refine_feedback"]
+
+
+def test_zero_threshold_is_honoured_not_replaced_by_default():
+    from storyforge.rag.agentic_loop import _num
+
+    assert _num({"k": 0}, "k", 6.0) == 0.0
+    assert _num({}, "k", 6.0) == 6.0 and _num({"k": ""}, "k", 6.0) == 6.0 and _num({"k": "2"}, "k", 6.0) == 2.0
+
+
+def test_re_retrieve_failure_keeps_the_draft_already_written(stub_heavy_deps, monkeypatch):
+    from storyforge.rag.agentic_loop import run_agentic_story_loop
+    import storyforge.rag.generation as generation_mod
+    import storyforge.rag.retrieval as retrieval_mod
+
+    _fake_docs_chain(monkeypatch, facts_json='{"facts":[]}')  # zero facts -> iteration 1 asks to RE_RETRIEVE
+    calls = {"n": 0}
+
+    def _retrieve(*a, **k):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("chroma went away")
+        return ["doc"]
+
+    monkeypatch.setattr(retrieval_mod, "retrieve_docs", _retrieve)
+    monkeypatch.setattr(generation_mod, "generate_from_facts", lambda *a, **k: "draft one")
+
+    result = run_agentic_story_loop("q", cfg={"Agentic_loop_max_iterations": 3, "Agentic_loop_preflight_tiers": 0})
+
+    assert result.content == "draft one"
+    assert result.stop_reason == "retrieval_failed_using_best_so_far"
+    assert result.iterations[-1]["action"] == "retrieval_failed"

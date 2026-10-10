@@ -164,8 +164,7 @@ token limit, and refines that could not repair a cut-off draft. One long loop fu
 2. `agentic_loop.py`: `_iteration_record` replaces three copies of the iteration dict, and one `retrieve_and_extract`
    closure replaces the duplicated retrieve/extract block.
 3. `Story_generation_mode: "sectioned"` (default `single`): `generate_from_facts` writes five short calls, each with a
-   word budget and token cap, seeing the sections already written. A refine keeps sections that are present, long enough
-   and not over 1.6x budget, and rewrites only the rest (all five if none is structurally wrong). `_invoke_nonempty`
+   word budget and token cap, seeing the sections already written. A refine keeps sections that are present and long enough (since 2026-10-09 over-long ones are kept too and trimmed to whole sentences upstream; see ADR-0011), and rewrites only the rest (all five if none is structurally wrong). `_invoke_nonempty`
    unifies the empty-draft retry. The SSE streaming route still uses the single-pass prompt.
 
 ### Alternatives Considered
@@ -182,7 +181,7 @@ token limit, and refines that could not repair a cut-off draft. One long loop fu
 ## ADR-0010: Story-arc generation method alongside 5W1H (for A/B comparison)
 
 ### Status
-Accepted (implemented 2026-10-07; measured 2026-10-07; a second-model review found the ranking not supported at n=8, so the default stays `5w1h`; see Result and Review)
+Accepted (implemented 2026-10-07; measured 2026-10-07; a second-model review found the ranking not supported at n=8, so the default stayed `5w1h` at the time; ADR-0011 later made `arc` the default; see Result and Review)
 
 ### Context
 ADR-0009 added a sectioned writer, but it still used the 5W1H outline, so a comparison against the single-pass baseline
@@ -328,6 +327,57 @@ are not claims.
   (the old last-iteration value is `last_iteration_faithfulness`). Facts and stories are only saved because the script now runs with `debug=True`.
 - To check: `--methods arc --repeat 3`; compare accept, seconds, judge average and faithfulness with the `arc` row above; huntress, doctor and lawyer
   should stop earlier or reach faithfulness >= 6.
+
+### Result of the stall changes (`--methods arc --repeat 3`, 24 stories, 2026-10-08)
+- accept 0.46 +/- 0.11, 1.67 iterations, 100 s, judge average 6.54 +/- 0.18, faithfulness 5.63 +/- 0.20. Stop reasons: 11 accepted, 12 `no_progress`, 1 max_iterations.
+  Time fell from ~155 s, but accept did not improve (0.62 earlier, n=8), so the changes saved time, not quality.
+- Outcomes are per query, not random: scholar, scientist and warrior were accepted on the first draft in 3/3 runs; huntress, doctor and goblin
+  stopped on `no_progress` in 3/3; whispering and lawyer flipped. 10 of 24 stories were accepted on the first draft; of the 14 that went on, a refine pass rescued
+  only 1 of 14 (the loop's later iterations mostly cost 40-60 s each for nothing).
+- Hypothesis "unsupported names cause low faithfulness" is not supported: names missing from the facts show no relationship with faithfulness
+  (sentence starts skipped: 1.8 for faithfulness < 6 vs 2.5 for >= 6; counting sentence starts: 18.8 vs 17.2, the opposite direction; goblin had 0-1).
+  The differences are small against the spread, so read it as 'no evidence', not 'fewer'. The name feedback does not target the cause for these queries.
+- Observed, not explained: stories scoring faithfulness < 6 had more facts (mean 13.7 vs 7.6; accepted queries had 6-9 facts). Within one query the
+  score still swings (lawyer 9 / 4 / 4, doctor 2 / 6 / 2), so judge noise and fact count are confounded.
+- Next measurement: `scripts/rejudge_saved.py` re-scores the saved stories several times, with the full facts and with the first 8 only. It separates
+  judge noise (same story, different scores) from writer variance, and tests whether a long facts block hurts the 4B judge.
+
+### Judge re-scoring of the saved stories (`scripts/rejudge_saved.py`, 24 stories x 3 calls x 2 fact sets, 2026-10-08)
+- Mean faithfulness 5.62 with all facts vs 5.42 with the first 8 only: a long facts block is not what hurts the judge.
+- Repeat calls on the same story agree most of the time (mean spread 0.42 full, 0.12 capped). The judge's faithfulness uses only four values
+  (2, 4, 6, 9), so a flip moves 2-3 points, and flips happen near the boundaries (scientist 6/6/9, whispering 6/9/9, lawyer 4/6/4).
+- The in-loop score disagreed with the re-score (median of 3) by 2-3 points on 8 of 24 stories, and matched on the other 16. A single in-loop
+  score at the min-faithfulness threshold (6) therefore decides accept or reject partly by chance.
+- Always-failing queries are stably low on re-scoring (huntress 2-4, goblin 2-4, doctor 4): the writer's drafts for those queries really score low;
+  the judge is not inventing it. Whispering and lawyer are borderline queries.
+- Reading: the earlier "judge noise" was mostly a coarse scalar plus boundary flips, not random scores. The judge says how bad but not where, which
+  is why refine (generic suggestions) rescues so few drafts.
+- Candidate next step (experiment script written, not yet run): `scripts/audit_saved.py`. A claim audit instead of a scalar, where the judge lists the sentences not supported by the facts, faithfulness
+  comes from the count, and the refine rewrites exactly those sections quoting those sentences. Go/no-go on the saved stories: >= 80% of listed sentences occur verbatim in the story, stories scored < 6 get clearly more listed sentences than those >= 6, and the count moves <= 1 between repeats. Only then wire it into the loop.
+
+- **Claim audit, first run (`scripts/audit_saved.py`, 24 stories x 2 audits, 2026-10-09):** 94% of 124 listed sentences appear verbatim in the story (PASS, need >= 80%);
+  stories with faithfulness < 6 had 4.0 flagged sentences on average vs 1.4 for >= 6 (PASS; correlation -0.58); the count was identical on both audits for 17/24 stories
+  and within 1 for 19/24, but one story moved by 4 (FAIL on the strict "<= 1" rule; mean change 0.58). Read by eye, the flags were mixed: wrong names and places
+  were caught (huntress: a fox and a different camp; doctor: an apartment when the patient is elsewhere), while some goblin flags ("contradicts the ring fact")
+  were weak.
+- **Claim audit, second run (3 audits, 2026-10-09): no-go for count-driven control.** Verbatim 95% of 190 (PASS); faithfulness < 6 flagged 4.0 vs 1.3 (PASS, correlation
+  -0.53); but the raw count still moved by up to 5 between audits (18/24 within 1) and keeping only sentences flagged twice in a row did not help (largest change between
+  the two intersections: 6; separation 2.0 vs 0.8). Same 24 stories, same weak goblin flags. The audit is useful to read, not stable enough to accept or reject a draft.
+  Not tested: using the flagged sentences only as refine feedback after the judge has already chosen REFINE.
+- **Prompt review (2026-10-09, prompt-architect rubric, `prompts.yaml`):** changes only where a prompt had a measured gap. (1) Writers (`generation_arc.section_system`
+  and the 5W1H system prompts): the huntress audit samples mixed four protagonists' names from facts retrieved from several stories, so the prompts now say to build one story
+  around one protagonist and drop facts that do not fit, no new animals/rooms/objects/relatives/sub-plots, and the arc section prompt asks to use at least two fitting facts.
+  (2) Judges (`loop_judge`, `with_story`): faithfulness is anchored on counts of unsupported sentences (none / 1-2 / 3-5 / 6-10 / most) instead of "8+ only if", aimed at the
+  2/4/6/9 clustering seen in the re-scoring. (3) `claim_audit`: flag only with a cited fact number or a named new element, and do not flag elaboration. Placeholders and the
+  strings asserted in `tests/test_config.py` are unchanged. Judge scores before and after this change are not comparable; re-score the saved stories with
+  `scripts/rejudge_saved.py` before comparing a new `--repeat 3` run.
+- **Prompt review, round 2 (2026-10-09):** the second pass was a clarity/completeness pass, not a response to a measured gap. Facts extraction (`generation.grounded_facts_*`)
+  states its purpose, asks for stand-alone facts (one claim from one chunk, query-relevant first) and returns `{"facts": []}` when nothing fits. Writer and refine prompts
+  share one priority order (never contradict a fact; add no new names or events; end on a complete sentence; then match the length) and ask for consistent names and roles.
+  `ingest.section_label_*` defines each tag. `loop_judge` suggestions must name the section and quote the sentence start; `with_summary` gives 4 or less for an invented or
+  missing ending. The rubric scores are my estimates, not measurements. The extraction prompt feeds Step 2, so run `scripts/retrieval_eval.py` against its floors first.
+
+- **Audit fixes (2026-10-11, no effect on prompts or scores):** the file-based evaluate/summarise routes only read files inside the story, summary and evaluation output folders (`_safe_output_path`); loop thresholds accept `0` (`Agentic_loop_min_facts`, `_min_faithfulness`, `_accept_score`, `_rich_facts`, `_rule_max_novel_names` used to fall back to their defaults); a failed re-retrieve now stops with `stop_reason: retrieval_failed_using_best_so_far` and keeps the best draft; the unused `debug` and `eval_data` parameters were dropped from the loop. A second pass (same day): `Reranker_enabled` and `Hybrid_search_enabled` now default to on when the key is missing (a missing key used to switch them off silently; `retrieval_eval.py` not re-run yet); the model-loading helpers share one lock (`_load_lock.serialized`) so two threads cannot load the same model twice; the unused `cfg` parameter was dropped from `build_story_prompt` / `build_refine_prompt`.
 
 ### Next
 1. Measure the changes above with `--repeat 3`.

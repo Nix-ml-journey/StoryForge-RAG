@@ -264,7 +264,6 @@ def generate_story_agentic_result(
             mode=mode,
             length=length,
             story_type=story_type or StoryType.MIX,
-            debug=debug,
         )
         content = result.content
         if not content:
@@ -307,9 +306,25 @@ def generate_story_agentic_result(
         return {"success": False, "content": "", "saved": False, "saved_path": None, "timestamp": "", "error": str(e)}
 
 
+def _safe_output_path(path_str: str) -> Path:
+    """Resolve a client-supplied path, allowing only the story / summary / evaluation output folders."""
+    cfg = load_config()
+    base = Path(str(cfg.get("BASE_PATH") or "."))
+    dirs = [str(cfg.get(k) or d) for k, d in (
+        ("Generated_story_output", "Generated_Stories"),
+        ("Generated_summary_output", "Summarized_Stories"),
+        ("Evaluated_stories_output", "data/outputs/evaluated_stories"),
+    )]
+    roots = [(r / d).resolve() for d in dirs for r in (Path("."), base)]
+    path = Path(path_str).resolve()
+    if not any(path.is_relative_to(root) for root in roots):
+        raise ValueError("path must be inside the story, summary or evaluation output folders")
+    return path
+
+
 def generate_summary_result(story_path: str, base_path: str, summary_output_dir: str) -> dict:
     try:
-        path = Path(story_path)
+        path = _safe_output_path(story_path)
         if not path.exists():
             return {
                 "success": False,
@@ -396,6 +411,7 @@ def evaluate_story_text_result(story_text: str) -> dict:
 
 def evaluate_story_file_result(story_path: str, save: bool) -> dict:
     try:
+        story_path = str(_safe_output_path(story_path))
         model = evaluate_model()
         data = evaluate_generated_story(model, story_path)
         if not data:
@@ -410,6 +426,8 @@ def evaluate_story_file_result(story_path: str, save: bool) -> dict:
 
 def evaluate_summary_result(summary_path: str, story_path: Optional[str], save: bool) -> dict:
     try:
+        summary_path = str(_safe_output_path(summary_path))
+        story_path = str(_safe_output_path(story_path)) if story_path else None
         model = evaluate_model()
         data = evaluate_generated_summary(model, summary_path, story_path=story_path)
         if not data:

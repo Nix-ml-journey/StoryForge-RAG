@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Optional
+from storyforge._load_lock import serialized
 
 LOG = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ def is_bge_model(model_name: str) -> bool:
     return "bge" in str(model_name or "").lower()
 
 
+@serialized
 def get_embed_model(model_name: str, device: Optional[str] = None):
     """Load and cache a SentenceTransformer. Defaults to CPU; pass device=\"cuda\" if needed."""
     resolved_device = str(device or _DEFAULT_DEVICE)

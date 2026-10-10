@@ -384,7 +384,6 @@ async def _stream_story_sse(request: GenerateStreamRequest) -> AsyncIterator[str
 
         profile = resolve_length_profile(cfg, length=request.length, mode=mode)
         story_prompt = build_story_prompt(
-            cfg,
             query=request.query,
             facts_for_prompt=facts_for_prompt,
             profile=profile,

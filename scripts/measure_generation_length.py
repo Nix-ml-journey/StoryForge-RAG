@@ -123,6 +123,7 @@ def _run_one(orchestrator: Orchestrator, query: str, *, mode: Gen_mode, length: 
         "stop_reason": res.get("stop_reason"),
         "story": content,  # kept so rules can be calibrated offline against judge scores
         "facts": [f.get("fact") for f in (res.get("grounded_facts") or [])],
+        "grounded_facts": list(res.get("grounded_facts") or []),  # full dicts, so rejudge_saved.py reproduces the judge prompt
         "iterations_run": res.get("iterations_run"),
         "final_average": res.get("final_average"),
         # Both numbers describe the returned (best) draft; the last iteration may be a different draft.

@@ -492,7 +492,7 @@ Decisions are recorded in [`decisions/`](decisions/README.md).
 - **Agentic loop**: the Sep-22 baseline's non-accepts were truncated drafts (missing SECTION 5), not low scores. Refine token boosts raised to 900/1200, a "cut off, tighten earlier sections" hint was added to refine feedback, and from iteration 2 a complete grounded draft is accepted `Agentic_loop_late_accept_slack` (0.5) under the bar.
 - **Prompts**: facts prompt asks for exact chunk ids and one fact per named entity; story prompts add pacing so SECTION 5 fits; judge prompts use strict 1-10 anchors and actionable per-section suggestions.
 - **Hygiene**: step-1 runner now lives in `src` (no `runpy` into `scripts/`), per-request tqdm bars removed, unused langchain deps removed, GitHub Actions CI (`ruff` + `pytest`), 8 integration tests (real in-memory Chroma + fake Ollama server), and a conftest fix that stopped stubs leaking onto real modules.
-- **Judge, loop and generation methods** (ADR-0007 to ADR-0010): judge retry and a short-output judge, minimum facts before ACCEPT, expand-after-rejected-refine, a thin-facts retry in Step 2, an opt-in section-by-section writer, and a story-arc method with its own prompts for A/B comparison against 5W1H (comparison inconclusive at n=8; default unchanged).
+- **Judge, loop and generation methods** (ADR-0007 to ADR-0010): judge retry and a short-output judge, minimum facts before ACCEPT, expand-after-rejected-refine, a thin-facts retry in Step 2, an opt-in section-by-section writer, and a story-arc method with its own prompts for A/B comparison against 5W1H (comparison inconclusive at n=8; the default later became `arc`, see ADR-0011).
 
 ### Measured results, 2026-10-05 (Ollama judge `qwen3.5:4b`, local facts, generator `qwen3.5:9b`)
 
@@ -599,7 +599,7 @@ three reports and corrected me:
 - **The +18 s for `arc` is one query** (lawyer, +142 s); without it the gap is under a second.
 - **Reporting bug found:** the measure script pairs `final_average` (best draft) with `final_faithfulness` (last iteration).
 
-The default stays `5w1h`. Next: freeze retrieval and Step 2 output per query and run all three methods on the same facts with 3-5 seeds; fix the
+_(Superseded by ADR-0011: the default is now `arc`.)_ Next: freeze retrieval and Step 2 output per query and run all three methods on the same facts with 3-5 seeds; fix the
 reporting pair; look into why a re-retrieve can return 0 facts for a reformulated query (lawyer, iteration 3) and why `5w1h` refines keep being rejected.
 
 ### Target architecture (set 2026-10-07)

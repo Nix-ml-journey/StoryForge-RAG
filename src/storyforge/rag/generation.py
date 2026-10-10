@@ -28,7 +28,10 @@ from storyforge.rag.length_profile import (
 )
 from storyforge.rag.length_profile import sentence_count as _sentence_count
 from storyforge.rag.length_profile import split_section_bodies as _split_section_bodies
+from storyforge.rag.section_rules import OVERSHOOT as _SECTION_OVERSHOOT
+from storyforge.rag.section_rules import TERMINAL as _TERMINAL
 from storyforge.rag.section_rules import trim_overlong, without_sentence_starts
+from storyforge._load_lock import serialized
 
 LOG = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ def _resolve_generation_dtype(*, cfg: dict[str, Any], use_cuda: bool):
     return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
 
+@serialized
 def _load_or_get_cached_local_model(model_id: str, cfg: dict[str, Any]):
     """Load the local causal LM once per (model_id, precision, device)."""
     import torch
@@ -199,7 +203,6 @@ def _flow_section_headers() -> str:
 
 
 def build_story_prompt(
-    cfg: dict[str, Any],
     *,
     query: str,
     facts_for_prompt: str,
@@ -223,7 +226,6 @@ def build_story_prompt(
 
 
 def build_refine_prompt(
-    cfg: dict[str, Any],
     *,
     query: str,
     facts_for_prompt: str,
@@ -291,8 +293,6 @@ def _apply_attribution_gate(story: str, facts: tuple, cfg: dict[str, Any]) -> st
     return story
 
 
-_SECTION_OVERSHOOT = 1.6  # a kept section may run this far over its word budget
-_TERMINAL = ('.', '!', '?', '"', "\u201d", "\u2019", "'")
 
 
 def _trim_to_sentence(text: str) -> str:
@@ -319,7 +319,7 @@ def _invoke_nonempty(prompt: str, cfg: dict[str, Any], *, mode: Any, max_new_tok
 
 
 def _sections_to_write(prior_draft: Optional[str], profile: LengthProfile) -> dict[int, str]:
-    """Sections of ``prior_draft`` worth keeping: present, long enough, not far over budget."""
+    """Sections of ``prior_draft`` worth keeping: present, finished, long enough (over-long ones are trimmed upstream)."""
     if not prior_draft:
         return {}
     kept: dict[int, str] = {}
@@ -328,7 +328,6 @@ def _sections_to_write(prior_draft: Optional[str], profile: LengthProfile) -> di
             1 <= i <= len(_SECTION_HEADERS)
             and body.rstrip().endswith(_TERMINAL)
             and _sentence_count(body) >= profile.min_sentences_per_section
-            and len(body.split()) <= _SECTION_OVERSHOOT * profile.words_per_section
         ):
             kept[i] = body
     return kept
@@ -355,7 +354,7 @@ def _generate_sectioned(
 
     A single pass overshoots the length target and can run out of tokens before SECTION 5;
     here the ending always gets its own budget. On a refine, only the missing, short, or
-    over-long sections are rewritten; the rest of ``prior_draft`` is kept. With ``rewrite_sections`` the
+    unfinished sections are rewritten; the rest of ``prior_draft`` is kept. With ``rewrite_sections`` the
     caller names exactly which sections to rewrite (rule-driven loop); every other section of
     ``prior_draft`` is kept as written.
     """
@@ -443,7 +442,6 @@ def generate_from_facts(
 
     if refine_feedback and prior_draft:
         story_prompt = build_refine_prompt(
-            cfg,
             query=query,
             facts_for_prompt=facts_for_prompt,
             prior_draft=prior_draft,
@@ -452,7 +450,6 @@ def generate_from_facts(
         )
     else:
         story_prompt = build_story_prompt(
-            cfg,
             query=query,
             facts_for_prompt=facts_for_prompt,
             profile=profile,

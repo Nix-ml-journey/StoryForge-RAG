@@ -29,6 +29,7 @@ def _eval_prompts() -> dict[str, str]:
         "with_story": str(ev.get("with_story") or ""),
         "with_summary": str(ev.get("with_summary") or ""),
         "loop_judge": str(ev.get("loop_judge") or ev.get("with_story") or ""),
+        "claim_audit": str(ev.get("claim_audit") or ""),
     }
 
 EVAL_RETRY_MAX_ATTEMPTS = 6
@@ -380,6 +381,20 @@ def evaluate_story_text(model, story_text: str, facts: str = "") -> dict[str, An
     except (ValueError, KeyError, TypeError, OSError) as e:
         logging.error(f"Error evaluating story text: {e}")
         return {}
+
+
+def audit_story_claims(model, story_text: str, facts: str = "") -> Optional[list[dict[str, Any]]]:
+    """List story sentences the facts do not support (``[{section, sentence, why}]``).
+
+    Returns ``None`` when the judge gave no usable JSON, so "nothing unsupported" (``[]``) and "no answer"
+    stay different. Experimental: used by ``scripts/audit_saved.py``, not by the loop.
+    """
+    prompt = _eval_prompts()["claim_audit"].format(story=story_text, facts=(facts or "").strip() or "(none)")
+    data = _parse_json_response(_invoke_with_retry(model, prompt))
+    items = data.get("unsupported") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    return [x for x in items if isinstance(x, dict) and str(x.get("sentence") or "").strip()]
 
 
 def evaluate_generated_summary(model, summary_path, story_path=None) -> dict[str, Any]:

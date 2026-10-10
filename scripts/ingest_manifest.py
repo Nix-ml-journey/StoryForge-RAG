@@ -30,7 +30,6 @@ def main() -> None:
     collection = get_or_create_collection(collection_name)
 
     embed_model_name = str(cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5")
-    is_bge = "bge" in embed_model_name.lower()
     embed_model = _get_embed_model(embed_model_name)
     if embed_model is None:
         raise SystemExit(
@@ -49,7 +48,7 @@ def main() -> None:
         nonlocal ids, docs, mds, written
         if not ids:
             return
-        embeddings = _embed_chunks(embed_model, docs, is_bge=is_bge)
+        embeddings = _embed_chunks(embed_model, docs)
         if embeddings is None:
             raise SystemExit("Embedding failed for a batch — aborting so the collection is not left inconsistent.")
         collection.upsert(ids=ids, embeddings=embeddings, documents=docs, metadatas=mds)

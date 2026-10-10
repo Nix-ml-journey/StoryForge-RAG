@@ -3,7 +3,7 @@
 ``Story_generation_method: arc`` (default; ``5w1h`` is the older outline) swaps the WHO/WHAT/TWIST/HOW/WHY outline for
 setup -> inciting incident -> rising action -> climax -> resolution, with its own prompt set
 (``generation_arc`` in prompts.yaml). The section loop, length budgets, and refine rule (rewrite only
-missing/short/over-long sections) are shared with the sectioned 5W1H writer in ``generation.py``;
+missing/short sections) are shared with the sectioned 5W1H writer in ``generation.py``;
 everything downstream (completeness check, judge, loop) sees the same ``[SECTION n: ...]`` shape.
 """
 from __future__ import annotations

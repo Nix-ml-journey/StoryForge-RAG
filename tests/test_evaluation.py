@@ -185,3 +185,18 @@ def test_loop_judge_uses_compact_prompt_and_carries_facts():
     compact = _story_eval_prompt("THE STORY", "1. [who] Alana", compact=True)
     assert "Reply with ONLY this JSON object" in compact and "Alana" in compact and "{facts_section}" not in compact
     assert "Reply with ONLY this JSON object" not in _story_eval_prompt("THE STORY")
+
+
+def test_audit_story_claims_parses_unsupported_sentences_and_keeps_none_distinct(monkeypatch):
+    from storyforge.evaluation import evaluation as ev
+
+    replies = iter([
+        '{"unsupported": [{"section": 2, "sentence": "A dragon burned the mill.", "why": "no dragon in facts"}, {"section": 3}]}',
+        '{"unsupported": []}',
+        "not json at all",
+    ])
+    monkeypatch.setattr(ev, "_invoke_with_retry", lambda model, prompt: next(replies))
+    found = ev.audit_story_claims("m", "story", "1. [fact] x")
+    assert found == [{"section": 2, "sentence": "A dragon burned the mill.", "why": "no dragon in facts"}]
+    assert ev.audit_story_claims("m", "story", "") == []
+    assert ev.audit_story_claims("m", "story", "") is None

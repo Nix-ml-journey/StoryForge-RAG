@@ -151,6 +151,12 @@ def average_score(eval_data: Optional[dict[str, Any]]) -> float:
     return round(sum(scores) / len(scores), 2) if scores else 0.0
 
 
+def _num(cfg: dict[str, Any], key: str, default: float) -> float:
+    """Numeric setting where 0 is a real value; only a missing or empty key falls back to ``default``."""
+    value = cfg.get(key)
+    return default if value is None or value == "" else float(value)
+
+
 @dataclass(frozen=True)
 class Decision:
     action: str
@@ -174,12 +180,12 @@ def decide_action(
     (default 0.5): a complete, grounded draft that is only marginally under the
     bar is accepted instead of paying another ~100 s refine pass for noise-level gain.
     """
-    accept_score = float(cfg.get("Agentic_loop_accept_score") or 7.0)
+    accept_score = _num(cfg, "Agentic_loop_accept_score", 7.0)
     if iteration >= 2:
         accept_score -= float(cfg.get("Agentic_loop_late_accept_slack", 0.5) or 0.0)
-    min_faith = float(cfg.get("Agentic_loop_min_faithfulness") or 6)
-    min_facts = int(cfg.get("Agentic_loop_min_facts") or 3)
-    rich_facts = int(cfg.get("Agentic_loop_rich_facts") or 8)
+    min_faith = _num(cfg, "Agentic_loop_min_faithfulness", 6.0)
+    min_facts = int(_num(cfg, "Agentic_loop_min_facts", 3))
+    rich_facts = int(_num(cfg, "Agentic_loop_rich_facts", 8))
 
     avg = average_score(eval_data)
     faith = criterion_score(eval_data, "faithfulness")
@@ -279,7 +285,7 @@ def build_feedback(
     return "\n".join(parts).strip()
 
 
-def reformulate_query(query: str, parsed, eval_data: Optional[dict[str, Any]]) -> str:
+def reformulate_query(query: str, parsed) -> str:
     """
     Append a few character/place names from grounded facts to the query (no extra LLM).
 
@@ -377,7 +383,7 @@ def _run_rule_driven(
     from storyforge.rag.section_rules import failure_feedback, section_failures
 
     rounds = max(0, int(cfg.get("Agentic_loop_rule_rounds", 2) or 0))
-    max_novel = int(cfg.get("Agentic_loop_rule_max_novel_names", 3) or 3)
+    max_novel = int(_num(cfg, "Agentic_loop_rule_max_novel_names", 3))
     facts_n = len(parsed.facts)
     iterations: list[dict[str, Any]] = []
     story = ""
@@ -455,7 +461,6 @@ def run_agentic_story_loop(
     mode: Gen_mode = Gen_mode.FAST,
     length: Any = None,
     story_type: StoryType = StoryType.MIX,
-    debug: bool = False,
 ) -> AgenticLoopResult:
     """Retrieve → generate → evaluate → ACCEPT / REFINE / RE_RETRIEVE."""
     from storyforge.rag.attribution import format_facts_for_prompt, merge_facts
@@ -524,7 +529,7 @@ def run_agentic_story_loop(
 
     # Pre-flight gate: thin evidence is fixed BEFORE any story is written. Tier 1 widens the
     # search; tier 2 also reformulates the query with names from the facts found so far.
-    gate_min = int(cfg.get("Agentic_loop_min_facts") or 3)
+    gate_min = int(_num(cfg, "Agentic_loop_min_facts", 3))
     for tier in range(1, int(cfg.get("Agentic_loop_preflight_tiers", 2) or 0) + 1):
         if len(parsed.facts) >= gate_min:
             break
@@ -534,7 +539,7 @@ def run_agentic_story_loop(
         k_boost *= k_boost_step
         n_stories = max(n_stories, reretrieve_n)
         if tier >= 2:
-            current_query = reformulate_query(query, parsed, {})
+            current_query = reformulate_query(query, parsed)
         retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
 
     if _rule_driven_enabled(cfg):
@@ -555,7 +560,7 @@ def run_agentic_story_loop(
     prev_regressed = False
     last_action = ""
     stop_on_stall = str(cfg.get("Agentic_loop_stop_on_no_progress", True)).strip().lower() not in ("false", "0", "no")
-    max_novel = int(cfg.get("Agentic_loop_rule_max_novel_names", 3) or 3)
+    max_novel = int(_num(cfg, "Agentic_loop_rule_max_novel_names", 3))
 
     for i in range(1, max_iter + 1):
         try:
@@ -664,8 +669,14 @@ def run_agentic_story_loop(
             prev_regressed = False
             k_boost *= k_boost_step
             n_stories = max(n_stories, reretrieve_n)
-            current_query = reformulate_query(query, parsed, eval_data)
-            retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
+            current_query = reformulate_query(query, parsed)
+            try:
+                retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
+            except Exception as e:  # noqa: BLE001 - a retrieval failure must not discard the drafts already written
+                LOG.warning("Agentic loop: re-retrieve failed on iteration %d (%s: %s). Keeping the best draft.", i, type(e).__name__, e)
+                iterations.append(_iteration_record(i, "retrieval_failed", current_query, len(parsed.facts), reasons=[str(e)]))
+                stop_reason = "retrieval_failed_using_best_so_far"
+                break
             refine_feedback = prior_draft = refine_max_new = rewrite_only = None
         else:
             expand = max(100, profile.target_words - comp.word_count) if regressed else 0

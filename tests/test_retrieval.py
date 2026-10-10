@@ -110,3 +110,20 @@ def test_story_type_filter_maps_to_is_series():
     assert story_type_filter("series") == {"Is_series": True}
     assert story_type_filter("mix") is None
     assert story_type_filter(None) is None
+
+
+def test_missing_reranker_and_hybrid_keys_default_to_on(stub_heavy_deps, monkeypatch):
+    import storyforge.rag.retrieval as retrieval_mod
+
+    class FakeVectorstore:
+        def as_retriever(self, search_kwargs=None):
+            return type("R", (), {"invoke": lambda self, q: [_FakeDoc("T0", "a"), _FakeDoc("T1", "b")]})()
+
+    seen = {"rerank": 0, "fuse": 0}
+    monkeypatch.setattr(retrieval_mod, "_build_vectorstore", lambda cfg: FakeVectorstore())
+    monkeypatch.setattr(retrieval_mod, "_rerank_docs", lambda q, docs, **k: seen.__setitem__("rerank", seen["rerank"] + 1) or docs)
+    monkeypatch.setattr(retrieval_mod, "_rrf_fuse", lambda docs, ranked, **k: seen.__setitem__("fuse", seen["fuse"] + 1) or docs)
+
+    retrieval_mod.retrieve_docs(query="q", cfg={"Story_generation_n_results": 2})
+
+    assert seen == {"rerank": 1, "fuse": 1}

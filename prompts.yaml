@@ -1,9 +1,10 @@
 generation:
   # Step 2 facts + Step 3 story prompts
   grounded_facts_system: |
-    You extract grounded facts for RAG.
+    You extract grounded facts for a story-writing RAG pipeline. A writer will use your facts as its only source, so each fact must be accurate and understandable on its own.
     Use only the provided chunks.
     Do not invent names, places, events, or objects.
+    Write each fact so it stands alone: name the person or place instead of "he", "she", or "there".
     Every fact must include source chunk ids.
     Output only valid JSON, no prose or markdown.
 
@@ -27,6 +28,10 @@ generation:
     }}
 
     Rules:
+    - "type": who = a character and their role; where/setting = a place or surroundings; when = time or order; what/event = something that happens; why = motive or cause; how = method or manner; detail = any other concrete object or fact.
+    - One fact is one claim from one chunk. Never merge details from different chunks into one fact.
+    - Prefer facts that help tell the story the QUERY asks for; skip chunk text that adds nothing to it.
+    - If the chunks hold no usable facts, return {{"facts": []}}.
     - Target 10 to 30 facts when possible.
     - "quote": a verbatim phrase (under 15 words) copied character-for-character from the chunk; "" only if no close match exists.
     - Copy each "source_chunk_ids" value exactly from the [CHUNK <id> | title] headers above.
@@ -35,8 +40,10 @@ generation:
 
   grounded_story_system: |
     You are a grounded story writer.
-    Follow grounded facts strictly.
+    The facts may come from several different source stories. Build ONE story around a single protagonist and setting, and leave out facts that do not fit them.
+    Follow grounded facts strictly. Your story will be checked sentence by sentence against them.
     Do NOT introduce new named characters, places, groups, organizations, items, or events not present in the facts.
+    If rules conflict, keep this order: never contradict a fact; add no new names or events; end on a complete sentence; then match the length.
     Write all 5 sections in order under the given headers, finish SECTION 5 fully, and end with terminal punctuation.
     Output only story prose under headers.
 
@@ -54,6 +61,7 @@ generation:
     - Write each header followed by its prose, through SECTION 5. Prose, not an outline.
     {length_guidance}
     - Expand grounded facts with clear detail, pacing, and dialogue where natural.
+    - Keep each character's name, role, and relationships the same in every section.
     - You MUST write all five sections. Do not end the story until SECTION 5 reaches a
       finished, resolved final sentence.
     - Pace yourself: give each section roughly equal space so SECTION 5 is fully written
@@ -69,8 +77,10 @@ generation:
   # Step 3 sectioned mode (Story_generation_mode: sectioned): one call per section
   grounded_section_system: |
     You are a grounded story writer, writing ONE section of a five-section story.
-    Follow the grounded facts strictly.
+    The facts may come from several different source stories. Build ONE story around a single protagonist and setting, and leave out facts that do not fit them.
+    Follow the grounded facts strictly. Your section will be checked sentence by sentence against them.
     Do NOT introduce new named characters, places, groups, organizations, items, or events not present in the facts.
+    If rules conflict, keep this order: never contradict a fact; add no new names or events; end on a complete sentence; then match the length.
     Output only the prose of the requested section: no header, no outline, no commentary.
 
   grounded_section_user: |
@@ -88,6 +98,7 @@ generation:
     Rules:
     - Write about {words} words ({min_sentences}+ complete sentences); never more than {max_words} words.
     - Continue naturally from the story so far; do not repeat or summarize it.
+    - Keep names, roles, and relationships the same as in the story so far.
     - {ending_rule}
     - Dialogue: close quotes on the same line, never start narration with a quote, use straight " only.
     - Return only the prose for this section (no header, no JSON, no markdown, no commentary).
@@ -96,9 +107,11 @@ generation:
   # Step 3 refine pass (agentic loop)
   grounded_story_refine_system: |
     You are a grounded story reviser.
+    The facts may come from several different source stories. Build ONE story around a single protagonist and setting, and leave out facts that do not fit them.
     Revise the PREVIOUS_DRAFT using REVIEWER_FEEDBACK.
     Stay strictly grounded: do NOT introduce new named characters, places, groups, organizations, items, or events not present in the grounded facts.
     Keep what works and fix only requested issues.
+    If rules conflict, keep this order: never contradict a fact; add no new names or events; end on a complete sentence; then match the length.
     Return a complete story with all sections and a finished ending sentence.
     Preserve finished sections when possible and continue from the earliest incomplete section instead of restarting from scratch.
 
@@ -120,7 +133,7 @@ generation:
 
     Rules:
     - Begin with the first section header (no outline of headers); write prose under each.
-    - Address every point in the reviewer feedback.
+    - Address every point in the reviewer feedback. Where it names a sentence or detail the facts do not support, remove it or replace it with detail taken from the facts.
     {length_guidance}
     - If the draft is incomplete, prioritize completing missing/weak sections while preserving valid grounded content from earlier sections.
     - If the previous draft is short, expand with detail and dialogue instead of trimming.
@@ -135,8 +148,11 @@ generation:
 generation_arc:
   section_system: |
     You are a story writer working from grounded facts, writing ONE section of a five-part story arc.
+    The facts may come from several different source stories. Build ONE story around a single protagonist and setting, and leave out facts that do not fit them.
     Every named character, place, group, organization, item, and event must come from the grounded facts.
-    Do NOT invent new ones; deepen mood, motive, and sensory detail instead.
+    Do NOT invent new ones: no new animals, rooms, objects, relatives, or sub-plots. Add mood, motive, and sensory detail only about things the facts already name.
+    Never contradict a fact. Keep each character's name, role, and relationships exactly as the facts state them. Your section will be checked sentence by sentence against the facts.
+    If rules conflict, keep this order: never contradict a fact; add no new names or events; end on a complete sentence; then match the length.
     Output only the prose of the requested section: no header, no outline, no commentary.
 
   section_user: |
@@ -154,8 +170,9 @@ generation_arc:
 
     Rules:
     - Write about {words} words ({min_sentences}+ complete sentences); never more than {max_words} words.
-    - Continue from the story so far; do not repeat or summarize it.
+    - Continue from the story so far; do not repeat or summarize it. Keep names, roles, and relationships the same as in the story so far.
     - Show events through concrete action, setting, and dialogue rather than explaining them.
+    - Build this section from the grounded facts that fit its job; use at least two of them.
     - {ending_rule}
     - Dialogue: close quotes on the same line, never start narration with a quote, use straight " only.
     - Return only the prose for this section (no header, no JSON, no markdown, no commentary).
@@ -170,11 +187,13 @@ generation_arc:
 
 ingest:
   section_label_system: |
-    Label a story chunk with one section tag.
+    Label a story chunk with the one tag for its role in the story's structure.
     Output only the tag (no punctuation, quotes, or explanation).
     - Use lowercase letters, numbers, and underscores only.
     - Choose exactly one tag from:
-      setup, inciting_incident, rising_action, confrontation, twist, climax, fallout, resolution, epilogue, setting, negotiation
+      setup (introduces characters and the ordinary world), inciting_incident (the event that starts the plot), rising_action (obstacles and growing stakes),
+      confrontation (characters clash), twist (a surprising reversal or reveal), climax (the decisive peak), fallout (immediate consequences),
+      resolution (loose ends close), epilogue (a coda after the ending), setting (description of place or era), negotiation (characters bargain or talk terms)
 
   section_label_user: |
     TITLE: {title}
@@ -184,6 +203,7 @@ ingest:
     CHUNK:
     {chunk_text}
 
+    CHUNK_INDEX shows where the chunk sits in the story: early chunks are usually setup, late chunks resolution, but label by what the text does.
     Output one tag from the allowed set.
 
 # evaluation prompts
@@ -204,7 +224,7 @@ evaluation:
     1. **Coherence** (1-10): Clear beginning, middle, end? Logical flow without loops or broken transitions?
     2. **Grammar** (1-10): Readable and correct? Penalize run-ons and repeated filler phrases.
     3. **Creativity** (1-10): Varied and engaging? Penalize repeating the same sentence or image many times.
-    4. **Faithfulness** (1-10): If grounded facts are given above, penalize every named character, place, or event the facts do not support and any contradiction of them (8+ only if the story stays within the facts). If no facts are given, score internal consistency.
+    4. **Faithfulness** (1-10): If grounded facts are given above, count the sentences that add a character, place, object, or event the facts do not support, or that contradict them. 9-10: none. 7-8: one or two. 5-6: three to five. 3-4: six to ten, or one repeated contradiction. 1-2: most of the story is not in the facts. If no facts are given, score internal consistency.
     5. **Overall** (1-10): Holistic quality; low if generation clearly failed (no ending, loop, unreadable).
 
     ## Response Format:
@@ -247,20 +267,39 @@ evaluation:
     {story}
 
     {facts_section}## Criteria:
-    - faithfulness: 8+ only if every named character, place, and event is supported by the grounded facts above
-      and nothing contradicts them; penalize each unsupported name. Without facts, score internal consistency.
+    - faithfulness: count the sentences that add a character, place, object, or event the grounded facts above do not support,
+      or that contradict them. 9-10: none. 7-8: one or two. 5-6: three to five. 3-4: six to ten, or one repeated contradiction.
+      1-2: most of the story is not in the facts. Without facts, score internal consistency.
     - coherence: clear beginning, middle, end; logical flow, no loops.
     - grammar: readable and correct; penalize run-ons and repeated filler.
     - creativity: varied and engaging; penalize repeated sentences or images.
     - overall: holistic quality; 1-3 if a "[SECTION n: ...]" header is missing, the ending is cut off, or it loops.
+
+    Your scores steer an automatic rewrite loop, so make each suggestion an edit a writer can apply: name the section and quote the first words of the sentence to change.
 
     Reply with ONLY this JSON object, in this key order, with no other text:
     {{"faithfulness": <1-10>, "coherence": <1-10>, "grammar": <1-10>, "creativity": <1-10>, "overall": <1-10>,
     "conclusion": "<one sentence, max 30 words>",
     "suggestions": ["<edit naming a section, max 25 words>", "<second edit>"]}}
 
+  claim_audit: |
+    You are a fact checker. Compare the story with the numbered grounded facts and list the sentences that add a
+    person, place, object, event or outcome that no fact supports, or that state the opposite of a fact.
+    Do NOT flag a sentence that only elaborates a fact with mood, sensory detail, or reworded dialogue.
+    Flag a sentence only if you can say which fact it contradicts, or name the new element no fact mentions.
+    List at most 8; if everything is supported, return an empty list.
+
+    ## Grounded facts:
+    {facts}
+
+    ## Story:
+    {story}
+
+    Reply with ONLY this JSON object and no other text:
+    {{"unsupported": [{{"section": <1-5>, "sentence": "<exact sentence, max 25 words>", "why": "<'contradicts fact N' or 'no fact mentions X', max 12 words>"}}]}}
+
   with_summary: |
-    You are an expert story evaluator. Read the full story, then evaluate the summary.
+    You are an expert story evaluator. Read the full story, then evaluate the summary, which is meant to be read in place of the story.
 
     ## Whole story (source):
     {story}
@@ -274,7 +313,7 @@ evaluation:
 
     1. **Coherence** (1-10): Is the summary clear and in sensible order? Any contradictions or gaps?
     2. **Grammar** (1-10): Spelling, punctuation, sentence structure.
-    3. **Faithfulness** (1-10): Does the summary match the source story (no invented endings, no missing major beats)?
+    3. **Faithfulness** (1-10): Does the summary match the source story (no invented events, no missing major beats)? Give 4 or less if it invents an ending or leaves out the ending.
     4. **Overall** (1-10): Overall summary quality as a standalone piece.
 
     ## Response Format:
