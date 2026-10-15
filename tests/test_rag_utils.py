@@ -85,3 +85,29 @@ def test_clean_story_output_closes_quote_spacing_and_duplicate_words():
     assert '"Hello there,"' in out
     assert "them them" not in out
     assert '"Sure" and' in out
+
+
+def test_ollama_client_really_gets_num_ctx_and_repeat_penalty():
+    # langchain-ollama ignores a constructor `options=` dict; both must be real fields or Ollama stays at 4096.
+    from storyforge.rag.generation_backend import build_chat_ollama, ollama_num_ctx
+
+    cfg = {"Model_max_prompt_tokens": 12288, "Generation_repetition_penalty": 1.1}
+    llm = build_chat_ollama(cfg, max_new_tokens=50, temperature=0.5, top_p=0.9)
+    assert llm.num_ctx == ollama_num_ctx(cfg) == 12288 and llm.repeat_penalty == 1.1
+
+
+def test_prompt_longer_than_num_ctx_is_logged_not_silent(caplog):
+    from storyforge.rag.generation_backend import invoke_combined_prompt
+
+    class Inner:
+        num_ctx, num_predict = 1000, 200
+
+        def invoke(self, messages):
+            return type("R", (), {"content": "ok"})()
+
+    with caplog.at_level("WARNING"):
+        assert invoke_combined_prompt(Inner(), "x" * 5000) == "ok"
+        assert "may not fit num_ctx=1000" in caplog.text
+        caplog.clear()
+        invoke_combined_prompt(Inner(), "x" * 100)
+        assert "may not fit" not in caplog.text

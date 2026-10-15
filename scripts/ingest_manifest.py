@@ -18,7 +18,7 @@ def main() -> None:
     sys.path.insert(0, "src")
     from storyforge.config.config import load_config
     from storyforge.vector_store.chromadb import get_or_create_collection
-    from storyforge.vector_store.ingest_stories import _embed_chunks, _get_embed_model
+    from storyforge.vector_store.embeddings import embed_texts, get_embed_model
 
     cfg = load_config()
     base = Path(cfg.get("BASE_PATH") or ".").resolve()
@@ -30,7 +30,7 @@ def main() -> None:
     collection = get_or_create_collection(collection_name)
 
     embed_model_name = str(cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5")
-    embed_model = _get_embed_model(embed_model_name)
+    embed_model = get_embed_model(embed_model_name, device="cuda")
     if embed_model is None:
         raise SystemExit(
             f"Could not load embedding model '{embed_model_name}' "
@@ -48,7 +48,7 @@ def main() -> None:
         nonlocal ids, docs, mds, written
         if not ids:
             return
-        embeddings = _embed_chunks(embed_model, docs)
+        embeddings = embed_texts(embed_model, docs)
         if embeddings is None:
             raise SystemExit("Embedding failed for a batch — aborting so the collection is not left inconsistent.")
         collection.upsert(ids=ids, embeddings=embeddings, documents=docs, metadatas=mds)

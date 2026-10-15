@@ -11,7 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from storyforge.config.config import load_config
+from storyforge.config.config import flag, load_config, num
+from storyforge.rag.evidence import EvidenceSearch, reformulate_query
 from storyforge.rag.generative_ai import Gen_mode, StoryType
 from storyforge.rag.length_profile import sentence_count as _sentence_count
 from storyforge.rag.length_profile import split_section_bodies as _split_section_bodies
@@ -151,12 +152,6 @@ def average_score(eval_data: Optional[dict[str, Any]]) -> float:
     return round(sum(scores) / len(scores), 2) if scores else 0.0
 
 
-def _num(cfg: dict[str, Any], key: str, default: float) -> float:
-    """Numeric setting where 0 is a real value; only a missing or empty key falls back to ``default``."""
-    value = cfg.get(key)
-    return default if value is None or value == "" else float(value)
-
-
 @dataclass(frozen=True)
 class Decision:
     action: str
@@ -180,12 +175,12 @@ def decide_action(
     (default 0.5): a complete, grounded draft that is only marginally under the
     bar is accepted instead of paying another ~100 s refine pass for noise-level gain.
     """
-    accept_score = _num(cfg, "Agentic_loop_accept_score", 7.0)
+    accept_score = num(cfg, "Agentic_loop_accept_score", 7.0)
     if iteration >= 2:
         accept_score -= float(cfg.get("Agentic_loop_late_accept_slack", 0.5) or 0.0)
-    min_faith = _num(cfg, "Agentic_loop_min_faithfulness", 6.0)
-    min_facts = int(_num(cfg, "Agentic_loop_min_facts", 3))
-    rich_facts = int(_num(cfg, "Agentic_loop_rich_facts", 8))
+    min_faith = num(cfg, "Agentic_loop_min_faithfulness", 6.0)
+    min_facts = int(num(cfg, "Agentic_loop_min_facts", 3))
+    rich_facts = int(num(cfg, "Agentic_loop_rich_facts", 8))
 
     avg = average_score(eval_data)
     faith = criterion_score(eval_data, "faithfulness")
@@ -285,31 +280,6 @@ def build_feedback(
     return "\n".join(parts).strip()
 
 
-def reformulate_query(query: str, parsed) -> str:
-    """
-    Append a few character/place names from grounded facts to the query (no extra LLM).
-
-    Used when RE_RETRIEVE runs so the next search stays on the same story.
-    """
-    terms: list[str] = []
-    seen: set[str] = set()
-    facts = getattr(parsed, "facts", ()) or ()
-    for f in facts:
-        if getattr(f, "type", "").lower() not in {"who", "where", "setting", "event"}:
-            continue
-        for token in re.findall(r"\b[A-Z][a-z]{2,}\b", getattr(f, "fact", "") or ""):
-            key = token.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            terms.append(token)
-        if len(terms) >= 5:
-            break
-    if not terms:
-        return query
-    return f"{query} {' '.join(terms[:5])}".strip()
-
-
 @dataclass
 class AgenticLoopResult:
     content: str
@@ -359,7 +329,7 @@ def _iteration_record(
 
 def _rule_driven_enabled(cfg: dict[str, Any]) -> bool:
     """Rule-driven loop needs a section-by-section writer (arc, or 5W1H sectioned)."""
-    if str(cfg.get("Agentic_loop_rule_driven") or "").strip().lower() not in ("true", "1", "yes"):
+    if not flag(cfg, "Agentic_loop_rule_driven", False):
         return False
     method = str(cfg.get("Story_generation_method") or "arc").strip().lower()
     sectioned = str(cfg.get("Story_generation_mode") or "single").strip().lower() == "sectioned"
@@ -383,7 +353,7 @@ def _run_rule_driven(
     from storyforge.rag.section_rules import failure_feedback, section_failures
 
     rounds = max(0, int(cfg.get("Agentic_loop_rule_rounds", 2) or 0))
-    max_novel = int(_num(cfg, "Agentic_loop_rule_max_novel_names", 3))
+    max_novel = int(num(cfg, "Agentic_loop_rule_max_novel_names", 3))
     facts_n = len(parsed.facts)
     iterations: list[dict[str, Any]] = []
     story = ""
@@ -463,11 +433,9 @@ def run_agentic_story_loop(
     story_type: StoryType = StoryType.MIX,
 ) -> AgenticLoopResult:
     """Retrieve → generate → evaluate → ACCEPT / REFINE / RE_RETRIEVE."""
-    from storyforge.rag.attribution import format_facts_for_prompt, merge_facts
-    from storyforge.rag.extraction import extract_grounded_facts
+    from storyforge.rag.attribution import format_facts_for_prompt
     from storyforge.rag.generation import generate_from_facts
     from storyforge.rag.length_profile import is_thinking_mode, resolve_length_profile
-    from storyforge.rag.retrieval import _docs_to_chunks, _docs_to_context, retrieve_docs
     from storyforge.rag.section_rules import failure_feedback, section_failures
 
     cfg = cfg or load_config()
@@ -486,8 +454,6 @@ def run_agentic_story_loop(
         min_words, min_sentences_per_section, base_max_tokens,
     )
 
-    k_boost_step = float(cfg.get("Agentic_loop_reretrieve_k_boost") or 2.0)
-    reretrieve_n = int(cfg.get("Agentic_loop_reretrieve_n_results") or 5)
     refine_token_boost = int(
         cfg.get("Agentic_loop_refine_token_boost_thinking" if is_thinking else "Agentic_loop_refine_token_boost")
         or cfg.get("Agentic_loop_refine_token_boost")
@@ -509,38 +475,9 @@ def run_agentic_story_loop(
             e,
         )
 
-    n_stories = 3
-    chunks_per_story = 2
-    k_boost = 1.0
-    current_query = query
-
-    def retrieve_and_extract(q: str, previous=None):
-        docs = retrieve_docs(
-            q, cfg, n_stories=n_stories, chunks_per_story=chunks_per_story,
-            k_boost=k_boost, story_type=story_type,
-        )
-        chunks = _docs_to_chunks(docs)
-        raw, facts = extract_grounded_facts(q, chunks, cfg)
-        if previous is not None:
-            facts = merge_facts(previous, facts)  # widening adds evidence, never replaces it
-        return _docs_to_context(docs), chunks, raw, facts
-
-    retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query)
-
-    # Pre-flight gate: thin evidence is fixed BEFORE any story is written. Tier 1 widens the
-    # search; tier 2 also reformulates the query with names from the facts found so far.
-    gate_min = int(_num(cfg, "Agentic_loop_min_facts", 3))
-    for tier in range(1, int(cfg.get("Agentic_loop_preflight_tiers", 2) or 0) + 1):
-        if len(parsed.facts) >= gate_min:
-            break
-        LOG.warning(
-            "Pre-flight gate: %d facts < %d; widening retrieval (tier %d).", len(parsed.facts), gate_min, tier
-        )
-        k_boost *= k_boost_step
-        n_stories = max(n_stories, reretrieve_n)
-        if tier >= 2:
-            current_query = reformulate_query(query, parsed)
-        retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
+    search = EvidenceSearch(cfg, story_type=story_type)
+    evidence = search.preflight(query, search.gather(query))
+    retrieval_context, chunks, grounded_raw, parsed, current_query = (evidence.context, evidence.chunks, evidence.raw, evidence.facts, evidence.query)
 
     if _rule_driven_enabled(cfg):
         return _run_rule_driven(
@@ -559,8 +496,8 @@ def run_agentic_story_loop(
     rewrite_only: Optional[frozenset[int]] = None
     prev_regressed = False
     last_action = ""
-    stop_on_stall = str(cfg.get("Agentic_loop_stop_on_no_progress", True)).strip().lower() not in ("false", "0", "no")
-    max_novel = int(_num(cfg, "Agentic_loop_rule_max_novel_names", 3))
+    stop_on_stall = flag(cfg, "Agentic_loop_stop_on_no_progress", True)
+    max_novel = int(num(cfg, "Agentic_loop_rule_max_novel_names", 3))
 
     for i in range(1, max_iter + 1):
         try:
@@ -667,11 +604,11 @@ def run_agentic_story_loop(
 
         if decision.action == RE_RETRIEVE:
             prev_regressed = False
-            k_boost *= k_boost_step
-            n_stories = max(n_stories, reretrieve_n)
+            search.widen()
             current_query = reformulate_query(query, parsed)
             try:
-                retrieval_context, chunks, grounded_raw, parsed = retrieve_and_extract(current_query, parsed)
+                evidence = search.gather(current_query, evidence)
+                retrieval_context, chunks, grounded_raw, parsed = evidence.context, evidence.chunks, evidence.raw, evidence.facts
             except Exception as e:  # noqa: BLE001 - a retrieval failure must not discard the drafts already written
                 LOG.warning("Agentic loop: re-retrieve failed on iteration %d (%s: %s). Keeping the best draft.", i, type(e).__name__, e)
                 iterations.append(_iteration_record(i, "retrieval_failed", current_query, len(parsed.facts), reasons=[str(e)]))

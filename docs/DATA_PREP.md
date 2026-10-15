@@ -4,6 +4,8 @@ Extraction only turns a PDF or EPUB into a messy `.txt`. **That file is not read
 
 Read this when you have just run extract and want the later story output to stay grounded.
 
+Deciding **which** stories to ingest, and how long they should be? See [`INGEST_PLANNING.md`](./INGEST_PLANNING.md).
+
 ---
 
 ## The path (one picture)
@@ -243,7 +245,7 @@ prefixed passages with `"Represent this passage for retrieval: "` before
 embedding them, in addition to the query-side prefix applied at search time.
 That is not BGE's documented recipe: `BAAI/bge-base-en-v1.5` only prefixes
 the *query* side for asymmetric retrieval; passages get no instruction
-prefix. `storyforge/vector_store/ingest_stories.py::_embed_chunks` no longer
+prefix. `storyforge/vector_store/embeddings.py::embed_texts` (the one embedder ingest and the scripts share; it was `ingest_stories._embed_chunks`) no longer
 adds that prefix. The embedding model and its dimensionality are unchanged,
 so Chroma will not reject a mismatched batch the way it does for a real model
 swap -- it will happily keep serving the *old*, wrongly-prefixed vectors
@@ -256,7 +258,7 @@ rebuilt from scratch:
 ```
 
 `refresh_chunk_embeddings.py` and `ingest_manifest.py` pick up the fix too
-(they share `_embed_chunks`), but only for the records they touch -- they do
+(they share `embed_texts`), but only for the records they touch -- they do
 not repair chunks already sitting in Chroma with the old prefix, so a full
 `reset_and_ingest.py` is the only way to guarantee a clean collection.
 

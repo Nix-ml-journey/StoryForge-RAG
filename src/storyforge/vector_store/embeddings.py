@@ -87,6 +87,11 @@ def embed_texts(
         return None
 
 
+def embed_passages(model_name: str, texts: list[str], device: Optional[str] = None) -> Optional[list[list[float]]]:
+    """Embed passages (no instruction prefix). Returns None when the model is unavailable or fails."""
+    return embed_texts(get_embed_model(model_name, device=device), texts)
+
+
 def embed_query(query: str, model_name: str, device: Optional[str] = None) -> Optional[list[float]]:
     """Embed one search query with the correct prefix for ``model_name``."""
     model = get_embed_model(model_name, device=device)

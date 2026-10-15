@@ -13,7 +13,7 @@ from typing import Any, Optional
 from huggingface_hub import InferenceClient
 
 from storyforge.api_errors import is_retryable_api_error
-from storyforge.config.config import load_prompts
+from storyforge.config.config import flag, load_prompts
 from storyforge.rag.attribution import (
     ParsedFacts,
     extractive_facts,
@@ -97,14 +97,7 @@ def _hf_chat_extract_json(
     if not token:
         raise ValueError("Missing Hugging Face token for grounded facts extraction (facehugging_api / env).")
 
-    # Treat False as off — `False or "true"` would wrongly enable JSON mode.
-    _jm_val = cfg.get("HF_grounded_facts_json_mode")
-    if _jm_val is None:
-        _json_mode_enabled = True
-    elif isinstance(_jm_val, bool):
-        _json_mode_enabled = _jm_val
-    else:
-        _json_mode_enabled = str(_jm_val).strip().lower() not in ("false", "0", "no")
+    _json_mode_enabled = flag(cfg, "HF_grounded_facts_json_mode", True)
 
     # Qwen3 models (e.g. the default HF_grounded_facts_model "Qwen/Qwen3-8B")
     # emit hidden chain-of-thought reasoning by default. That reasoning counts
@@ -122,13 +115,7 @@ def _hf_chat_extract_json(
     # extraction specifically -- we need a short, deterministic JSON answer,
     # not a reasoning trace -- but keep it configurable/off-able in case a
     # given provider/model combination rejects the field outright.
-    _dt_val = cfg.get("HF_grounded_facts_disable_thinking")
-    if _dt_val is None:
-        _disable_thinking = True
-    elif isinstance(_dt_val, bool):
-        _disable_thinking = _dt_val
-    else:
-        _disable_thinking = str(_dt_val).strip().lower() not in ("false", "0", "no")
+    _disable_thinking = flag(cfg, "HF_grounded_facts_disable_thinking", True)
 
     user_content = str(user or "").strip()
     if _disable_thinking:
@@ -468,8 +455,7 @@ def extract_grounded_facts(
     """
     raw, parsed = _extract_grounded_facts_llm(query, chunks, cfg)
     want = int(cfg.get("Local_grounded_facts_min_facts") or 6)
-    off = str(cfg.get("Facts_extractive_fallback", "true")).strip().lower() in ("false", "0", "no", "off")
-    if off or len(parsed.facts) >= want:
+    if not flag(cfg, "Facts_extractive_fallback", True) or len(parsed.facts) >= want:
         return raw, parsed
     topped = merge_facts(parsed, ParsedFacts(facts=extractive_facts(chunks, max_facts=want), raw={}), cap=want)
     if len(topped.facts) > len(parsed.facts):

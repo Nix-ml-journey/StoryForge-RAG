@@ -32,6 +32,7 @@ from storyforge.rag.section_rules import OVERSHOOT as _SECTION_OVERSHOOT
 from storyforge.rag.section_rules import TERMINAL as _TERMINAL
 from storyforge.rag.section_rules import trim_overlong, without_sentence_starts
 from storyforge._load_lock import serialized
+from storyforge.config.config import flag
 
 LOG = logging.getLogger(__name__)
 
@@ -273,7 +274,7 @@ def _apply_attribution_gate(story: str, facts: tuple, cfg: dict[str, Any]) -> st
     all_found = extract_named_entities_heuristic(story_body_for_check)
     violation_ratio = len(violations) / max(1, len(all_found))
 
-    truncate_enabled = str(cfg.get("Attribution_gate_truncate") or "").strip().lower() in ("true", "1", "yes")
+    truncate_enabled = flag(cfg, "Attribution_gate_truncate", False)
     truncation_threshold = int(cfg.get("Attribution_violation_threshold") or 8)
     if truncate_enabled and (len(violations) > truncation_threshold or violation_ratio > 0.6):
         LOG.warning(

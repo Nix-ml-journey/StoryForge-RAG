@@ -17,10 +17,9 @@ from typing import Any, Optional
 
 from storyforge.config.config import load_config
 from storyforge.rag.attribution import build_debug_attribution_stub
-from storyforge.rag.extraction import extract_grounded_facts
+from storyforge.rag.evidence import EvidenceSearch
 from storyforge.rag.generation import _sections_below_min_sentences, generate_from_facts
 from storyforge.rag.length_profile import resolve_length_profile
-from storyforge.rag.retrieval import _docs_to_chunks, _docs_to_context, retrieve_docs
 
 LOG = logging.getLogger(__name__)
 
@@ -54,13 +53,10 @@ def generate_story_3step_langchain(
     cfg = cfg or load_config()
     profile = resolve_length_profile(cfg, length=length, mode=mode)
 
-    docs = retrieve_docs(
-        query, cfg, n_stories=n_stories, chunks_per_story=chunks_per_story, story_type=story_type
-    )
-    chunks = _docs_to_chunks(docs)
-    retrieval_context = _docs_to_context(docs)
-
-    grounded_raw, parsed = extract_grounded_facts(query, chunks, cfg)
+    evidence = EvidenceSearch(
+        cfg, story_type=story_type, n_stories=n_stories, chunks_per_story=chunks_per_story
+    ).gather(query)
+    chunks, retrieval_context, grounded_raw, parsed = evidence.chunks, evidence.context, evidence.raw, evidence.facts
 
     story = generate_from_facts(query, parsed, grounded_raw, cfg, mode=mode, profile=profile)
     min_sentences = profile.min_sentences_per_section

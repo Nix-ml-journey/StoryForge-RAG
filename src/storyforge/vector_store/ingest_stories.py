@@ -13,56 +13,9 @@ from typing import Iterable, Optional
 from storyforge.config.config import load_config
 
 from storyforge.vector_store.chromadb import get_or_create_collection
-from storyforge._load_lock import serialized
+from storyforge.vector_store.embeddings import embed_texts, get_embed_model
 
 LOG = logging.getLogger(__name__)
-
-_EMBED_MODEL_CACHE: dict = {}  # model_name -> SentenceTransformer
-
-
-@serialized
-def _get_embed_model(model_name: str):
-    """Cached embedding model — must match langchain_rag retrieval vectors."""
-    if model_name in _EMBED_MODEL_CACHE:
-        return _EMBED_MODEL_CACHE[model_name]
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        LOG.info("Loading embedding model %s on %s", model_name, device)
-        model = SentenceTransformer(model_name, device=device)
-        _EMBED_MODEL_CACHE[model_name] = model
-        return model
-    except ImportError:
-        LOG.warning(
-            "sentence-transformers not installed — falling back to chromadb default embeddings. "
-            "Run: pip install sentence-transformers"
-        )
-        return None
-
-
-def _embed_chunks(model, texts: list[str]) -> list[list[float]] | None:
-    """Embed a list of texts. Returns None when the model is unavailable.
-
-    BGE's documented recipe (BAAI/bge-base-en-v1.5) only prefixes
-    the *query* side ("Represent this sentence for searching relevant
-    passages: ", applied at search time -- see
-    storyforge.vector_store.embeddings.QUERY_PREFIX). Passages/documents are
-    embedded with no instruction prefix. This function previously also
-    prefixed passages with "Represent this passage for retrieval: ", which
-    deviated from that recipe -- fixed here. Any collection ingested before
-    this fix has vectors baked with the old (wrong) prefix and must be
-    re-ingested; see docs/DATA_PREP.md.
-    """
-    if model is None:
-        return None
-    try:
-        vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-        return [v.tolist() for v in vecs]
-    except Exception as e:
-        LOG.warning("Embedding failed, falling back to chromadb default: %s", e)
-        return None
-
 
 @dataclass(frozen=True)
 class IngestResult:
@@ -291,7 +244,7 @@ def ingest_stories_dir(
 
         # Same embedding model as langchain_rag (required for BGE / non-default models).
         embed_model_name = str(cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5")
-        embed_model = _get_embed_model(embed_model_name)
+        embed_model = get_embed_model(embed_model_name, device="cuda")  # ingest embeds on the GPU when there is one
         if embed_model is not None:
             LOG.info("Ingest using embedding model: %s", embed_model_name)
         else:
@@ -346,7 +299,7 @@ def ingest_stories_dir(
                 )
                 documents.append(row["text"])
 
-            embeddings = _embed_chunks(embed_model, documents)
+            embeddings = embed_texts(embed_model, documents)
             if embeddings is not None:
                 collection.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=documents)
             else:

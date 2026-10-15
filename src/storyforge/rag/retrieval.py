@@ -14,10 +14,11 @@ from typing import Any, Optional
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
 
 from storyforge._load_lock import serialized
-from storyforge.vector_store.embeddings import QUERY_PREFIX
+from storyforge.config.config import flag
+from storyforge.vector_store.embeddings import embed_passages, embed_query
 
 LOG = logging.getLogger(__name__)
 
@@ -95,6 +96,25 @@ def _get_paths_and_names(cfg: dict[str, Any]):
     return chroma_dir, str(collection), str(embed_model)
 
 
+class _SharedEmbeddings(Embeddings):
+    """LangChain face of the shared embedder: same model cache, device rule and BGE query prefix as ingest."""
+
+    def __init__(self, model_name: str, device: str) -> None:
+        self.model_name, self.device = model_name, device
+
+    @staticmethod
+    def _vectors(result):
+        if result is None:
+            raise RuntimeError("Embedding model unavailable (see the log for the reason).")
+        return result
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._vectors(embed_passages(self.model_name, texts, self.device))
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._vectors(embed_query(text, self.model_name, self.device))
+
+
 @serialized
 def _build_vectorstore(cfg: dict[str, Any]) -> Chroma:
     chroma_dir, collection, embed_model = _get_paths_and_names(cfg)
@@ -104,29 +124,7 @@ def _build_vectorstore(cfg: dict[str, Any]) -> Chroma:
         LOG.debug("Reusing cached vectorstore (%s / %s / %s)", collection, embed_model, device)
         return _VECTORSTORE_CACHE[cache_key]
 
-    is_bge = "bge" in embed_model.lower()
-    encode_kwargs: dict = {"normalize_embeddings": True}
-    model_kwargs: dict = {"device": device}
-
-    if is_bge:
-
-        class _BGEEmbeddings(HuggingFaceEmbeddings):
-            def embed_query(self, text: str) -> list[float]:
-                """Prepend BGE query prefix before encoding (shared with embed_query()
-                in storyforge.vector_store.embeddings -- passages get no prefix)."""
-                return super().embed_query(QUERY_PREFIX + text)
-
-        embeddings: HuggingFaceEmbeddings = _BGEEmbeddings(
-            model_name=embed_model,
-            model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs,
-        )
-    else:
-        embeddings = HuggingFaceEmbeddings(
-            model_name=embed_model,
-            model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs,
-        )
+    embeddings = _SharedEmbeddings(embed_model, device)
 
     vectorstore = Chroma(
         collection_name=collection,
@@ -371,7 +369,7 @@ def retrieve_docs(
             search_kwargs["filter"] = filter_metadata
         docs = vectorstore.as_retriever(search_kwargs=search_kwargs).invoke(query)
 
-    hybrid_on = str(cfg.get("Hybrid_search_enabled", True)).strip().lower() not in ("false", "0", "no", "")
+    hybrid_on = flag(cfg, "Hybrid_search_enabled", True)
     if hybrid_on and docs:
         bm25_weight = float(cfg.get("Hybrid_bm25_weight") or 0.3)
         # Lexical candidates from the WHOLE corpus (not just the dense pool): these
@@ -400,7 +398,7 @@ def retrieve_docs(
     # diversity then picks its titles from that better-ordered list. See
     # docs/PROJECT_JOURNEY.md for the retrieval_eval cases this targets.
     if use_reranker is None:
-        reranker_on = str(cfg.get("Reranker_enabled", True)).strip().lower() not in ("false", "0", "no", "")
+        reranker_on = flag(cfg, "Reranker_enabled", True)
     else:
         reranker_on = bool(use_reranker)
     if reranker_on and docs:

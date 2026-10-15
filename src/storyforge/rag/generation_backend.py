@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Optional, Protocol
 from storyforge._load_lock import serialized
 
+LOG = logging.getLogger(__name__)
+
 _OLLAMA_LLM_CACHE: dict[tuple, Any] = {}
+_CHARS_PER_TOKEN = 3.5  # measured ~4.3 on this corpus; lower = earlier warning
 
 
 class GenerationLLM(Protocol):
@@ -84,7 +88,8 @@ def build_chat_ollama(
         temperature=temperature,
         top_p=top_p,
         num_predict=max_new_tokens,
-        options={"repeat_penalty": repeat_penalty, "num_ctx": ollama_num_ctx(cfg)},
+        num_ctx=ollama_num_ctx(cfg),  # a constructor `options=` dict is silently ignored by langchain-ollama 0.3.x, leaving Ollama at 4096
+        repeat_penalty=repeat_penalty,
         reasoning=thinking,
         **kwargs,
     )
@@ -124,6 +129,20 @@ def load_ollama_llm(
     return _PromptLLM(_OLLAMA_LLM_CACHE[cache_key])
 
 
+def _warn_if_prompt_too_long(inner: Any, text: str) -> None:
+    """Ollama silently drops the head of a prompt longer than ``num_ctx``; make that loud."""
+    num_ctx = getattr(inner, "num_ctx", None)
+    if not num_ctx:
+        return
+    needed = int(len(text) / _CHARS_PER_TOKEN) + int(getattr(inner, "num_predict", None) or 0)
+    if needed > num_ctx:
+        LOG.warning(
+            "Prompt (~%d tokens incl. %s new tokens) may not fit num_ctx=%d: Ollama will truncate it. "
+            "Raise Model_max_prompt_tokens or shorten the prompt.",
+            needed, getattr(inner, "num_predict", None) or 0, num_ctx,
+        )
+
+
 def invoke_prompt(llm: Any, *, system: str, user: str) -> str:
     """Invoke ChatOllama with separate system and user messages."""
     system_text = (system or "").strip()
@@ -135,6 +154,7 @@ def invoke_prompt(llm: Any, *, system: str, user: str) -> str:
         messages.append(SystemMessage(content=system_text))
     messages.append(HumanMessage(content=user_text))
     inner = getattr(llm, "_llm", llm)
+    _warn_if_prompt_too_long(inner, system_text + user_text)
     response = inner.invoke(messages)
     result = str(getattr(response, "content", response) or "").strip()
     return strip_thinking_tags(result)
@@ -148,6 +168,7 @@ def invoke_combined_prompt(llm: Any, prompt: str) -> str:
     from langchain_core.messages import HumanMessage
 
     inner = getattr(llm, "_llm", llm)
+    _warn_if_prompt_too_long(inner, text)
     response = inner.invoke([HumanMessage(content=text)])
     result = str(getattr(response, "content", response) or "").strip()
     return strip_thinking_tags(result)

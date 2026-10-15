@@ -62,5 +62,23 @@ def _load_prompts_cached() -> dict[str, Any]:
         return yaml.safe_load(file) or {}
 
 
+_TRUE, _FALSE = {"true", "1", "yes", "on"}, {"false", "0", "no", "off"}
+
+
+def flag(cfg: dict[str, Any], key: str, default: bool) -> bool:
+    """Boolean setting. A missing or empty key (or an unrecognised word) gives ``default``; ``False`` stays off."""
+    value = cfg.get(key)
+    if isinstance(value, bool):
+        return value
+    word = str("" if value is None else value).strip().lower()
+    return True if word in _TRUE else False if word in _FALSE else default
+
+
+def num(cfg: dict[str, Any], key: str, default: float) -> float:
+    """Numeric setting where 0 is a real value; only a missing or empty key falls back to ``default``."""
+    value = cfg.get(key)
+    return default if value is None or value == "" else float(value)
+
+
 def load_prompts() -> dict[str, Any]:
     return deepcopy(_load_prompts_cached())

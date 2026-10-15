@@ -227,7 +227,6 @@ async def story_generate(request: StoryGenerateRequest):
         result = await asyncio.to_thread(
             orchestrator.generate_story,
             query=request.query,
-            generation_type=request.generation_type,
             save=request.save,
             debug=request.debug,
             n_results=request.n_results,
@@ -262,8 +261,6 @@ async def story_evaluate(request: StoryEvaluateRequest):
         result = await asyncio.to_thread(
             orchestrator.evaluate_story,
             story_text=request.story,
-            context=request.context,
-            save=request.save,
         )
         return StoryEvaluateResponse(
             success=result.get("success", False),
@@ -285,7 +282,6 @@ async def story_evaluate_file(request: StoryEvaluateFileRequest):
         result = await asyncio.to_thread(
             orchestrator.evaluate_story_file,
             story_path=request.story_path,
-            context_path=request.context_path,
             save=request.save,
         )
         return StoryEvaluateResponse(

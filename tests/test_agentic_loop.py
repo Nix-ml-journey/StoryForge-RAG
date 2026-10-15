@@ -550,7 +550,7 @@ def test_refine_names_unsupported_details_and_rewrites_only_those_sections(stub_
 
 
 def test_zero_threshold_is_honoured_not_replaced_by_default():
-    from storyforge.rag.agentic_loop import _num
+    from storyforge.config.config import num as _num
 
     assert _num({"k": 0}, "k", 6.0) == 0.0
     assert _num({}, "k", 6.0) == 6.0 and _num({"k": ""}, "k", 6.0) == 6.0 and _num({"k": "2"}, "k", 6.0) == 2.0

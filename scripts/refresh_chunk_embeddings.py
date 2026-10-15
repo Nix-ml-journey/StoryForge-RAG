@@ -29,7 +29,7 @@ if str(SRC) not in sys.path:
 def main() -> None:
     from storyforge.config.config import load_config
     from storyforge.vector_store.chromadb import get_or_create_collection
-    from storyforge.vector_store.ingest_stories import _embed_chunks, _get_embed_model
+    from storyforge.vector_store.embeddings import embed_texts, get_embed_model
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -52,8 +52,7 @@ def main() -> None:
     print(f"Collection '{collection_name}' count before: {collection.count()}")
 
     embed_model_name = str(cfg.get("Vector_store_model") or "BAAI/bge-base-en-v1.5")
-    is_bge = "bge" in embed_model_name.lower()
-    embed_model = _get_embed_model(embed_model_name)
+    embed_model = get_embed_model(embed_model_name, device="cuda")
     if embed_model is None:
         raise SystemExit(f"Could not load embedding model '{embed_model_name}'")
     print(f"Embedding with: {embed_model_name}")
@@ -79,7 +78,7 @@ def main() -> None:
             continue
         metadatas = [existing_by_id[i] for i in ids]
 
-        embeddings = _embed_chunks(embed_model, texts, is_bge=is_bge)
+        embeddings = embed_texts(embed_model, texts)
         if embeddings is None:
             print(f"  SKIP {title}: embedding failed")
             continue

@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 
-from storyforge.config.config import CONFIG_FILE, load_config
+from storyforge.config.config import CONFIG_FILE, flag, load_config
 
 from storyforge.rag.generative_ai import Gen_mode, StoryType
 from . import response_parameter as parameters
@@ -22,7 +22,7 @@ class Orchestrator:
     def search_book(self, query: str, n_results: int = 20) -> dict:
         return parameters.search_books(self.config.get("Google_book_api_key"), query, n_results)
 
-    def download_book(self, query: str, urls: list, formats: list) -> dict:
+    def download_book(self, query: str, formats: list) -> dict:
         return parameters.download_book_archive(
             self.base_path,
             query,
@@ -67,7 +67,6 @@ class Orchestrator:
     def generate_story(
         self,
         query: str,
-        generation_type: str = "full_story",
         save: bool = True,
         n_results: int = 5,
         mode: Gen_mode = Gen_mode.FAST,
@@ -103,15 +102,15 @@ class Orchestrator:
             length=length,
         )
 
-    def generate_summary(self, story_path: str, mode: Gen_mode = Gen_mode.FAST) -> dict:
+    def generate_summary(self, story_path: str) -> dict:
         return parameters.generate_summary_result(
             story_path, self.base_path, self.config.get("Generated_summary_output", "Summarized_Stories")
         )
 
-    def evaluate_story(self, story_text: str, context: Optional[str] = None, save: bool = False) -> dict:
+    def evaluate_story(self, story_text: str) -> dict:
         return parameters.evaluate_story_text_result(story_text)
 
-    def evaluate_story_file(self, story_path: str, context_path: Optional[str] = None, save: bool = False) -> dict:
+    def evaluate_story_file(self, story_path: str, save: bool = False) -> dict:
         return parameters.evaluate_story_file_result(story_path, save)
 
     def evaluate_summary(self, summary_path: str, context: Optional[str] = None, save: bool = False) -> dict:
@@ -127,7 +126,7 @@ class Orchestrator:
     ) -> dict:
         # Default pipeline: ingest stories → generate.
         # If Agentic_loop_enabled in setup.yaml, step 4 uses the evaluate/refine loop.
-        agentic_enabled = str(self.config.get("Agentic_loop_enabled") or "").strip().lower() in ("true", "1", "yes")
+        agentic_enabled = flag(self.config, "Agentic_loop_enabled", False)
         gen_step = "4_generate_story_agentic" if agentic_enabled else "4_generate_story_3step"
         default_steps = [
             "0_fetch_and_extract",
@@ -145,7 +144,7 @@ class Orchestrator:
                     # Was hardcoded ["pdf", "epub"], making the configured
                     # Download_formats key unreachable.
                     formats = self.config.get("Download_formats") or ["pdf", "epub"]
-                    res_download = self.download_book(query=title, urls=[], formats=formats)
+                    res_download = self.download_book(query=title, formats=formats)
                     if not res_download.get("success"):
                         logging.warning(f"download: {res_download.get('message', res_download.get('error', 'failed'))}")
                     res_extract = self.extract_text()
@@ -178,7 +177,6 @@ class Orchestrator:
                     logging.info("Generate: using Story_generation_n_results=%s", n_results)
                     res = self.generate_story(
                         query=title,
-                        generation_type="full_story",
                         save=True,
                         n_results=n_results,
                         mode=gen_mode,

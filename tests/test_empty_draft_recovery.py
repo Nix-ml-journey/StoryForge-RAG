@@ -157,6 +157,7 @@ def test_length_guard_falls_back_to_original_when_refine_raises(monkeypatch):
         raise RuntimeError("Story generation returned an empty draft.")
 
     from storyforge.rag.attribution import ParsedFacts
+    from storyforge.rag.evidence import Evidence
     parsed = ParsedFacts(facts=(), raw={})
 
     profile_mock = MagicMock(
@@ -165,11 +166,8 @@ def test_length_guard_falls_back_to_original_when_refine_raises(monkeypatch):
     )
 
     with patch("storyforge.rag.langchain_rag.generate_from_facts", side_effect=_fake_generate_from_facts), \
-         patch("storyforge.rag.langchain_rag.retrieve_docs", return_value=[]), \
-         patch("storyforge.rag.langchain_rag.extract_grounded_facts", return_value=("{}", parsed)), \
-         patch("storyforge.rag.langchain_rag.resolve_length_profile", return_value=profile_mock), \
-         patch("storyforge.rag.langchain_rag._docs_to_chunks", return_value=[]), \
-         patch("storyforge.rag.langchain_rag._docs_to_context", return_value=""):
+         patch("storyforge.rag.evidence.EvidenceSearch.gather", return_value=Evidence("A warrior", parsed, "{}", (), "")), \
+         patch("storyforge.rag.langchain_rag.resolve_length_profile", return_value=profile_mock):
         from storyforge.rag.langchain_rag import generate_story_3step_langchain
         result = generate_story_3step_langchain("A warrior", cfg=_cfg())
 

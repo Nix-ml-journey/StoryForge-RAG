@@ -157,3 +157,16 @@ def test_example_config_no_longer_hardcodes_length_gates():
     assert "Min_sentences_per_section" not in config
     assert "Agentic_loop_min_words" not in config
     assert "Agentic_loop_min_words_thinking" not in config
+
+
+def test_flag_reads_booleans_words_and_falls_back_to_default():
+    from storyforge.config.config import flag
+
+    assert flag({}, "k", True) is True and flag({}, "k", False) is False  # missing -> default
+    assert flag({"k": None}, "k", True) is True and flag({"k": ""}, "k", False) is False
+    assert flag({"k": False}, "k", True) is False and flag({"k": True}, "k", False) is True  # real booleans win
+    for word in ("false", "FALSE", " 0 ", "no", "off"):
+        assert flag({"k": word}, "k", True) is False
+    for word in ("true", "1", "yes", "on"):
+        assert flag({"k": word}, "k", False) is True
+    assert flag({"k": "maybe"}, "k", True) is True  # unrecognised word -> default

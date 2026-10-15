@@ -52,7 +52,7 @@ def ingest(stub_heavy_deps, monkeypatch, tmp_path):
     ingest_mod = importlib.import_module("storyforge.vector_store.ingest_stories")
 
     monkeypatch.setattr(ingest_mod, "get_or_create_collection", lambda name: coll)
-    monkeypatch.setattr(ingest_mod, "_get_embed_model", lambda name: None)
+    monkeypatch.setattr(ingest_mod, "get_embed_model", lambda name, device=None: None)
     monkeypatch.setattr(ingest_mod, "load_config", lambda: {})
     (tmp_path / "stories").mkdir()
     (tmp_path / "story_json").mkdir()

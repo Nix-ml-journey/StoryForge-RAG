@@ -306,6 +306,7 @@ Recent upgrades: `rank-bm25` promoted from optional to required in `requirements
 ## Related docs
 
 - [`DATA_PREP.md`](./DATA_PREP.md) — after extract: clean, split, review JSON, then ingest
+- [`INGEST_PLANNING.md`](./INGEST_PLANNING.md) — which stories to ingest and what shape they should have
 - [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md) — development story and trade-offs
 - [`UPGRADE_ROADMAP_5060Ti.md`](./UPGRADE_ROADMAP_5060Ti.md) — hardware-focused upgrade plan
 - [`PRODUCTION_NOTES.md`](./PRODUCTION_NOTES.md) — production boundaries

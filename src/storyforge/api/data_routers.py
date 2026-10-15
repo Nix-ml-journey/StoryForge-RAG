@@ -124,7 +124,6 @@ async def download_book(request: DownloadBookRequest):
         result = await asyncio.to_thread(
             _orchestrator.download_book,
             query=request.query,
-            urls=request.urls,
             formats=request.formats,
         )
         return DownloadBookResponse(
