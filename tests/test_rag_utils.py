@@ -111,3 +111,20 @@ def test_prompt_longer_than_num_ctx_is_logged_not_silent(caplog):
         caplog.clear()
         invoke_combined_prompt(Inner(), "x" * 100)
         assert "may not fit" not in caplog.text
+
+
+def test_a_hung_ollama_call_becomes_a_runtime_error_the_loops_handle():
+    import httpx
+    import pytest
+
+    from storyforge.rag.generation_backend import build_chat_ollama, invoke_combined_prompt
+
+    class Hung:
+        def invoke(self, messages):
+            raise httpx.ReadTimeout("no bytes for 300 s")
+
+    with pytest.raises(RuntimeError, match="no answer within the request timeout"):
+        invoke_combined_prompt(Hung(), "hello")
+    llm = build_chat_ollama({"Ollama_request_timeout_s": 120}, max_new_tokens=50, temperature=0.5, top_p=0.9)
+    assert llm.client_kwargs == {"timeout": 120.0}
+    assert build_chat_ollama({}, max_new_tokens=50, temperature=0.5, top_p=0.9).client_kwargs == {"timeout": 300.0}

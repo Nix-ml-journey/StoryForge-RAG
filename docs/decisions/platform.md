@@ -42,7 +42,7 @@ run on one Ollama server, and embeddings/reranker run on CPU. An OOM mid-run los
 
 ### Decision
 - Generator and Step 2 facts: `qwen3.5:9b` (~6.6 GB).
-- Judge: `qwen3.5:4b` (~3.3 GB) via `Ollama_evaluation_model`, a different, smaller model than the writer.
+- Judge: `qwen3.5:4b` (~3.3 GB) via `Ollama_evaluation_model`, a different, smaller model than the writer. **Superseded 2026-10-15:** the live config never set `Ollama_evaluation_model`, so the judge was `qwen3.5:9b` (the writer model); the 4B was removed from Ollama (see ADR-0011).
 - vLLM (optional backend only): `Qwen/Qwen3.5-9B`, the Hugging Face counterpart of the Ollama tag.
 - `HF_grounded_facts_model` is left at `Qwen/Qwen3-8B`; it is only read when `Grounded_facts_provider: hf`.
 

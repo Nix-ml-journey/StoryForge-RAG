@@ -14,7 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 report = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "Evaluation" / "generation_eval_report_arc.json"
-sample = {m["query"]: m for m in json.loads((ROOT / "Evaluation" / "length_sample_map.json").read_text(encoding="utf-8"))}
+map_path = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "Evaluation" / "length_sample_map.json"  # e.g. Evaluation/wiki_test_map.json
+sample = {m["query"]: m for m in json.loads(map_path.read_text(encoding="utf-8"))}
 BUCKETS = [(0, 600), (600, 1000), (1000, 1500), (1500, 2600), (2600, 6000), (6000, 10**9)]
 
 

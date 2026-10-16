@@ -73,6 +73,7 @@ METHODS: dict[str, dict[str, str]] = {
     "5w1h-sectioned": {"Story_generation_method": "5w1h", "Story_generation_mode": "sectioned"},
     "arc": {"Story_generation_method": "arc"},
     "arc-rules": {"Story_generation_method": "arc", "Agentic_loop_rule_driven": True},  # ADR-0011 Step 2
+    "arc-story-first": {"Story_generation_method": "arc", "Story_first_retrieval": True},  # facts from the lead story only
 }
 _OVERRIDES: dict[str, Any] = {}
 
@@ -247,6 +248,16 @@ def main() -> int:
         _OVERRIDES.update(METHODS.get(method, {}))
         records: list[dict[str, Any]] = []
         runs: list[list[dict[str, Any]]] = []
+        out_path = base_out if method is None else base_out.with_name(f"{base_out.stem}_{label}{base_out.suffix}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        partial_path = out_path.with_name(f"{out_path.stem}.partial{out_path.suffix}")  # survives a stall or a Ctrl+C
+
+        def build_report() -> dict[str, Any]:
+            report = {"method": label, "mode": args.mode, "length": args.length, "summary": summarize(records), "records": records}
+            if args.repeat > 1:
+                report["repeat_summary"] = summarize_runs(runs)
+            return report
+
         plan = [(r, i, q) for r in range(1, max(1, args.repeat) + 1) for i, q in enumerate(queries, start=1)]
         for r, i, q in plan:
             if i == 1:
@@ -266,19 +277,11 @@ def main() -> int:
                 )
             else:
                 print(f"    FAILED: {rec.get('error')} ({rec['elapsed_seconds']}s)")
+            partial_path.write_text(json.dumps(build_report(), indent=2, ensure_ascii=False), encoding="utf-8")
 
-        report = {
-            "method": label,
-            "mode": args.mode,
-            "length": args.length,
-            "summary": summarize(records),
-            "records": records,
-        }
-        if args.repeat > 1:
-            report["repeat_summary"] = summarize_runs(runs)
-        out_path = base_out if method is None else base_out.with_name(f"{base_out.stem}_{label}{base_out.suffix}")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        report = build_report()
         out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        partial_path.unlink(missing_ok=True)
         summaries[label] = report["summary"]
         print(f"\nWrote report to {out_path}")
         print(json.dumps(report["summary"], indent=2))

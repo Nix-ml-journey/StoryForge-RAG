@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import re
+
+import httpx
 from typing import Any, Optional, Protocol
 from storyforge._load_lock import serialized
+from storyforge.config.config import num
 
 LOG = logging.getLogger(__name__)
 
@@ -88,6 +91,7 @@ def build_chat_ollama(
         temperature=temperature,
         top_p=top_p,
         num_predict=max_new_tokens,
+        client_kwargs={"timeout": num(cfg, "Ollama_request_timeout_s", 300.0)},  # a hung runner must fail, not wait forever
         num_ctx=ollama_num_ctx(cfg),  # a constructor `options=` dict is silently ignored by langchain-ollama 0.3.x, leaving Ollama at 4096
         repeat_penalty=repeat_penalty,
         reasoning=thinking,
@@ -143,6 +147,14 @@ def _warn_if_prompt_too_long(inner: Any, text: str) -> None:
         )
 
 
+def _invoke_or_fail(inner: Any, messages: list[Any]) -> Any:
+    """Run the model; a call that gets no answer within ``Ollama_request_timeout_s`` becomes a RuntimeError the loops handle."""
+    try:
+        return inner.invoke(messages)
+    except httpx.TimeoutException as e:
+        raise RuntimeError(f"Ollama gave no answer within the request timeout ({type(e).__name__}); the runner may be stuck.") from e
+
+
 def invoke_prompt(llm: Any, *, system: str, user: str) -> str:
     """Invoke ChatOllama with separate system and user messages."""
     system_text = (system or "").strip()
@@ -155,7 +167,7 @@ def invoke_prompt(llm: Any, *, system: str, user: str) -> str:
     messages.append(HumanMessage(content=user_text))
     inner = getattr(llm, "_llm", llm)
     _warn_if_prompt_too_long(inner, system_text + user_text)
-    response = inner.invoke(messages)
+    response = _invoke_or_fail(inner, messages)
     result = str(getattr(response, "content", response) or "").strip()
     return strip_thinking_tags(result)
 
@@ -169,7 +181,7 @@ def invoke_combined_prompt(llm: Any, prompt: str) -> str:
 
     inner = getattr(llm, "_llm", llm)
     _warn_if_prompt_too_long(inner, text)
-    response = inner.invoke([HumanMessage(content=text)])
+    response = _invoke_or_fail(inner, [HumanMessage(content=text)])
     result = str(getattr(response, "content", response) or "").strip()
     return strip_thinking_tags(result)
 

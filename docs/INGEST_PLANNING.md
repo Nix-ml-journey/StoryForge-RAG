@@ -125,7 +125,7 @@ This is the order we would try the changes in, one at a time, each followed by `
 | # | Change | Type | Re-ingest? | Evidence |
 |---|---|---|---|---|
 | 1 | Put the most relevant chunk **last** in the facts prompt (or extract per story / per chunk). **Superseded 2026-10-15:** the real cause was Ollama truncating the prompt at 4096 tokens (see the ADR-0011 note); with the context fixed, reversing the order stopped helping, so it was not kept. | 1 line in `extraction.py` | No | Measured on the facts step: 0% of facts from the top story in retrieval order, 31-43% reversed (goblin and huntress, 3 repeats). Effect on accept rate **not measured**. |
-| 2 | **Story-first retrieval:** pick the best story, then give Step 2 all of its chunks, instead of 10 chunks from 3 or more titles. | Code in `retrieve_docs` and the loop | No | Hypothesis. Targets the blended-protagonist failure. |
+| 2 | **Story-first retrieval:** pick the best story, then give Step 2 its chunks, instead of 10 chunks from 3 or more titles. **Implemented 2026-10-15** behind `Story_first_retrieval` (off by default); **measured 2026-10-16 on 10 dev stories: accept 0.20 to 0.90, faithfulness 5.2 to 8.2, 35% faster** (ADR-0011). | `Evidence._lead_story_docs` | No | Hypothesis. Targets the blended-protagonist failure; the post-context-fix control showed the right story's facts now arrive but facts per story doubled and other titles dominate short-story queries. |
 | 3 | **Story cards and chunk headers:** one card per story (title, protagonist, role, setting, summary) indexed beside the chunks; a `Title / character` header on each chunk so facts name their subject. | Ingest code + data | Yes (`reset_and_ingest.py`) | Hypothesis. Standard practice for narrative RAG, untested here. |
 | 4 | Lengthen or merge very short stories (under about 600 words / 2 chunks). | Corpus | Yes | Hypothesis. Section 3. |
 
@@ -143,6 +143,15 @@ The corpus mixes two things: nearly all short stories are wiki-style, and all lo
 `Evaluation/length_sample_map.json` holds query, target story, words and style; `analyze_length_buckets.py` prints accept rate, faithfulness, judge average, the share of facts that come from the target story and iterations per style and length bucket. It takes about 80-100 minutes for one pass of 42 queries; `--repeat 2` doubles that and halves the noise.
 
 **It is right to pick a length range if** accept rate and target-story fact share stay high inside it and drop outside it, in both styles. **Length is not the lever if** the buckets look alike once the target-story fact share is near 1.0; then the answer is the pipeline, not the files.
+
+### Wiki-only test store (2026-10-15)
+
+To test on the 37 wiki tales alone, the 35 classics were deleted from the Chroma collection (2,138 chunks became 136). Nothing else was touched: the `.txt` and `story_json` files for the classics are still on disk, and a copy of the full store is in `data/chroma_db_backup_2026-10-15_with-classics/` (local only, excluded from git).
+
+- **Retrieval check on the wiki-only store:** each of the 37 queries finds its own tale as the top result (37/37, also top-3 37/37), so retrieval is not what a run on this store tests; it tests the facts step, the writer and the judge.
+- **Queries:** `Evaluation/wiki_test_map.json` holds one query per tale with a fixed split (27 `dev`, 10 `holdout`: Cirilo, Ledra, Luana, Talia, Valerius, Yavo, Molly, Jess, Leo, Layla). Tune on `wiki_dev_queries.json`; look at `wiki_holdout_queries.json` once at the end. The default 8 queries and `retrieval_eval.py`'s 30 cases include classics, so on this store they are not meaningful.
+- **Restore the full store:** stop anything using Chroma, delete `data/chroma_db`, copy the backup folder back to `data/chroma_db` (or run `scripts/reset_and_ingest.py`).
+- **Analysis:** `analyze_length_buckets.py <report.json> Evaluation/wiki_test_map.json`.
 
 ## 8. Known gaps
 

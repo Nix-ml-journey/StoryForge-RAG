@@ -40,7 +40,7 @@ Tests use temporary directories and do not require GPU, Chroma data, or live API
 | Hybrid search | BM25 + dense (RRF) | On via `Hybrid_search_enabled`; needs `rank-bm25` from `requirements.txt` |
 | Step 2 facts | `qwen3.5:9b` (Ollama, `Grounded_facts_provider: "local"` in the example config) | Schema-constrained JSON plus an extractive top-up. `"hf"` uses `Qwen/Qwen3-8B` via the HF API with a local fallback |
 | Step 3 story | `qwen3.5:9b` (Ollama) | `arc` method: five sections, one call each. Also supports vLLM or Transformers |
-| Evaluation | `qwen3.5:4b` (Ollama, `Evaluation_mode: "ollama"` in the example config) | Judge for the agentic loop; no API fallback. `Evaluation_mode: "api"` uses HF → Gemini |
+| Evaluation | `qwen3.5:9b` (Ollama, `Evaluation_mode: "ollama"`; the same model as the writer unless `Ollama_evaluation_model` is set) | Judge for the agentic loop; no API fallback. `Evaluation_mode: "api"` uses HF → Gemini |
 
 ## Grounded story generation
 
@@ -177,10 +177,12 @@ Streaming uses the same length guidance in the prompt. It cannot retry mid-strea
 | `Generation_repetition_penalty` | Anti-loop decoding |
 | `Agentic_loop_*` | Loop thresholds (scores / re-retrieve / refine boost) |
 | `Evaluation_mode` | `api` (default, HF → Gemini) or `ollama` / `local` (local Ollama judge; no API fallback, fails loudly if Ollama is down) |
-| `Ollama_evaluation_model` | Optional judge model for `ollama` mode (default: `Generative_model`); `qwen3.5:4b` recommended |
+| `Ollama_evaluation_model` | Optional judge model for `ollama` mode (default: `Generative_model`, i.e. the 9B; the 4B was tried and removed, see ADR-0011) |
 | `Facts_extractive_fallback` | `true` (default): when Step 2 returns fewer than `Local_grounded_facts_min_facts` facts, top up with extractive facts from the chunks (no LLM; ADR-0011) |
 | `Agentic_loop_preflight_tiers` | Pre-flight gate: widen retrieval (tier 1) and reformulate the query (tier 2) before writing when facts < `Agentic_loop_min_facts`; facts are merged, never replaced (default 2; 0 = off) |
 | `Story_generation_method` | `arc` (default; story-arc outline with its own prompt set `generation_arc`, always sectioned; see ADR-0010) or `5w1h` (older outline). Compare with `measure_generation_length.py --methods 5w1h 5w1h-sectioned arc` |
+| `Ollama_request_timeout_s` | Seconds an Ollama call may stay silent before it fails with a `RuntimeError` (default 300) so a stuck runner cannot hang a run |
+| `Story_first_retrieval` / `Story_first_chunks` | `false` (default): Step 2 sees the mixed 10-chunk list. `true`: only the best story's chunks (top-ranked title, at most `Story_first_chunks`, default 8) so facts cannot blend protagonists. Compare with `measure_generation_length.py --methods arc arc-story-first` (ADR-0011) |
 | `Story_generation_mode` | `single` (default, one call per draft) or `sectioned` (opt-in, one short call per section with its own word/token budget; refines rewrite only the weak sections; see ADR-0009) |
 | `Hybrid_bm25_pool` | BM25 candidates taken from the whole collection and added to the rerank pool (default 0 = off; 12 tested and rejected, see ADR-0002) |
 | `Agentic_loop_late_accept_slack` | From iteration 2, accept a complete grounded draft this far below `Agentic_loop_accept_score` (default 0.5) |

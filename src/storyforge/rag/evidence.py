@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from storyforge.config.config import num
+from storyforge.config.config import flag, num
 
 LOG = logging.getLogger(__name__)
 
@@ -70,11 +70,33 @@ class EvidenceSearch:
             query, self.cfg, n_stories=self.n_stories, chunks_per_story=self.chunks_per_story,
             k_boost=self.k_boost, story_type=self.story_type,
         )
+        if flag(self.cfg, "Story_first_retrieval", False) and docs:
+            docs = self._lead_story_docs(query, docs)
         chunks = _docs_to_chunks(docs)
         raw, facts = extract_grounded_facts(query, chunks, self.cfg)
         if previous is not None:
             facts = merge_facts(previous.facts, facts)  # widening adds evidence, never replaces it
         return Evidence(query=query, facts=facts, raw=raw, chunks=tuple(chunks), context=_docs_to_context(docs))
+
+    def _lead_story_docs(self, query: str, docs: list) -> list:
+        """Story-first: keep only the best story's chunks, so facts cannot blend protagonists.
+
+        The lead story is the title of the top-ranked chunk. Its best chunks (``Story_first_chunks``, default 8)
+        are fetched again with a Title filter, so a story that only got 2 of its chunks into the mixed list still
+        contributes its other relevant ones. Shortcut: a wrong top-1 title means the whole story is built from the
+        wrong story; falls back to the mixed list when the title or the filtered search comes back empty.
+        """
+        from storyforge.rag.retrieval import retrieve_docs
+
+        title = str((docs[0].metadata or {}).get("Title") or "").strip()
+        if not title:
+            return docs
+        keep = max(1, int(num(self.cfg, "Story_first_chunks", 8)))
+        lead = retrieve_docs(
+            query, self.cfg, n_stories=1, chunks_per_story=keep, k_boost=self.k_boost,
+            story_type=self.story_type, filter_metadata={"Title": title},
+        )
+        return list(lead[:keep]) or docs
 
     def widen(self) -> None:
         """Search wider on the next gather (more candidates, more stories)."""

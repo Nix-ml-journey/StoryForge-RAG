@@ -23,12 +23,12 @@ Google_book_api_key: ""
 # evaluator the agentic loop decides on completeness + facts only, and will not
 # ACCEPT a draft that has zero grounded facts behind it.
 Evaluation_mode: "ollama"
-# VRAM budget (RTX 5060 Ti, 16 GB): qwen3.5:9b (~6.6 GB) + qwen3.5:4b judge (~3.3 GB)
-# + KV cache at Model_max_prompt_tokens fits together (~11-12 GB). Embeddings and the
+# VRAM budget (RTX 5060 Ti, 16 GB): qwen3.5:9b (~6.6 GB) writes AND judges (one model in
+# memory, ~9.5 GB with the KV cache at Model_max_prompt_tokens). Embeddings and the
 # reranker run on CPU. qwen3.5:27b / qwen3:30b+ do NOT fit; qwen3:14b fits alone but is
 # older than qwen3.5:9b. To trim further, start Ollama with OLLAMA_FLASH_ATTENTION=1 and
 # OLLAMA_KV_CACHE_TYPE=q8_0. If you see OOM, lower Model_max_prompt_tokens first.
-Ollama_evaluation_model: "qwen3.5:4b"   # small judge; run: ollama pull qwen3.5:4b
+Ollama_evaluation_model: ""   # empty = the same model as Generative_model (qwen3.5:9b); set a model name to judge with a different one
 # 700 truncated the judge JSON (scores + feedback + suggestions) -> unscored iterations.
 Local_evaluation_max_new_tokens: 1200
 
@@ -117,6 +117,9 @@ vLLM_model: "Qwen/Qwen3.5-9B"
 # Precision for Transformers only (ignored when Generation_provider: ollama or vllm)
 Generation_precision: "auto"
 Model_max_prompt_tokens: 12288
+# Seconds Ollama may stay silent before a call fails (a stuck runner raised no error and hung a run for 1h40m).
+# Normal calls answer in under a minute; raise it only if the GPU is shared and calls are slow.
+Ollama_request_timeout_s: 300
 Generation_fast_temperature: 0.4
 Generation_fast_top_p: 0.8
 # Token FLOOR for the generation budget. The length target below raises this when it
@@ -139,6 +142,11 @@ Story_generation_mode: "single"
 # `generation:`) or "arc" (setup/inciting incident/rising action/climax/resolution, always sectioned,
 # prompts under `generation_arc:`; the default). Compare with: measure_generation_length.py --methods 5w1h arc
 Story_generation_method: "arc"
+# Story-first retrieval: give Step 2 only the best-matching story's chunks (the title of the top-ranked chunk)
+# instead of ten chunks from three or more titles, so facts cannot blend protagonists. Off until measured:
+# compare with  measure_generation_length.py --methods arc arc-story-first
+Story_first_retrieval: false
+Story_first_chunks: 8        # most chunks of the lead story to use
 
 ## Story length target
 # A single target drives three things that must agree, or output never grows:
