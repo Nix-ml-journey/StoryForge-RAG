@@ -74,6 +74,7 @@ METHODS: dict[str, dict[str, str]] = {
     "arc": {"Story_generation_method": "arc"},
     "arc-rules": {"Story_generation_method": "arc", "Agentic_loop_rule_driven": True},  # ADR-0011 Step 2
     "arc-story-first": {"Story_generation_method": "arc", "Story_first_retrieval": True},  # facts from the lead story only
+    "arc-story-first-iter2": {"Story_generation_method": "arc", "Story_first_retrieval": True, "Agentic_loop_max_iterations": 2},
 }
 _OVERRIDES: dict[str, Any] = {}
 

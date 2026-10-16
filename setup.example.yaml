@@ -209,7 +209,7 @@ Section_label_model: "qwen3.5:9b"   # Ollama tag used to label chunk sections
 
 # --- Agentic loop ---
 Agentic_loop_enabled: true
-Agentic_loop_max_iterations: 3
+Agentic_loop_max_iterations: 2   # 3 gave one more refine pass that rescued 1 of 10 holdout stories at about 80 s extra for the failures
 Agentic_loop_accept_score: 7.0
 Agentic_loop_min_faithfulness: 6
 Agentic_loop_min_facts: 3
